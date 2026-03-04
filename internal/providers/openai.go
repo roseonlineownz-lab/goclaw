@@ -121,6 +121,23 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 			continue
 		}
 
+		// Usage chunk often has empty choices — extract usage before skipping.
+		// When stream_options.include_usage is true, the final chunk contains
+		// usage data but choices is typically an empty array.
+		if chunk.Usage != nil {
+			result.Usage = &Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
+			if chunk.Usage.PromptTokensDetails != nil {
+				result.Usage.CacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+			}
+			if chunk.Usage.CompletionTokensDetails != nil && chunk.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+				result.Usage.ThinkingTokens = chunk.Usage.CompletionTokensDetails.ReasoningTokens
+			}
+		}
+
 		if len(chunk.Choices) == 0 {
 			continue
 		}
@@ -161,20 +178,11 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 			result.FinishReason = chunk.Choices[0].FinishReason
 		}
 
-		if chunk.Usage != nil {
-			result.Usage = &Usage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-			}
-			if chunk.Usage.PromptTokensDetails != nil {
-				result.Usage.CacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
-			}
-			if chunk.Usage.CompletionTokensDetails != nil && chunk.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
-				result.Usage.ThinkingTokens = chunk.Usage.CompletionTokensDetails.ReasoningTokens
-			}
-		}
+	}
 
+	// Check for scanner errors (timeout, connection reset, etc.)
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("%s: stream read error: %w", p.name, err)
 	}
 
 	// Check for scanner errors (timeout, connection reset, etc.)
