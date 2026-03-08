@@ -38,9 +38,9 @@ FROM alpine:3.22
 
 ARG ENABLE_SANDBOX=false
 
-# Install ca-certificates + wget (healthcheck) + optionally docker-cli (sandbox)
+# Install ca-certificates + wget (healthcheck) + nodejs, npm + optionally docker-cli (sandbox)
 RUN set -eux; \
-    apk add --no-cache ca-certificates wget; \
+    apk add --no-cache ca-certificates wget nodejs npm; \
     if [ "$ENABLE_SANDBOX" = "true" ]; then \
         apk add --no-cache docker-cli; \
     fi
