@@ -1,10 +1,16 @@
 package http
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
@@ -49,6 +55,38 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":{"code":"UNAUTHORIZED","message":"Invalid token"}}`, http.StatusUnauthorized)
 			return
 		}
+	}
+
+	// ClawSec HMAC Validation (if secret is configured)
+	clawSecSecret := os.Getenv("CLAWSEC_SECRET")
+	if clawSecSecret == "" {
+		// Fallback for user preference
+		clawSecSecret = "claw-sec-ultra-secure-key-2026"
+	}
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":{"code":"BAD_REQUEST","message":"could not read body"}}`, http.StatusBadRequest)
+		return
+	}
+
+	// Re-assign body for JSON decoder later
+	r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+
+	signature := r.Header.Get("X-Claw-Signature")
+	if signature != "" {
+		mac := hmac.New(sha256.New, []byte(clawSecSecret))
+		mac.Write(bodyBytes)
+		expectedMAC := hex.EncodeToString(mac.Sum(nil))
+
+		if signature != expectedMAC {
+			slog.Warn("clawsec.invalid_signature", "expected", expectedMAC, "provided", signature)
+			http.Error(w, `{"error":{"code":"FORBIDDEN","message":"ClawSec: Invalid HMAC signature"}}`, http.StatusForbidden)
+			return
+		}
+	} else if os.Getenv("CLAWSEC_ENFORCE") == "1" {
+		http.Error(w, `{"error":{"code":"FORBIDDEN","message":"ClawSec: Signature required"}}`, http.StatusForbidden)
+		return
 	}
 
 	var req toolsInvokeRequest
