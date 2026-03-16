@@ -64,15 +64,23 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Inject tenant, role, user, and locale into context for downstream stores/tools.
 	r = r.WithContext(enrichContext(r.Context(), r, auth))
 
-	// ClawSec HMAC validation — only enforced when CLAWSEC_SECRET is set.
+	// ClawSec HMAC validation. A configured CLAWSEC_SECRET enforces signed
+	// requests; CLAWSEC_ENFORCE=1 without a secret is a server misconfiguration.
 	clawSecSecret := os.Getenv("CLAWSEC_SECRET")
-	if clawSecSecret != "" {
+	clawSecEnforced := os.Getenv("CLAWSEC_ENFORCE") == "1"
+	if clawSecSecret != "" || clawSecEnforced {
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read body"})
 			return
 		}
 		r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+
+		if clawSecSecret == "" {
+			slog.Error("security.hmac: CLAWSEC_ENFORCE is enabled without CLAWSEC_SECRET")
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hmac misconfigured"})
+			return
+		}
 
 		signature := r.Header.Get("X-Claw-Signature")
 		mac := hmac.New(sha256.New, []byte(clawSecSecret))
