@@ -16,13 +16,9 @@ import { MEDIA_TOOLS } from "./media-provider-params-schema";
 import { MediaProviderChainForm } from "./media-provider-chain-form";
 import { KGSettingsForm } from "./kg-settings-form";
 import { WebFetchExtractorChainForm } from "./web-fetch-extractor-chain-form";
-import { WebSearchChainForm } from "./web-search-chain-form";
-import { SttProviderForm } from "./stt-provider-form";
 
 const KG_TOOL = "knowledge_graph_search";
 const WEB_FETCH_TOOL = "web_fetch";
-const WEB_SEARCH_TOOL = "web_search";
-const STT_TOOL = "stt";
 
 interface Props {
   tool: BuiltinToolData | null;
@@ -35,54 +31,32 @@ export function BuiltinToolSettingsDialog({ tool, open, onOpenChange, onSave }: 
   const isMedia = tool ? MEDIA_TOOLS.has(tool.name) : false;
   const isKG = tool?.name === KG_TOOL;
   const isWebFetch = tool?.name === WEB_FETCH_TOOL;
-  const isWebSearch = tool?.name === WEB_SEARCH_TOOL;
-  const isStt = tool?.name === STT_TOOL;
-  const wide = isMedia || isKG || isWebFetch || isWebSearch;
-
-  const initialSettings: Record<string, unknown> = tool?.settings ?? {};
+  const wide = isMedia || isKG || isWebFetch;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className={wide ? "sm:max-w-2xl" : "sm:max-w-md"}>
-        {isWebSearch && tool ? (
-          <WebSearchChainForm
-            initialSettings={initialSettings}
-            secretsSet={tool.secrets_set}
-            onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
-            onCancel={() => onOpenChange(false)}
-          />
-        ) : isStt && tool ? (
-          <SttProviderForm
-            initialSettings={initialSettings}
-            onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
-            onCancel={() => onOpenChange(false)}
-          />
-        ) : isWebFetch && tool ? (
+        {isWebFetch && tool ? (
           <WebFetchExtractorChainForm
-            initialSettings={initialSettings}
+            initialSettings={tool.settings ?? {}}
             onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
             onCancel={() => onOpenChange(false)}
           />
         ) : isMedia && tool ? (
           <MediaProviderChainForm
             toolName={tool.name}
-            initialSettings={initialSettings}
+            initialSettings={tool.settings ?? {}}
             onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
             onCancel={() => onOpenChange(false)}
           />
         ) : isKG && tool ? (
           <KGSettingsForm
-            initialSettings={initialSettings}
+            initialSettings={tool.settings ?? {}}
             onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
             onCancel={() => onOpenChange(false)}
           />
         ) : (
-          <JsonSettingsForm
-            tool={tool}
-            initialSettings={initialSettings}
-            onOpenChange={onOpenChange}
-            onSave={onSave}
-          />
+          <JsonSettingsForm tool={tool} onOpenChange={onOpenChange} onSave={onSave} />
         )}
       </DialogContent>
     </Dialog>
@@ -92,12 +66,10 @@ export function BuiltinToolSettingsDialog({ tool, open, onOpenChange, onSave }: 
 
 function JsonSettingsForm({
   tool,
-  initialSettings,
   onOpenChange,
   onSave,
 }: {
   tool: BuiltinToolData | null;
-  initialSettings: Record<string, unknown>;
   onOpenChange: (open: boolean) => void;
   onSave: (name: string, settings: Record<string, unknown>) => Promise<void>;
 }) {
@@ -109,13 +81,11 @@ function JsonSettingsForm({
 
   useEffect(() => {
     if (tool) {
-      // Re-hydrate every time the tool or the resolved settings change —
-      // handles switch-between-tools and settings-cleared flows.
-      setJson(JSON.stringify(initialSettings, null, 2));
+      setJson(JSON.stringify(tool.settings ?? {}, null, 2));
       setError("");
       setValidJson(true);
     }
-  }, [tool, initialSettings]);
+  }, [tool]);
 
   const handleJsonChange = (text: string) => {
     setJson(text);

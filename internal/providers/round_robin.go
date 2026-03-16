@@ -15,6 +15,7 @@ type RoundRobinProvider struct {
 }
 
 // NewRoundRobinProvider creates a round-robin wrapper over the supplied backends.
+// All backends must share the same name/model; only the API key differs.
 func NewRoundRobinProvider(name string, backends []Provider) *RoundRobinProvider {
 	return &RoundRobinProvider{name: name, backends: backends}
 }

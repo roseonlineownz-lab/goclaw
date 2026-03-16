@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // doImportNewAgent creates a new agent from the archive, returning import summary.
 func (h *AgentsHandler) doImportNewAgent(ctx context.Context, r *http.Request, arc *importArchive, progressFn func(ProgressEvent)) (*ImportSummary, error) {
+	tenantID := store.TenantIDFromContext(ctx)
 	userID := store.UserIDFromContext(ctx)
 
 	// Build agent record from archive config + optional overrides
@@ -36,11 +38,7 @@ func (h *AgentsHandler) doImportNewAgent(ctx context.Context, r *http.Request, a
 	// Dedup: suffix with -N if key already exists
 	agentKey = h.dedupAgentKey(ctx, agentKey)
 
-	if _, ok := arc.agentConfig["agent_type"]; ok {
-		slog.Warn("agents.import.legacy_field_stripped", "field", "agent_type", "agent_key", agentKey)
-	}
-
-	ag := h.buildAgentFromArchive(arc.agentConfig, agentKey, displayName, userID)
+	ag := h.buildAgentFromArchive(arc.agentConfig, agentKey, displayName, tenantID, userID)
 
 	if progressFn != nil {
 		progressFn(ProgressEvent{Phase: "config", Status: "running"})
@@ -79,16 +77,18 @@ func (h *AgentsHandler) doImportNewAgent(ctx context.Context, r *http.Request, a
 }
 
 // buildAgentFromArchive constructs an AgentData from the parsed archive config map.
-func (h *AgentsHandler) buildAgentFromArchive(cfg map[string]json.RawMessage, agentKey, displayName string, ownerID string) *store.AgentData {
+func (h *AgentsHandler) buildAgentFromArchive(cfg map[string]json.RawMessage, agentKey, displayName string, tenantID uuid.UUID, ownerID string) *store.AgentData {
 	ag := &store.AgentData{
 		AgentKey:    agentKey,
 		DisplayName: displayName,
+		TenantID:    tenantID,
 		OwnerID:     ownerID,
 		Status:      store.AgentStatusActive,
 	}
 	unmarshalField(cfg, "frontmatter", &ag.Frontmatter)
 	unmarshalField(cfg, "provider", &ag.Provider)
 	unmarshalField(cfg, "model", &ag.Model)
+	unmarshalField(cfg, "agent_type", &ag.AgentType)
 	unmarshalField(cfg, "context_window", &ag.ContextWindow)
 	unmarshalField(cfg, "max_tool_iterations", &ag.MaxToolIterations)
 
@@ -109,8 +109,7 @@ func (h *AgentsHandler) buildAgentFromArchive(cfg map[string]json.RawMessage, ag
 	unmarshalField(cfg, "skill_evolve", &ag.SkillEvolve)
 	unmarshalField(cfg, "skill_nudge_interval", &ag.SkillNudgeInterval)
 	ag.ReasoningConfig = rawOrNil(cfg["reasoning_config"])
-	unmarshalField(cfg, "share_workspace", &ag.ShareWorkspace)
-	unmarshalField(cfg, "share_memory", &ag.ShareMemory)
+	ag.WorkspaceSharing = rawOrNil(cfg["workspace_sharing"])
 	ag.ChatGPTOAuthRouting = rawOrNil(cfg["chatgpt_oauth_routing"])
 	ag.ShellDenyGroups = rawOrNil(cfg["shell_deny_groups"])
 	ag.KGDedupConfig = rawOrNil(cfg["kg_dedup_config"])
@@ -135,6 +134,9 @@ func (h *AgentsHandler) buildAgentFromArchive(cfg map[string]json.RawMessage, ag
 			if ag.ReasoningConfig == nil {
 				ag.ReasoningConfig = rawOrNil(oc["reasoning"])
 			}
+			if ag.WorkspaceSharing == nil {
+				ag.WorkspaceSharing = rawOrNil(oc["workspace_sharing"])
+			}
 			if ag.ChatGPTOAuthRouting == nil {
 				ag.ChatGPTOAuthRouting = rawOrNil(oc["chatgpt_oauth_routing"])
 			}
@@ -147,6 +149,9 @@ func (h *AgentsHandler) buildAgentFromArchive(cfg map[string]json.RawMessage, ag
 		}
 	}
 
+	if ag.AgentType == "" {
+		ag.AgentType = store.AgentTypeOpen
+	}
 	if ag.ContextWindow <= 0 {
 		ag.ContextWindow = config.DefaultContextWindow
 	}

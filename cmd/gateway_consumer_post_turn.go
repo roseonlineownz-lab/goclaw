@@ -98,7 +98,6 @@ func resolveTeamTaskOutcome(
 	taskChannel := meta.Channel
 	taskChatID := meta.ChatID
 	taskPeerKind := meta.PeerKind
-	var taskLocalKey string
 
 	// Enrich with live task data if available.
 	if currentTask != nil {
@@ -114,15 +113,9 @@ func resolveTeamTaskOutcome(
 		if currentTask.ChatID != "" {
 			taskChatID = currentTask.ChatID
 		}
-		if currentTask.Metadata != nil {
-			if taskPeerKind == "" {
-				if pk, ok := currentTask.Metadata[tools.TaskMetaPeerKind].(string); ok && pk != "" {
-					taskPeerKind = pk
-				}
-			}
-			// local_key is required for forum topic routing (e.g. Telegram supergroup threads).
-			if lk, ok := currentTask.Metadata[tools.TaskMetaLocalKey].(string); ok {
-				taskLocalKey = lk
+		if taskPeerKind == "" && currentTask.Metadata != nil {
+			if pk, ok := currentTask.Metadata[tools.TaskMetaPeerKind].(string); ok && pk != "" {
+				taskPeerKind = pk
 			}
 		}
 	}
@@ -135,7 +128,7 @@ func resolveTeamTaskOutcome(
 		if err := deps.TeamStore.FailTask(ctx, meta.TaskID, meta.TeamID, outcome.Err.Error()); err != nil {
 			slog.Warn("auto-complete: FailTask error", "task_id", meta.TaskID, "error", err)
 		} else {
-			bus.Broadcast(deps.MsgBus, protocol.EventTeamTaskFailed, tools.BuildTaskEventPayload(
+			bus.BroadcastForTenant(deps.MsgBus, protocol.EventTeamTaskFailed, store.TenantIDFromContext(ctx), tools.BuildTaskEventPayload(
 				meta.TeamID.String(), meta.TaskID.String(),
 				store.TeamTaskStatusFailed,
 				"agent", toAgent,
@@ -144,7 +137,6 @@ func resolveTeamTaskOutcome(
 				tools.WithChannel(taskChannel),
 				tools.WithChatID(taskChatID),
 				tools.WithPeerKind(taskPeerKind),
-				tools.WithLocalKey(taskLocalKey),
 				tools.WithTimestamp(now),
 			))
 		}
@@ -170,7 +162,7 @@ func resolveTeamTaskOutcome(
 		if err := deps.TeamStore.FailTask(ctx, meta.TaskID, meta.TeamID, failMsg); err != nil {
 			slog.Warn("auto-fail: FailTask error (loop kill)", "task_id", meta.TaskID, "error", err)
 		} else {
-			bus.Broadcast(deps.MsgBus, protocol.EventTeamTaskFailed, tools.BuildTaskEventPayload(
+			bus.BroadcastForTenant(deps.MsgBus, protocol.EventTeamTaskFailed, store.TenantIDFromContext(ctx), tools.BuildTaskEventPayload(
 				meta.TeamID.String(), meta.TaskID.String(),
 				store.TeamTaskStatusFailed,
 				"system", "loop_detector",
@@ -179,7 +171,6 @@ func resolveTeamTaskOutcome(
 				tools.WithChannel(taskChannel),
 				tools.WithChatID(taskChatID),
 				tools.WithPeerKind(taskPeerKind),
-				tools.WithLocalKey(taskLocalKey),
 				tools.WithTimestamp(now),
 			))
 		}
@@ -205,7 +196,7 @@ func resolveTeamTaskOutcome(
 		if err := deps.TeamStore.CompleteTask(ctx, meta.TaskID, meta.TeamID, result); err != nil {
 			slog.Warn("auto-complete: CompleteTask error", "task_id", meta.TaskID, "error", err)
 		} else {
-			bus.Broadcast(deps.MsgBus, protocol.EventTeamTaskCompleted, tools.BuildTaskEventPayload(
+			bus.BroadcastForTenant(deps.MsgBus, protocol.EventTeamTaskCompleted, store.TenantIDFromContext(ctx), tools.BuildTaskEventPayload(
 				meta.TeamID.String(), meta.TaskID.String(),
 				store.TeamTaskStatusCompleted,
 				"agent", toAgent,
@@ -214,7 +205,6 @@ func resolveTeamTaskOutcome(
 				tools.WithChannel(taskChannel),
 				tools.WithChatID(taskChatID),
 				tools.WithPeerKind(taskPeerKind),
-				tools.WithLocalKey(taskLocalKey),
 				tools.WithTimestamp(now),
 			))
 		}

@@ -27,7 +27,7 @@ func (s *PGTeamStore) generateTaskEmbedding(ctx context.Context, taskID uuid.UUI
 	}
 	vecStr := vectorToString(embeddings[0])
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE team_tasks SET embedding = $1::halfvec WHERE id = $2`, vecStr, taskID,
+		`UPDATE team_tasks SET embedding = $1::vector WHERE id = $2`, vecStr, taskID,
 	); err != nil {
 		slog.Warn("task embedding store failed", "task_id", taskID, "error", err)
 	}
@@ -89,7 +89,7 @@ func (s *PGTeamStore) BackfillTaskEmbeddings(ctx context.Context) (int, error) {
 			}
 			vecStr := vectorToString(emb)
 			if _, err := s.db.ExecContext(ctx,
-				`UPDATE team_tasks SET embedding = $1::halfvec WHERE id = $2`,
+				`UPDATE team_tasks SET embedding = $1::vector WHERE id = $2`,
 				vecStr, pending[i].id,
 			); err != nil {
 				slog.Warn("task embedding update failed", "task_id", pending[i].id, "error", err)
@@ -115,15 +115,17 @@ func (s *PGTeamStore) SearchTasksByEmbedding(ctx context.Context, teamID uuid.UU
 		limit = 5
 	}
 	vecStr := vectorToString(embedding)
+	tid := tenantIDForInsert(ctx)
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+taskSelectCols+`
 		 `+taskJoinClause+`
 		 WHERE t.team_id = $1 AND t.embedding IS NOT NULL
 		   AND ($4 = '' OR t.user_id = $4)
-		 ORDER BY t.embedding <=> $2::halfvec
+		   AND t.tenant_id = $5
+		 ORDER BY t.embedding <=> $2::vector
 		 LIMIT $3`,
-		teamID, vecStr, limit, userID)
+		teamID, vecStr, limit, userID, tid)
 	if err != nil {
 		return nil, err
 	}

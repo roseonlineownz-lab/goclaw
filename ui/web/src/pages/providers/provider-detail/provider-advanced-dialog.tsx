@@ -75,8 +75,8 @@ export function ProviderAdvancedDialog({
     setAcpIdleTTL(s.acpIdleTTL);
     setAcpPermMode(s.acpPermMode);
     setAcpWorkDir(s.acpWorkDir);
-     
-  }, [open, provider]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const [saving, setSaving] = useState(false);
 

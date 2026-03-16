@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/nextlevelbuilder/goclaw/internal/agent"
-	"github.com/nextlevelbuilder/goclaw/internal/channels"
+	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
@@ -15,25 +14,12 @@ import (
 
 // ConfigPermissionsMethods handles config.permissions.* RPC methods.
 type ConfigPermissionsMethods struct {
-	permStore      store.ConfigPermissionStore
-	agentStore     store.AgentStore
-	agentRouter    *agent.Router           // cache-aware agent resolver; nil = DB-only fallback
-	memberResolver channels.MemberResolver // optional — enriches edit_file metadata on grant
+	permStore  store.ConfigPermissionStore
+	agentStore store.AgentStore
 }
 
 func NewConfigPermissionsMethods(ps store.ConfigPermissionStore, as store.AgentStore) *ConfigPermissionsMethods {
 	return &ConfigPermissionsMethods{permStore: ps, agentStore: as}
-}
-
-// SetAgentRouter wires the agent router for cache-aware agent_key resolution.
-func (m *ConfigPermissionsMethods) SetAgentRouter(r *agent.Router) {
-	m.agentRouter = r
-}
-
-// SetMemberResolver wires a channel member resolver so Grant can auto-enrich
-// edit_file metadata when the caller supplies none (e.g. Web UI path).
-func (m *ConfigPermissionsMethods) SetMemberResolver(r channels.MemberResolver) {
-	m.memberResolver = r
 }
 
 func (m *ConfigPermissionsMethods) Register(router *gateway.MethodRouter) {
@@ -56,7 +42,7 @@ func (m *ConfigPermissionsMethods) handleList(ctx context.Context, client *gatew
 		return
 	}
 
-	agentUUID, err := resolveAgentUUIDCached(ctx, m.agentRouter, m.agentStore, params.AgentID)
+	agentUUID, err := uuid.Parse(params.AgentID)
 	if err != nil {
 		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, "invalid agentId"))
 		return
@@ -104,7 +90,7 @@ func (m *ConfigPermissionsMethods) handleGrant(ctx context.Context, client *gate
 		return
 	}
 
-	agentUUID, err := resolveAgentUUIDCached(ctx, m.agentRouter, m.agentStore, params.AgentID)
+	agentUUID, err := uuid.Parse(params.AgentID)
 	if err != nil {
 		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, "invalid agentId"))
 		return
@@ -118,35 +104,6 @@ func (m *ConfigPermissionsMethods) handleGrant(ctx context.Context, client *gate
 		}
 	}
 
-	// Auto-enrich edit_file metadata for group scopes when caller supplied none.
-	// Applies to all three split file gates (write_file, edit_file, delete_file).
-	// Best-effort: failure (bot offline, user left group, channel not supported)
-	// leaves params.Metadata as-is and the store's own fallback ("{}") applies.
-	metadata := params.Metadata
-	isFileGate := params.ConfigType == store.ConfigTypeWriteFile ||
-		params.ConfigType == store.ConfigTypeEditFile ||
-		params.ConfigType == store.ConfigTypeDeleteFile
-	if isFileGate && channels.IsEmptyWriterMetadata(metadata) {
-		if enriched, ok := channels.EnrichFileWriterMetadata(ctx, m.memberResolver, params.Scope, params.UserID); ok {
-			metadata = enriched
-		}
-	}
-
-	// Validate config_type against the accepted set; reject unknown values fail-closed.
-	validConfigTypes := map[string]bool{
-		store.ConfigTypeWriteFile:  true,
-		store.ConfigTypeEditFile:   true,
-		store.ConfigTypeDeleteFile: true,
-		store.ConfigTypeCron:       true,
-		store.ConfigTypeHeartbeat:  true,
-		"*":                        true,
-	}
-	if !validConfigTypes[params.ConfigType] {
-		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest,
-			"invalid configType: must be one of write_file, edit_file, delete_file, cron, heartbeat, *"))
-		return
-	}
-
 	perm := &store.ConfigPermission{
 		AgentID:    agentUUID,
 		Scope:      params.Scope,
@@ -154,7 +111,7 @@ func (m *ConfigPermissionsMethods) handleGrant(ctx context.Context, client *gate
 		UserID:     params.UserID,
 		Permission: params.Permission,
 		GrantedBy:  grantedBy,
-		Metadata:   metadata,
+		Metadata:   params.Metadata,
 	}
 
 	if err := m.permStore.Grant(ctx, perm); err != nil {
@@ -192,7 +149,7 @@ func (m *ConfigPermissionsMethods) handleRevoke(ctx context.Context, client *gat
 		return
 	}
 
-	agentUUID, err := resolveAgentUUIDCached(ctx, m.agentRouter, m.agentStore, params.AgentID)
+	agentUUID, err := uuid.Parse(params.AgentID)
 	if err != nil {
 		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, "invalid agentId"))
 		return

@@ -13,7 +13,6 @@ import (
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 
-	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 )
 
@@ -159,8 +158,6 @@ func (ds *DraftStream) flush(ctx context.Context) error {
 	}
 
 	text := ds.pending
-	// Strip TTS directives before displaying (they'll be processed by Send() later)
-	text = audio.StripTTSDirectives(text)
 	htmlText := markdownToTelegramHTML(text)
 
 	// --- Draft transport (sendMessageDraft) ---

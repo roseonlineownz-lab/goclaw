@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nextlevelbuilder/goclaw/internal/store"
+	"github.com/nextlevelbuilder/goclaw/internal/store/pg"
 )
 
 func TestVaultClassify_DeleteDocLinksByTypes_SingleType(t *testing.T) {
@@ -52,7 +53,7 @@ func TestVaultClassify_DeleteDocLinksByTypes_SingleType(t *testing.T) {
 	}
 
 	// Verify: 3 links exist
-	outLinks, err := vs.GetOutLinks(ctx, docA.ID)
+	outLinks, err := vs.GetOutLinks(ctx, tid, docA.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks before delete: %v", err)
 	}
@@ -61,12 +62,12 @@ func TestVaultClassify_DeleteDocLinksByTypes_SingleType(t *testing.T) {
 	}
 
 	// Delete links with type "reference" only
-	if err := vs.DeleteDocLinksByTypes(ctx, docA.ID, []string{"reference"}); err != nil {
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, docA.ID, []string{"reference"}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes: %v", err)
 	}
 
 	// Verify: only "reference" deleted, "wikilink" and "depends_on" remain
-	outLinksAfter, err := vs.GetOutLinks(ctx, docA.ID)
+	outLinksAfter, err := vs.GetOutLinks(ctx, tid, docA.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks after delete: %v", err)
 	}
@@ -96,12 +97,12 @@ func TestVaultClassify_DeleteDocLinksByTypes_MultipleTypes(t *testing.T) {
 	tid := tenantID.String()
 	aid := agentID.String()
 
-	// Create source doc and 8 target docs (one per link type: 6 classify + semantic + wikilink).
+	// Create source doc and 4 target docs (for 6 different link types + semantic)
 	docSource := makeVaultDoc(tid, aid, "source.md", "Source")
 	docs := make([]*store.VaultDocument, 0)
 	docs = append(docs, docSource)
 
-	for i := range 8 {
+	for i := 0; i < 7; i++ {
 		doc := makeVaultDoc(tid, aid, "classify/target-"+string(rune('a'+i))+".md", "Target "+string(rune('A'+i)))
 		if err := vs.UpsertDocument(ctx, doc); err != nil {
 			t.Fatalf("UpsertDocument target %d: %v", i, err)
@@ -139,7 +140,7 @@ func TestVaultClassify_DeleteDocLinksByTypes_MultipleTypes(t *testing.T) {
 	}
 
 	// Verify: 8 links created
-	outLinks, err := vs.GetOutLinks(ctx, docSource.ID)
+	outLinks, err := vs.GetOutLinks(ctx, tid, docSource.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks before delete: %v", err)
 	}
@@ -153,12 +154,12 @@ func TestVaultClassify_DeleteDocLinksByTypes_MultipleTypes(t *testing.T) {
 		"related", "supersedes", "contradicts",
 		"semantic",
 	}
-	if err := vs.DeleteDocLinksByTypes(ctx, docSource.ID, typesToDelete); err != nil {
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, docSource.ID, typesToDelete); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes: %v", err)
 	}
 
 	// Verify: only wikilink survives
-	outLinksAfter, err := vs.GetOutLinks(ctx, docSource.ID)
+	outLinksAfter, err := vs.GetOutLinks(ctx, tid, docSource.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks after delete: %v", err)
 	}
@@ -201,12 +202,12 @@ func TestVaultClassify_DeleteDocLinksByTypes_NoMatches(t *testing.T) {
 	}
 
 	// Delete non-existent type — should succeed but delete nothing
-	if err := vs.DeleteDocLinksByTypes(ctx, docA.ID, []string{"reference"}); err != nil {
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, docA.ID, []string{"reference"}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes non-existent type: %v", err)
 	}
 
 	// Verify wikilink still exists
-	outLinks, err := vs.GetOutLinks(ctx, docA.ID)
+	outLinks, err := vs.GetOutLinks(ctx, tid, docA.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks after no-op delete: %v", err)
 	}
@@ -248,12 +249,12 @@ func TestVaultClassify_DeleteDocLinksByTypes_EmptyTypeList(t *testing.T) {
 	}
 
 	// Delete with empty type list — should succeed but delete nothing
-	if err := vs.DeleteDocLinksByTypes(ctx, docA.ID, []string{}); err != nil {
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, docA.ID, []string{}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes empty list: %v", err)
 	}
 
 	// Verify link still exists
-	outLinks, err := vs.GetOutLinks(ctx, docA.ID)
+	outLinks, err := vs.GetOutLinks(ctx, tid, docA.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks after empty delete: %v", err)
 	}
@@ -306,11 +307,11 @@ func TestVaultClassify_DeleteDocLinksByTypes_MultipleSourceDocs(t *testing.T) {
 	}
 
 	// Verify: both sources have 3 links each
-	outLinks1, err := vs.GetOutLinks(ctx, docSource1.ID)
+	outLinks1, err := vs.GetOutLinks(ctx, tid, docSource1.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks source1 before: %v", err)
 	}
-	outLinks2, err := vs.GetOutLinks(ctx, docSource2.ID)
+	outLinks2, err := vs.GetOutLinks(ctx, tid, docSource2.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks source2 before: %v", err)
 	}
@@ -319,16 +320,16 @@ func TestVaultClassify_DeleteDocLinksByTypes_MultipleSourceDocs(t *testing.T) {
 	}
 
 	// Delete "reference" + "semantic" from source1 only
-	if err := vs.DeleteDocLinksByTypes(ctx, docSource1.ID, []string{"reference", "semantic"}); err != nil {
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, docSource1.ID, []string{"reference", "semantic"}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes source1: %v", err)
 	}
 
 	// Verify: source1 has only "wikilink", source2 unchanged
-	outLinks1After, err := vs.GetOutLinks(ctx, docSource1.ID)
+	outLinks1After, err := vs.GetOutLinks(ctx, tid, docSource1.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks source1 after: %v", err)
 	}
-	outLinks2After, err := vs.GetOutLinks(ctx, docSource2.ID)
+	outLinks2After, err := vs.GetOutLinks(ctx, tid, docSource2.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks source2 after: %v", err)
 	}
@@ -399,11 +400,11 @@ func TestVaultClassify_DeleteDocLinksByTypes_TenantIsolation(t *testing.T) {
 	}
 
 	// Verify both have links
-	outA, err := vs.GetOutLinks(ctxA, docA1.ID)
+	outA, err := vs.GetOutLinks(ctxA, tidA, docA1.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks tenantA before: %v", err)
 	}
-	outB, err := vs.GetOutLinks(ctxB, docB1.ID)
+	outB, err := vs.GetOutLinks(ctxB, tidB, docB1.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks tenantB before: %v", err)
 	}
@@ -412,16 +413,16 @@ func TestVaultClassify_DeleteDocLinksByTypes_TenantIsolation(t *testing.T) {
 	}
 
 	// Delete from tenant A only — should NOT affect tenant B
-	if err := vs.DeleteDocLinksByTypes(ctxA, docA1.ID, []string{"reference"}); err != nil {
+	if err := vs.DeleteDocLinksByTypes(ctxA, tidA, docA1.ID, []string{"reference"}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes tenantA: %v", err)
 	}
 
 	// Verify: tenantA link deleted, tenantB link unchanged
-	outAAfter, err := vs.GetOutLinks(ctxA, docA1.ID)
+	outAAfter, err := vs.GetOutLinks(ctxA, tidA, docA1.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks tenantA after: %v", err)
 	}
-	outBAfter, err := vs.GetOutLinks(ctxB, docB1.ID)
+	outBAfter, err := vs.GetOutLinks(ctxB, tidB, docB1.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks tenantB after: %v", err)
 	}
@@ -440,17 +441,16 @@ func TestVaultClassify_DeleteDocLinksByTypes_NonExistentDoc(t *testing.T) {
 	ctx := tenantCtx(tenantID)
 	vs := newVaultStore(db)
 
-	// Use a well-formed but non-existent UUID — post-Phase-4 parseUUID rejects
-	// bare strings like "fake-doc-id-12345" at the caller boundary, so the
-	// "non-existent doc = no-op" contract requires a syntactically valid UUID
-	// that just happens to not exist in the DB.
-	fakeDocID := "00000000-0000-4000-8000-000000000dea"
-	if err := vs.DeleteDocLinksByTypes(ctx, fakeDocID, []string{"reference"}); err != nil {
+	tid := tenantID.String()
+
+	// Try to delete links from non-existent doc — should succeed (no-op)
+	fakeDocID := "fake-doc-id-12345"
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, fakeDocID, []string{"reference"}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes on non-existent doc: %v", err)
 	}
 
 	// GetOutLinks for non-existent doc should return empty or error gracefully
-	outLinks, err := vs.GetOutLinks(ctx, fakeDocID)
+	outLinks, err := vs.GetOutLinks(ctx, tid, fakeDocID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		// Some implementations may error on non-existent doc, others return empty list
 		// Both are acceptable for a non-existent doc
@@ -504,7 +504,7 @@ func TestVaultClassify_DeleteAllClassifyTypesAndSemantic(t *testing.T) {
 	}
 
 	// Verify: 4 links created
-	outLinks, err := vs.GetOutLinks(ctx, docSource.ID)
+	outLinks, err := vs.GetOutLinks(ctx, tid, docSource.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks before delete: %v", err)
 	}
@@ -513,14 +513,14 @@ func TestVaultClassify_DeleteAllClassifyTypesAndSemantic(t *testing.T) {
 	}
 
 	// Delete all classify types (reference, depends_on) + semantic, keep wikilink
-	if err := vs.DeleteDocLinksByTypes(ctx, docSource.ID, []string{
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, docSource.ID, []string{
 		"reference", "depends_on", "extends", "related", "supersedes", "contradicts", "semantic",
 	}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes: %v", err)
 	}
 
 	// Verify: only wikilink remains
-	outLinksAfter, err := vs.GetOutLinks(ctx, docSource.ID)
+	outLinksAfter, err := vs.GetOutLinks(ctx, tid, docSource.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks after delete: %v", err)
 	}
@@ -563,12 +563,12 @@ func TestVaultClassify_DeleteDocLinksByTypes_CasePreservation(t *testing.T) {
 	}
 
 	// Try deleting with exact case match
-	if err := vs.DeleteDocLinksByTypes(ctx, docA.ID, []string{"depends_on"}); err != nil {
+	if err := vs.DeleteDocLinksByTypes(ctx, tid, docA.ID, []string{"depends_on"}); err != nil {
 		t.Fatalf("DeleteDocLinksByTypes: %v", err)
 	}
 
 	// Verify link is deleted
-	outLinks, err := vs.GetOutLinks(ctx, docA.ID)
+	outLinks, err := vs.GetOutLinks(ctx, tid, docA.ID)
 	if err != nil {
 		t.Fatalf("GetOutLinks: %v", err)
 	}

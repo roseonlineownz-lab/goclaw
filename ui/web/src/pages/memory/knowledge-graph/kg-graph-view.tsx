@@ -11,7 +11,7 @@ import { SigmaGraphMinimap } from "@/components/graph/sigma-graph-minimap";
 import { SigmaGraphKeyboardHelp } from "@/components/graph/sigma-graph-keyboard-help";
 import { useSigmaKeyboard } from "@/components/graph/use-sigma-keyboard";
 
-const DEFAULT_NODE_LIMIT = 2000;
+const DEFAULT_NODE_LIMIT = 200;
 
 interface KGGraphViewProps {
   entities: KGEntity[];

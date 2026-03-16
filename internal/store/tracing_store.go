@@ -63,7 +63,6 @@ type TraceData struct {
 	Metadata          json.RawMessage `json:"metadata,omitempty" db:"metadata"`
 	Tags              []string        `json:"tags,omitempty" db:"tags"`
 	TeamID            *uuid.UUID      `json:"team_id,omitempty" db:"team_id"`
-	ContactID         *uuid.UUID      `json:"contact_id,omitempty" db:"contact_id"` // channel contact that triggered this trace
 	CreatedAt         time.Time       `json:"created_at" db:"created_at"`
 }
 
@@ -92,10 +91,10 @@ type SpanData struct {
 	ToolCallID    string          `json:"tool_call_id,omitempty" db:"tool_call_id"`
 	InputPreview  string          `json:"input_preview,omitempty" db:"input_preview"`
 	OutputPreview string          `json:"output_preview,omitempty" db:"output_preview"`
-	Metadata  json.RawMessage `json:"metadata,omitempty" db:"metadata"`
-	TeamID    *uuid.UUID      `json:"team_id,omitempty" db:"team_id"`
-	ContactID *uuid.UUID      `json:"contact_id,omitempty" db:"contact_id"` // channel contact that triggered this span
-	CreatedAt time.Time       `json:"created_at" db:"created_at"`
+	Metadata      json.RawMessage `json:"metadata,omitempty" db:"metadata"`
+	TeamID        *uuid.UUID      `json:"team_id,omitempty" db:"team_id"`
+	TenantID      uuid.UUID       `json:"tenant_id" db:"tenant_id"`
+	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
 }
 
 // TraceListOpts configures trace listing.
@@ -165,11 +164,11 @@ type TracingStore interface {
 	RecoverStaleRunningTraces(ctx context.Context, cutoff time.Time) (int64, error)
 
 	// ListCodexPoolSpans returns recent LLM call spans for agents using Codex OAuth pool providers.
-	ListCodexPoolSpans(ctx context.Context, agentID uuid.UUID, poolProviders []string, limit int) ([]CodexPoolSpan, error)
+	ListCodexPoolSpans(ctx context.Context, agentID, tenantID uuid.UUID, poolProviders []string, limit int) ([]CodexPoolSpan, error)
 
 	// ListCodexPoolSpansByProviders returns recent LLM call spans across all agents
 	// that used any of the given pool providers. Used for provider-scoped activity monitoring.
-	ListCodexPoolSpansByProviders(ctx context.Context, poolProviders []string, limit int) ([]CodexPoolProviderSpan, error)
+	ListCodexPoolSpansByProviders(ctx context.Context, tenantID uuid.UUID, poolProviders []string, limit int) ([]CodexPoolProviderSpan, error)
 }
 
 // CodexPoolProviderSpan extends CodexPoolSpan with the agent ID for provider-scoped aggregation.

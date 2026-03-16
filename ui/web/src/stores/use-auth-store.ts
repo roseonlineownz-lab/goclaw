@@ -1,27 +1,32 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { LOCAL_STORAGE_KEYS } from "@/lib/constants";
+import { clearSetupSkippedState } from "@/lib/setup-skip";
+import type { TenantMembership } from "@/types/tenant";
 
 type UserRole = "owner" | "admin" | "operator" | "viewer" | "";
-export type Edition = "standard" | "lite";
 
 interface AuthState {
-  // v4 password auth: token = JWT access token. refreshToken kept separate.
-  // Existing 60+ callers read `token` directly — keep field name stable to avoid wide refactor.
   token: string;
-  refreshToken: string;
   userId: string;
   senderID: string; // browser pairing: persistent device identity
   connected: boolean;
   role: UserRole; // server-assigned role from connect response
   serverInfo: { name?: string; version?: string } | null;
-  edition: Edition; // server edition — UI feature gating
+  tenantId: string;
+  tenantName: string;
+  tenantSlug: string;
+  isOwner: boolean;
+  availableTenants: TenantMembership[];
+  tenantSelected: boolean; // true after user picks a tenant (or auto-selected)
 
   setCredentials: (token: string, userId: string) => void;
-  setTokens: (accessToken: string, refreshToken: string, userId: string) => void;
   setPairing: (senderID: string, userId: string) => void;
   setConnected: (connected: boolean, serverInfo?: { name?: string; version?: string }) => void;
   setRole: (role: UserRole) => void;
-  setEdition: (edition: Edition) => void;
+  setTenant: (id: string, name: string, slug: string, isOwner: boolean) => void;
+  setAvailableTenants: (tenants: TenantMembership[]) => void;
+  setTenantSelected: (selected: boolean) => void;
   logout: () => void;
 }
 
@@ -29,20 +34,20 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       token: "",
-      refreshToken: "",
       userId: "",
       senderID: "",
       connected: false,
       role: "" as UserRole,
       serverInfo: null,
-      edition: "standard" as Edition,
+      tenantId: "",
+      tenantName: "",
+      tenantSlug: "",
+      isOwner: false,
+      availableTenants: [],
+      tenantSelected: !!localStorage.getItem(LOCAL_STORAGE_KEYS.TENANT_ID),
 
       setCredentials: (token, userId) => {
         set({ token, userId });
-      },
-
-      setTokens: (accessToken, refreshToken, userId) => {
-        set({ token: accessToken, refreshToken, userId });
       },
 
       setPairing: (senderID, userId) => {
@@ -57,14 +62,27 @@ export const useAuthStore = create<AuthState>()(
         set({ role });
       },
 
-      setEdition: (edition) => {
-        set({ edition });
+      setTenant: (id, name, slug, isOwner) => {
+        set({ tenantId: id, tenantName: name, tenantSlug: slug, isOwner });
+      },
+
+      setAvailableTenants: (tenants) => {
+        set({ availableTenants: tenants });
+      },
+
+      setTenantSelected: (selected) => {
+        set({ tenantSelected: selected });
       },
 
       logout: () => {
+        // Remove tenant scope keys that are still managed outside persist
+        localStorage.removeItem("goclaw:tenant_id");
+        localStorage.removeItem("goclaw:tenant_hint");
+        clearSetupSkippedState();
         set({
-          token: "", refreshToken: "", userId: "", senderID: "", connected: false, role: "", serverInfo: null,
-          edition: "standard",
+          token: "", userId: "", senderID: "", connected: false, role: "", serverInfo: null,
+          tenantId: "", tenantName: "", tenantSlug: "", isOwner: false, availableTenants: [],
+          tenantSelected: false,
         });
       },
     }),
@@ -73,7 +91,6 @@ export const useAuthStore = create<AuthState>()(
       partialize: (state) => ({
         // Only persist credentials — not transient runtime state
         token: state.token,
-        refreshToken: state.refreshToken,
         userId: state.userId,
         senderID: state.senderID,
       }),

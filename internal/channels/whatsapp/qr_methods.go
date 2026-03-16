@@ -85,7 +85,7 @@ func (m *QRMethods) runQRSession(ctx context.Context, entry *cancelEntry,
 	// Wait for channel to appear in manager — instance creation triggers an async
 	// reload, so the channel may not be registered yet when the wizard fires QR start.
 	var wa *Channel
-	for range 10 {
+	for attempt := 0; attempt < 10; attempt++ {
 		if ch, ok := m.manager.GetChannel(channelName); ok {
 			if w, ok := ch.(*Channel); ok {
 				wa = w

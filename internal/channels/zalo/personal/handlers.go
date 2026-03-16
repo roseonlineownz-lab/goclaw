@@ -15,6 +15,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/channels/media"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/typing"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/zalo/personal/protocol"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
@@ -33,6 +34,7 @@ func (c *Channel) handleMessage(msg protocol.Message) {
 
 func (c *Channel) handleDM(msg protocol.UserMessage) {
 	ctx := context.Background()
+	ctx = store.WithTenantID(ctx, c.TenantID())
 	senderID := msg.Data.UIDFrom
 	threadID := msg.ThreadID()
 
@@ -75,6 +77,7 @@ func (c *Channel) handleDM(msg protocol.UserMessage) {
 
 func (c *Channel) handleGroupMessage(msg protocol.GroupMessage) {
 	ctx := context.Background()
+	ctx = store.WithTenantID(ctx, c.TenantID())
 	senderID := msg.Data.UIDFrom
 	threadID := msg.ThreadID()
 

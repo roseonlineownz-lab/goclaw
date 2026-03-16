@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -17,7 +17,6 @@ import {
 import { Combobox } from "@/components/ui/combobox";
 import { useProviders } from "@/pages/providers/hooks/use-providers";
 import { useProviderModels } from "@/pages/providers/hooks/use-provider-models";
-import { getChatGPTOAuthPoolOwnership } from "@/pages/providers/provider-utils";
 import { MEDIA_PARAMS_SCHEMA } from "./media-provider-params-schema";
 import { ParamFieldControl } from "./media-param-field-control";
 import { buildDefaultParams } from "./media-provider-chain-helpers";
@@ -55,18 +54,6 @@ export function SortableProviderCard({
     transition,
     opacity: isDragging ? 0.5 : 1,
   };
-
-  // Pool-aware dropdown: hide pool members so the user can only pick pool
-  // owners (or standalone providers). Mirrors the Create Agent dropdown
-  // pattern (`components/shared/provider-model-select.tsx`).
-  const poolOwnership = useMemo(
-    () => getChatGPTOAuthPoolOwnership(enabledProviders),
-    [enabledProviders],
-  );
-  const dropdownProviders = useMemo(
-    () => enabledProviders.filter((p) => !poolOwnership.ownerByMember.has(p.name)),
-    [enabledProviders, poolOwnership],
-  );
 
   const selectedProvider = enabledProviders.find((p) => p.id === entry.provider_id);
   const { models, loading: modelsLoading } = useProviderModels(
@@ -141,16 +128,9 @@ export function SortableProviderCard({
               <SelectValue placeholder={t("builtin.mediaChain.selectProvider")} />
             </SelectTrigger>
             <SelectContent>
-              {dropdownProviders.map((p) => (
+              {enabledProviders.map((p) => (
                 <SelectItem key={p.id} value={p.name}>
-                  <span className="flex items-center gap-2">
-                    {p.display_name || p.name}
-                    {poolOwnership.membersByOwner.has(p.name) && (
-                      <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-px text-2xs font-medium text-primary">
-                        {t("providers:list.poolBadge")}
-                      </span>
-                    )}
-                  </span>
+                  {p.display_name || p.name}
                 </SelectItem>
               ))}
             </SelectContent>

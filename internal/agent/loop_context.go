@@ -34,6 +34,10 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if l.id != "" {
 		ctx = store.WithAgentKey(ctx, l.id)
 	}
+	// Inject tenant into context for tool-level tenant scoping (spawn, MCP, etc.)
+	if l.tenantID != uuid.Nil {
+		ctx = store.WithTenantID(ctx, l.tenantID)
+	}
 	// Inject user ID into context for per-user scoping (memory, context files, etc.)
 	if req.UserID != "" {
 		ctx = store.WithUserID(ctx, req.UserID)
@@ -47,6 +51,10 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 			ctx = store.WithCredentialUserID(ctx, credUserID)
 		}
 	}
+	// Inject agent type into context for interceptor routing
+	if l.agentType != "" {
+		ctx = store.WithAgentType(ctx, l.agentType)
+	}
 	// Inject self-evolve flag for predefined agents that can update SOUL.md
 	if l.selfEvolve {
 		ctx = store.WithSelfEvolve(ctx, true)
@@ -59,25 +67,9 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if req.SenderName != "" {
 		ctx = store.WithSenderName(ctx, req.SenderName)
 	}
-	// Inject caller role so RBAC-aware permission checks (CheckEditFilePermission,
-	// CheckCronPermission) can bypass per-user grants for authenticated admins
-	// dispatched from dashboard or other trusted sources (#915).
-	if req.Role != "" {
-		ctx = store.WithRole(ctx, req.Role)
-	}
-	// Inject global + per-agent builtin tool settings (tier 1+3).
-	// Media/provider-chain tools read the merged view via BuiltinToolSettingsFromCtx.
+	// Inject global builtin tool settings for media tools (provider chain)
 	if l.builtinToolSettings != nil {
 		ctx = tools.WithBuiltinToolSettings(ctx, l.builtinToolSettings)
-	}
-	// Inject tenant-layer tool settings (tier 2). Merge with per-agent happens
-	// at read time — per-agent still wins at tool-name level.
-	if l.tenantToolSettings != nil {
-		ctx = tools.WithTenantToolSettings(ctx, l.tenantToolSettings)
-	}
-	// Inject tenant-specific allowed paths for filesystem tools.
-	if len(l.tenantAllowedPaths) > 0 {
-		ctx = tools.WithTenantAllowedPaths(ctx, l.tenantAllowedPaths)
 	}
 	// Inject channel type into context for tools (e.g. message tool needs it for Zalo group routing)
 	if req.ChannelType != "" {
@@ -111,22 +103,11 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if req.WorkspaceChannel != "" {
 		ctx = tools.WithWorkspaceChannel(ctx, req.WorkspaceChannel)
 	}
-	// WorkspaceChatID drives vault chat_id isolation in isolated teams. Callers
-	// that don't set it explicitly fall back to req.ChatID — the chat segment
-	// used for workspace path layering — so the vault filter activates uniformly
-	// across every RunRequest entry point (WS direct, HTTP, cron, subagent).
-	effectiveWorkspaceChatID := req.WorkspaceChatID
-	if effectiveWorkspaceChatID == "" {
-		effectiveWorkspaceChatID = req.ChatID
-	}
-	if effectiveWorkspaceChatID != "" {
-		ctx = tools.WithWorkspaceChatID(ctx, effectiveWorkspaceChatID)
+	if req.WorkspaceChatID != "" {
+		ctx = tools.WithWorkspaceChatID(ctx, req.WorkspaceChatID)
 	}
 	if req.TeamTaskID != "" {
 		ctx = tools.WithTeamTaskID(ctx, req.TeamTaskID)
-	}
-	if req.DelegationID != "" {
-		ctx = tools.WithDelegationID(ctx, req.DelegationID)
 	}
 
 	// --- Per-user setup: file seeding + workspace resolution ---
@@ -152,10 +133,10 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 			tools.UserChatLayer(tools.SanitizePathSegment(req.UserID), shared),
 		)
 		if l.shouldShareMemory() {
-			// share_memory collapses memory + KG + sessions into a single flag.
 			ctx = store.WithSharedMemory(ctx)
+		}
+		if l.shouldShareKnowledgeGraph() {
 			ctx = store.WithSharedKG(ctx)
-			ctx = store.WithSharedSessions(ctx)
 		}
 		if err := os.MkdirAll(effectiveWorkspace, 0755); err != nil {
 			slog.Warn("failed to create user workspace directory", "workspace", effectiveWorkspace, "user", req.UserID, "error", err)
@@ -175,14 +156,6 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	}
 	if req.TeamID != "" {
 		ctx = tools.WithToolTeamID(ctx, req.TeamID)
-		// Team root for dispatched tasks: resolve the UserChatLayer-stripped root
-		// so the dispatched agent can still read peer-scoped files in the same team.
-		if teamUUID, err := uuid.Parse(req.TeamID); err == nil && l.dataDir != "" {
-			teamRoot := tools.ResolveWorkspace(l.dataDir,
-				tools.TeamLayer(teamUUID),
-			)
-			ctx = tools.WithToolTeamRoot(ctx, teamRoot)
-		}
 	}
 	if req.LeaderAgentID != "" {
 		ctx = tools.WithLeaderAgentID(ctx, req.LeaderAgentID)
@@ -191,15 +164,6 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	// Team workspace: auto-resolve for agents with team membership (not dispatched).
 	// Lead agents default to team workspace; non-lead members keep own workspace.
 	var resolvedTeamSettings json.RawMessage
-	// Dispatched tasks already have TeamWorkspace set but still need team settings
-	// for TeamIsolated flag. Fetch by explicit TeamID in that branch.
-	if req.TeamWorkspace != "" && req.TeamID != "" && l.teamStore != nil {
-		if teamUUID, err := uuid.Parse(req.TeamID); err == nil {
-			if team, _ := l.teamStore.GetTeam(ctx, teamUUID); team != nil {
-				resolvedTeamSettings = team.Settings
-			}
-		}
-	}
 	if req.TeamWorkspace == "" && l.teamStore != nil && l.agentUUID != uuid.Nil {
 		if team, _ := l.teamStore.GetTeamForAgent(ctx, l.agentUUID); team != nil {
 			resolvedTeamSettings = team.Settings
@@ -208,8 +172,9 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 				wsChat = req.UserID
 			}
 			shared := tools.IsSharedWorkspace(team.Settings)
-			// Resolve team workspace via layered pipeline: team → user/chat.
+			// Resolve team workspace via layered pipeline: tenant → team → user/chat.
 			wsDir := tools.ResolveWorkspace(l.dataDir,
+				tools.TenantLayer(store.TenantIDFromContext(ctx), store.TenantSlugFromContext(ctx)),
 				tools.TeamLayer(team.ID),
 				tools.UserChatLayer(wsChat, shared),
 			)
@@ -217,14 +182,6 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 				slog.Warn("failed to create team workspace directory", "workspace", wsDir, "error", err)
 			}
 			ctx = tools.WithToolTeamWorkspace(ctx, wsDir)
-			// Team root (no UserChatLayer): lets any team agent — leader or member —
-			// read files produced by peers under different chat/user scopes within
-			// the same team. Writes still default to wsDir above; team root only
-			// widens the allowed-prefix set for path boundary checks.
-			teamRoot := tools.ResolveWorkspace(l.dataDir,
-				tools.TeamLayer(team.ID),
-			)
-			ctx = tools.WithToolTeamRoot(ctx, teamRoot)
 			// Leader keeps personal workspace (set at line 110-132) as default.
 			// Team workspace accessible via ToolTeamWorkspaceFromCtx for delegation.
 			if req.TeamID == "" {
@@ -247,25 +204,17 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 			}
 		}
 		resolver := workspace.NewResolver()
-		// Resolve project binding for this session. Two sources, evaluated in order:
-		//  1. agent_sessions.project_id — explicit per-session binding (set via sessions.update_project RPC)
-		//  2. channel_contacts.default_project_id — group-chat channel default (Layer 1)
-		// When a project is found, look up its slug so the workspace resolver can
-		// route the session to <workspaceRoot>/projects/<slug>.
-		projectID, projectSlug := l.resolveProjectParams(ctx, req.SessionKey, req.ChannelType, req.ChatID)
 		wc, wsErr := resolver.Resolve(ctx, workspace.ResolveParams{
-			// Filesystem path segment must use agent_key, not UUID — matches
-			// the v2 path in loop_pipeline_callbacks.go and the session_key
-			// anchor. See docs/agent-identity-conventions.md.
-			AgentID:     l.id,
-			UserID:      req.UserID,
-			ChatID:      req.ChatID,
-			PeerKind:    req.PeerKind,
-			TeamID:      teamIDPtr,
-			TeamConfig:  teamWSConfig,
-			BaseDir:     l.dataDir,
-			ProjectID:   projectID,
-			ProjectSlug: projectSlug,
+			AgentID:    l.agentUUID.String(),
+			AgentType:  l.agentType,
+			UserID:     req.UserID,
+			ChatID:     req.ChatID,
+			TenantID:   store.TenantIDFromContext(ctx).String(),
+			TenantSlug: store.TenantSlugFromContext(ctx),
+			PeerKind:   req.PeerKind,
+			TeamID:    teamIDPtr,
+			TeamConfig: teamWSConfig,
+			BaseDir:   l.dataDir,
 		})
 		if wsErr != nil {
 			slog.Warn("workspace resolution failed", "err", wsErr)
@@ -341,13 +290,14 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	rc := &store.RunContext{
 		AgentID:             l.agentUUID,
 		AgentKey:            l.id,
+		TenantID:            l.tenantID,
 		UserID:              req.UserID,
 		CredentialUserID:    credUserID,
+		AgentType:           l.agentType,
 		SenderID:            req.SenderID,
 		SelfEvolve:          l.selfEvolve,
 		SharedMemory:        store.IsSharedMemory(ctx),
 		SharedKG:            store.IsSharedKG(ctx),
-		SharedSessions:      store.IsSharedSessions(ctx),
 		RestrictToWorkspace: l.restrictToWs != nil && *l.restrictToWs,
 		BuiltinToolSettings: l.builtinToolSettings,
 		ChannelType:         req.ChannelType,
@@ -361,12 +311,10 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		TeamWorkspace:       tools.ToolTeamWorkspaceFromCtx(ctx),
 		TeamID:              tools.ToolTeamIDFromCtx(ctx),
 		WorkspaceChannel:    req.WorkspaceChannel,
-		WorkspaceChatID:     effectiveWorkspaceChatID,
-		TeamIsolated:        resolvedTeamSettings != nil && !tools.IsSharedWorkspace(resolvedTeamSettings),
+		WorkspaceChatID:     req.WorkspaceChatID,
 		TeamTaskID:          req.TeamTaskID,
 		LeaderAgentID:       tools.LeaderAgentIDFromCtx(ctx),
 		AgentToolKey:        l.id,
-		TenantAllowedPaths:  l.tenantAllowedPaths,
 	}
 	ctx = store.WithRunContext(ctx, rc)
 
@@ -374,70 +322,4 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		ctx:                  ctx,
 		resolvedTeamSettings: resolvedTeamSettings,
 	}, nil
-}
-
-// resolveProjectParams resolves the effective project ID and slug for a session.
-// Checks two sources in order:
-//  1. agent_sessions.project_id — explicit per-session binding (set via RPC)
-//  2. channel_contacts.default_project_id — group-chat channel default
-//
-// Returns (nil, "") when no project is bound or when projectStore is not wired.
-// On error (project not found, slug invalid), logs a warning and returns (nil, "").
-func (l *Loop) resolveProjectParams(ctx context.Context, sessionKey, channelType, chatID string) (*uuid.UUID, string) {
-	if l.projectStore == nil {
-		return nil, ""
-	}
-
-	// Source 1: explicit per-session project binding.
-	var effectiveProjectID *uuid.UUID
-	if session := l.sessions.Get(ctx, sessionKey); session != nil && session.ProjectID != nil {
-		effectiveProjectID = session.ProjectID
-	}
-
-	// Source 2: channel contact default (group-chat level).
-	// Only attempted when source 1 is absent and contactStore is wired.
-	if effectiveProjectID == nil && l.contactStore != nil && channelType != "" && chatID != "" {
-		contactMap, err := l.contactStore.GetContactsBySenderIDs(ctx, []string{chatID})
-		if err != nil {
-			slog.Warn("workspace: contact lookup failed", "chat_id", chatID, "err", err)
-		} else if c, ok := contactMap[chatID]; ok {
-			effectiveProjectID = resolveSessionProject(nil, &c)
-		}
-	}
-
-	if effectiveProjectID == nil {
-		return nil, ""
-	}
-
-	// Look up project slug for workspace path construction.
-	project, err := l.projectStore.Get(ctx, *effectiveProjectID)
-	if err != nil {
-		slog.Warn("workspace: project not found for session binding",
-			"project_id", effectiveProjectID, "session", sessionKey, "err", err)
-		return nil, ""
-	}
-	return effectiveProjectID, project.Slug
-}
-
-// resolveSessionProject returns the effective project UUID for a session using
-// a two-layer COALESCE chain:
-//
-//  1. session_project_override from session metadata — deferred until the
-//     bot /project switch command is implemented (session-metadata override path).
-//     This branch is intentionally left as a nil placeholder; enabling it
-//     would activate Layer 2 before the command is ready.
-//  2. channel_contacts.default_project_id — the group-chat default (Layer 1).
-//
-// Returns nil when no project is bound.
-// The unused first parameter reserves the signature for Layer 2 expansion.
-func resolveSessionProject(_ any, contact *store.ChannelContact) *uuid.UUID {
-	// Layer 2: session_project_override via bot command — deferred until
-	// session-metadata override is wired (bot /project switch command).
-	// _ = sessionMetadataOverride  // placeholder only — do not read session metadata here.
-
-	// Layer 1: channel default.
-	if contact != nil && contact.DefaultProjectID != nil {
-		return contact.DefaultProjectID
-	}
-	return nil
 }

@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -74,31 +73,4 @@ func PgDumpVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("pg_dump --version: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// ParsePgDumpMajor extracts the PostgreSQL major version number from a
-// pg_dump --version string. Returns 0 if parsing fails.
-// Example inputs:
-//
-//	"pg_dump (PostgreSQL) 17.9 (Debian 17.9-1.pgdg12+1)" -> 17
-//	"pg_dump (PostgreSQL) 18.3"                          -> 18
-func ParsePgDumpMajor(version string) int {
-	const marker = "(PostgreSQL) "
-	_, after, ok := strings.Cut(version, marker)
-	if !ok {
-		return 0
-	}
-	rest := after
-	end := 0
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
-		end++
-	}
-	if end == 0 {
-		return 0
-	}
-	major, err := strconv.Atoi(rest[:end])
-	if err != nil {
-		return 0
-	}
-	return major
 }

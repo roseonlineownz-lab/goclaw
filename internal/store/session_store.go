@@ -19,7 +19,6 @@ type SessionData struct {
 	AgentUUID uuid.UUID  `json:"agentUUID,omitempty" db:"agent_id"` // DB agent UUID
 	UserID    string     `json:"userID,omitempty" db:"user_id"`     // External user ID (e.g. Telegram user ID)
 	TeamID    *uuid.UUID `json:"teamID,omitempty" db:"team_id"`     // Team UUID (set for team sessions)
-	ProjectID *uuid.UUID `json:"projectID,omitempty" db:"project_id"` // Project binding (nullable)
 
 	Model                      string `json:"model,omitempty" db:"model"`
 	Provider                   string `json:"provider,omitempty" db:"provider"`
@@ -57,6 +56,7 @@ type SessionListOpts struct {
 	AgentID  string    `db:"-"`
 	Channel  string    `db:"-"` // optional: filter by channel prefix ("ws", "telegram", etc.)
 	UserID   string    `db:"-"` // optional: filter by user_id
+	TenantID uuid.UUID `db:"-"` // optional: filter by tenant (uuid.Nil = no filter)
 	Limit    int       `db:"-"`
 	Offset   int       `db:"-"`
 }
@@ -91,10 +91,6 @@ type SessionCoreStore interface {
 	GetOrCreate(ctx context.Context, key string) *SessionData
 	// Get returns the session if it exists (cache or DB), nil otherwise. Never creates.
 	Get(ctx context.Context, key string) *SessionData
-	// UpdateProject sets the project binding on an existing session row.
-	// Pass nil to clear the binding. Permission check is the caller's responsibility;
-	// the store trusts the caller has verified access.
-	UpdateProject(ctx context.Context, sessionKey string, projectID *uuid.UUID) error
 	AddMessage(ctx context.Context, key string, msg providers.Message)
 	GetHistory(ctx context.Context, key string) []providers.Message
 	GetSummary(ctx context.Context, key string) string

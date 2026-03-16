@@ -19,6 +19,7 @@ import { KeyValueEditor } from "@/components/shared/key-value-editor";
 import { UserPickerCombobox } from "@/components/shared/user-picker-combobox";
 import { toast } from "@/stores/use-toast-store";
 import { useAuthStore } from "@/stores/use-auth-store";
+import { useTenants } from "@/hooks/use-tenants";
 import i18next from "i18next";
 import type { MCPServerData, MCPUserCredentialStatus, MCPUserCredentialInput } from "./hooks/use-mcp";
 import { mcpUserCredentialsSchema, type MCPUserCredentialsFormData } from "@/schemas/mcp-credentials.schema";
@@ -51,8 +52,12 @@ export function MCPUserCredentialsDialog({
   const { t } = useTranslation("mcp");
   const role = useAuthStore((s) => s.role);
   const currentUserId = useAuthStore((s) => s.userId);
+  const { currentTenant } = useTenants();
 
-  const canManageUsers = role === "admin" || role === "owner";
+  const canManageUsers =
+    role === "admin" || role === "owner" ||
+    currentTenant?.role === "owner" ||
+    currentTenant?.role === "admin";
 
   // UI-only state
   const [selectedUserId, setSelectedUserId] = useState(currentUserId);
@@ -94,7 +99,7 @@ export function MCPUserCredentialsDialog({
       .then(setStatus)
       .catch((err) => console.error("[MCPUserCredentials] load credentials failed:", err))
       .finally(() => { setLoadingStatus(false); setInitialLoad(false); });
-  }, [open, server.id, onGetCredentials, canManageUsers, selectedUserId]);  
+  }, [open, server.id, onGetCredentials, canManageUsers, selectedUserId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSave = async () => {
     setSaving(true);
@@ -157,7 +162,7 @@ export function MCPUserCredentialsDialog({
                   onChange={setUserSearchText}
                   onSelect={(val) => { setSelectedUserId(val); setUserSearchText(val); }}
                   placeholder={t("userCredentials.selectUser")}
-                  source="contact"
+                  source="tenant_user"
                 />
                 {selectedUserId && selectedUserId !== userSearchText && (
                   <p className="text-xs text-muted-foreground font-mono">{selectedUserId}</p>

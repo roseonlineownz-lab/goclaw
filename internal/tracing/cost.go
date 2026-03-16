@@ -29,10 +29,12 @@ func CalculateCost(pricing *config.ModelPricing, usage *providers.Usage) float64
 	// ReasoningPerMillion rate is set. Otherwise price the full CompletionTokens
 	// at OutputPerMillion — matches the provider billing semantics described above.
 	if pricing.ReasoningPerMillion > 0 && usage.ThinkingTokens > 0 {
-		visible := max(usage.CompletionTokens-usage.ThinkingTokens,
+		visible := usage.CompletionTokens - usage.ThinkingTokens
+		if visible < 0 {
 			// Defensive: thinkingChars/4 estimate for Anthropic may exceed OutputTokens
 			// under unusual streaming conditions. Clamp to zero instead of going negative.
-			0)
+			visible = 0
+		}
 		cost += float64(visible) * pricing.OutputPerMillion / 1_000_000
 		cost += float64(usage.ThinkingTokens) * pricing.ReasoningPerMillion / 1_000_000
 	} else {

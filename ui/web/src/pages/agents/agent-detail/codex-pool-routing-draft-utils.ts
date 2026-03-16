@@ -8,19 +8,16 @@ export function buildDraftRouting(
   savedRouting: NormalizedChatGPTOAuthRouting,
 ): ChatGPTOAuthRoutingConfig {
   if (savedRouting.isExplicit) {
-    const draft: ChatGPTOAuthRoutingConfig = {
+    return {
       override_mode: savedRouting.overrideMode,
       strategy: savedRouting.strategy,
+      extra_provider_names: savedRouting.extraProviderNames,
     };
-    if (savedRouting.hasExplicitExtraProviderNames || savedRouting.extraProviderNames.length > 0) {
-      draft.extra_provider_names = savedRouting.extraProviderNames;
-    }
-    return draft;
   }
 
   return {
     override_mode: "inherit",
-    strategy: "priority_order",
+    strategy: "primary_first",
     extra_provider_names: [],
   };
 }
@@ -36,6 +33,5 @@ export function routingDraftSignature(
     override_mode: "custom",
     strategy: normalized.strategy,
     extra_provider_names: normalized.extraProviderNames,
-    has_explicit_extra_provider_names: normalized.hasExplicitExtraProviderNames,
   });
 }

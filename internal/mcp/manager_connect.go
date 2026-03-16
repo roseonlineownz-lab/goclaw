@@ -11,6 +11,7 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
 // connectAndDiscover creates a client, initializes the MCP handshake, and
@@ -100,15 +101,14 @@ func connectAndDiscover(ctx context.Context, name, transportType, command string
 }
 
 // connectServer creates a client, initializes the connection, discovers tools, and registers them.
-// serverID is the MCP server UUID from DB (uuid.Nil for config-path servers).
-func (m *Manager) connectServer(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, toolPrefix string, timeoutSec int, serverID uuid.UUID) error {
+func (m *Manager) connectServer(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, toolPrefix string, timeoutSec int) error {
 	ss, mcpTools, err := connectAndDiscover(ctx, name, transportType, command, args, env, url, headers, timeoutSec)
 	if err != nil {
 		return err
 	}
 
 	// Register tools
-	registeredNames := m.registerBridgeTools(ss, mcpTools, name, toolPrefix, timeoutSec, serverID)
+	registeredNames := m.registerBridgeTools(ss, mcpTools, name, toolPrefix, timeoutSec)
 	ss.toolNames = registeredNames
 
 	// Create health monitoring context
@@ -121,7 +121,7 @@ func (m *Manager) connectServer(ctx context.Context, name, transportType, comman
 	m.mu.Unlock()
 
 	if len(registeredNames) > 0 {
-		m.registry.RegisterToolGroup("mcp:"+name, registeredNames)
+		tools.RegisterToolGroup("mcp:"+name, registeredNames)
 		m.updateMCPGroup()
 	}
 
@@ -138,11 +138,10 @@ func (m *Manager) connectServer(ctx context.Context, name, transportType, comman
 
 // registerBridgeTools creates BridgeTools from MCP tool definitions and
 // registers them in the Manager's registry. Returns registered tool names.
-// serverID is the MCP server UUID (uuid.Nil for config-path servers).
-func (m *Manager) registerBridgeTools(ss *serverState, mcpTools []mcpgo.Tool, serverName, toolPrefix string, timeoutSec int, serverID uuid.UUID) []string {
+func (m *Manager) registerBridgeTools(ss *serverState, mcpTools []mcpgo.Tool, serverName, toolPrefix string, timeoutSec int) []string {
 	var registeredNames []string
 	for _, mcpTool := range mcpTools {
-		bt := NewBridgeTool(serverName, mcpTool, &ss.clientPtr, toolPrefix, timeoutSec, &ss.connected, serverID, m.grantChecker)
+		bt := NewBridgeTool(serverName, mcpTool, &ss.clientPtr, toolPrefix, timeoutSec, &ss.connected)
 
 		if _, exists := m.registry.Get(bt.Name()); exists {
 			slog.Warn("mcp.tool.name_collision",
@@ -161,15 +160,14 @@ func (m *Manager) registerBridgeTools(ss *serverState, mcpTools []mcpgo.Tool, se
 
 // connectViaPool acquires a shared connection from the pool and creates
 // per-agent BridgeTools pointing to the shared client/connected pointers.
-// serverID is the MCP server UUID from DB.
-func (m *Manager) connectViaPool(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, toolPrefix string, timeoutSec int, serverID uuid.UUID) error {
-	entry, err := m.pool.Acquire(ctx, name, transportType, command, args, env, url, headers, timeoutSec)
+func (m *Manager) connectViaPool(ctx context.Context, tenantID uuid.UUID, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, toolPrefix string, timeoutSec int) error {
+	entry, err := m.pool.Acquire(ctx, tenantID, name, transportType, command, args, env, url, headers, timeoutSec)
 	if err != nil {
 		return err
 	}
 
 	// Create per-agent BridgeTools from the pool's shared connection
-	registeredNames := m.registerPoolBridgeTools(entry, name, toolPrefix, timeoutSec, serverID)
+	registeredNames := m.registerPoolBridgeTools(entry, name, toolPrefix, timeoutSec)
 
 	// Track server state and per-agent tool names.
 	// poolServers/poolToolNames keyed by plain name for Close() iteration.
@@ -187,11 +185,11 @@ func (m *Manager) connectViaPool(ctx context.Context, name, transportType, comma
 	if m.poolKeys == nil {
 		m.poolKeys = make(map[string]string)
 	}
-	m.poolKeys[name] = name
+	m.poolKeys[name] = poolKey(tenantID, name)
 	m.mu.Unlock()
 
 	if len(registeredNames) > 0 {
-		m.registry.RegisterToolGroup("mcp:"+name, registeredNames)
+		tools.RegisterToolGroup("mcp:"+name, registeredNames)
 		m.updateMCPGroup()
 	}
 
@@ -206,11 +204,10 @@ func (m *Manager) connectViaPool(ctx context.Context, name, transportType, comma
 
 // registerPoolBridgeTools creates BridgeTools from pool entry's discovered tools,
 // pointing to the shared client/connected pointers. Returns registered tool names.
-// serverID is the MCP server UUID from DB.
-func (m *Manager) registerPoolBridgeTools(entry *poolEntry, serverName, toolPrefix string, timeoutSec int, serverID uuid.UUID) []string {
+func (m *Manager) registerPoolBridgeTools(entry *poolEntry, serverName, toolPrefix string, timeoutSec int) []string {
 	var registeredNames []string
 	for _, mcpTool := range entry.tools {
-		bt := NewBridgeTool(serverName, mcpTool, &entry.state.clientPtr, toolPrefix, timeoutSec, &entry.state.connected, serverID, m.grantChecker)
+		bt := NewBridgeTool(serverName, mcpTool, &entry.state.clientPtr, toolPrefix, timeoutSec, &entry.state.connected)
 
 		if _, exists := m.registry.Get(bt.Name()); exists {
 			slog.Warn("mcp.tool.name_collision",

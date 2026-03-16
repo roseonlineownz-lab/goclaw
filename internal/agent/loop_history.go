@@ -17,7 +17,7 @@ import (
 // buildMessages constructs the full message list for an LLM request.
 // Returns the messages and whether BOOTSTRAP.md was present in context files
 // (used by the caller for auto-cleanup without an extra DB roundtrip).
-func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, summary, userMessage, extraSystemPrompt, sessionKey, channel, channelType, chatTitle, chatID, peerKind, userID string, historyLimit int, skillFilter []string, lightContext bool) ([]providers.Message, bool) {
+func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, summary, userMessage, extraSystemPrompt, sessionKey, channel, channelType, chatTitle, peerKind, userID string, historyLimit int, skillFilter []string, lightContext bool) ([]providers.Message, bool) {
 	var messages []providers.Message
 
 	// Build system prompt — 3-layer mode resolution: runtime > auto-detect > config
@@ -96,7 +96,7 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 	// DM only — group chats have permission checks and multiple senders.
 	if hadBootstrap && peerKind == "direct" {
 		if senderName := store.SenderNameFromContext(ctx); senderName != "" {
-			hint := fmt.Sprintf("Known user info (from %s): Name=%q\nTimezone: not yet known. When the user mentions times, schedules, or reminders, ask for their timezone and update USER.md.", channelType, senderName)
+			hint := fmt.Sprintf("Known user info (from %s): Name=%q\nDefault timezone: Asia/Saigon (GMT+7). User can correct this.", channelType, senderName)
 			if extraSystemPrompt != "" {
 				extraSystemPrompt += "\n\n"
 			}
@@ -149,6 +149,13 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 	// mode the kept inline tools still need descriptions in the system prompt.
 	mcpToolDescs := l.buildMCPToolDescs(toolNames)
 
+	// Bootstrap DM mode: only restrict tools for open agents (identity being created).
+	// Predefined agents keep full capabilities — BOOTSTRAP.md guides behavior.
+	if hadBootstrap && l.agentType != store.AgentTypePredefined {
+		toolNames = filterBootstrapTools(toolNames)
+		mcpToolDescs = nil
+	}
+
 	// Determine whether to inject team context into the system prompt.
 	// Team context (TEAM.md, workspace section, members roster) is injected when:
 	//   - This is a team-dispatched session (team: prefix), OR
@@ -197,7 +204,6 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		Workspace:              promptWorkspace,
 		Channel:                channel,
 		ChannelType:            channelType,
-		ChatID:                 chatID,
 		ChatTitle:              chatTitle,
 		PeerKind:               peerKind,
 		OwnerIDs:               l.ownerIDs,
@@ -218,16 +224,16 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		HasMemoryExpand:        hasMemoryExpand,
 		MCPToolDescs:           mcpToolDescs,
 		ContextFiles:           contextFiles,
+		AgentType:              l.agentType,
 		ExtraPrompt:            extraSystemPrompt,
 		SandboxEnabled:         l.sandboxEnabled,
 		SandboxContainerDir:    l.sandboxContainerDir,
 		SandboxWorkspaceAccess: l.sandboxWorkspaceAccess,
 		ShellDenyGroups:        l.shellDenyGroups,
 		SelfEvolve:             l.selfEvolve,
-		TTSAutoMode:            l.ttsAutoMode,
 		ProviderType:           providerTypeOf(l.provider),
 		CredentialCLIContext:   l.buildCredentialCLIContext(ctx),
-		IsBootstrap:            hadBootstrap,
+		IsBootstrap:            hadBootstrap && l.agentType != store.AgentTypePredefined,
 		DelegateTargets:        l.delegateTargets,
 		OrchMode:               l.orchMode,
 		ProviderContribution:   l.providerContribution(),
@@ -250,10 +256,10 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		})
 	}
 
-	// History pipeline: limitHistoryTurns → sanitizeHistory.
-	// Pruning is owned by PruneStage in the pipeline (single entry point).
+	// History pipeline matching TS: limitHistoryTurns → pruneContext → sanitizeHistory.
 	trimmed := limitHistoryTurns(history, historyLimit)
-	sanitized, droppedCount := sanitizeHistory(trimmed)
+	pruned := pruneContextMessages(trimmed, l.contextWindow, l.contextPruningCfg)
+	sanitized, droppedCount := sanitizeHistory(pruned)
 	messages = append(messages, sanitized...)
 
 	// If orphaned messages were found and dropped, persist the cleaned history
@@ -282,7 +288,7 @@ func (l *Loop) resolveContextFiles(ctx context.Context, userID string) []bootstr
 	if l.contextFileLoader == nil || userID == "" {
 		return l.contextFiles
 	}
-	userFiles := l.contextFileLoader(ctx, l.agentUUID, userID)
+	userFiles := l.contextFileLoader(ctx, l.agentUUID, userID, l.agentType)
 	if len(userFiles) == 0 {
 		return l.contextFiles
 	}

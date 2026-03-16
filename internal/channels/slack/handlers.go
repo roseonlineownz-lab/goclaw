@@ -12,6 +12,7 @@ import (
 	"github.com/slack-go/slack/socketmode"
 
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 func (c *Channel) handleEventsAPI(evt socketmode.Event) {
@@ -33,6 +34,7 @@ func (c *Channel) handleEventsAPI(evt socketmode.Event) {
 
 func (c *Channel) handleMessage(ev *slackevents.MessageEvent) {
 	ctx := context.Background()
+	ctx = store.WithTenantID(ctx, c.TenantID())
 	// For message_changed: extract user/text from the nested Message field.
 	// Only process if the edit introduces a new @bot mention.
 	if ev.SubType == "message_changed" {

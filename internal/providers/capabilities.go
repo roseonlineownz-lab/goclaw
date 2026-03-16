@@ -11,7 +11,6 @@ type ProviderCapabilities struct {
 	Thinking         bool   // supports extended thinking / reasoning
 	Vision           bool   // supports image inputs
 	CacheControl     bool   // supports cache_control blocks (Anthropic)
-	ImageGeneration  bool   // supports native image_generation tool (Codex/OpenAI Responses API)
 	MaxContextWindow int    // default context window for default model
 	TokenizerID      string // for tokencount package mapping
 }

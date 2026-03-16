@@ -63,7 +63,7 @@ export function TeamCreateDialog({ open, onOpenChange, onCreate }: TeamCreateDia
   const memberOptions = useMemo(
     () =>
       agents
-        .filter((a) => a.status === "active" && a.id !== lead && !members.includes(a.id))
+        .filter((a) => a.agent_type === "predefined" && a.status === "active" && a.id !== lead && !members.includes(a.id))
         .map((a) => ({
           value: a.id,
           label: a.display_name || a.agent_key,

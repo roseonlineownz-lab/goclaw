@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // QuotaResult is returned by QuotaChecker.Check.
@@ -294,11 +296,15 @@ func QueryTodaySummary(ctx context.Context, db *sql.DB, result *QuotaUsageResult
 	}
 }
 
-// tenantWhereClause returns an empty SQL filter in v4 single-user mode.
-// startIdx is the next $N placeholder.
-// Kept as a shim so callers need not branch; traces table has no scope column.
-func tenantWhereClause(_ context.Context, startIdx int) (string, []any, int) {
-	return "", nil, startIdx
+// tenantWhereClause returns a SQL fragment " AND tenant_id = $N" with the tenant UUID arg,
+// or empty string if the caller has cross-tenant access. startIdx is the next $N placeholder.
+func tenantWhereClause(ctx context.Context, startIdx int) (string, []any, int) {
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		// Fail-closed: no tenant = filter to impossible value
+		return " AND tenant_id = '00000000-0000-0000-0000-000000000000'", nil, startIdx
+	}
+	return fmt.Sprintf(" AND tenant_id = $%d", startIdx), []any{tid}, startIdx + 1
 }
 
 // cleanupLoop periodically evicts stale cache entries.

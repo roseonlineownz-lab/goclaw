@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
@@ -32,16 +33,36 @@ func (l *Loop) scanWebToolResult(toolName string, result *tools.Result) {
 	}
 }
 
-// shouldShareWorkspace returns true when the per-user file zone is collapsed
-// (users/{user_key}/ ... → base workspace). Determined solely by the agent's
-// share_workspace flag — peerKind no longer differentiates DM/group.
-func (l *Loop) shouldShareWorkspace(_ /*userID*/, _ /*peerKind*/ string) bool {
-	return l.shareWorkspace
+// shouldShareWorkspace checks if the given user should share the base workspace
+// directory (skip per-user subfolder isolation) based on workspace_sharing config.
+func (l *Loop) shouldShareWorkspace(userID, peerKind string) bool {
+	ws := l.workspaceSharing
+	if ws == nil {
+		return false
+	}
+	if slices.Contains(ws.SharedUsers, userID) {
+		return true
+	}
+	switch peerKind {
+	case "direct":
+		return ws.SharedDM
+	case "group":
+		return ws.SharedGroup
+	}
+	return false
 }
 
-// shouldShareMemory returns true when memory rows + KG + sessions are shared
-// across all users of this agent (collapsed from legacy three flags).
-func (l *Loop) shouldShareMemory() bool { return l.shareMemory }
+// shouldShareMemory returns true if memory/KG should be shared across all users.
+// Independent of workspace folder sharing.
+func (l *Loop) shouldShareMemory() bool {
+	return l.workspaceSharing != nil && l.workspaceSharing.ShareMemory
+}
+
+// shouldShareKnowledgeGraph returns true if knowledge graph should be shared
+// across all users of the agent (agent-level, no per-user scoping).
+func (l *Loop) shouldShareKnowledgeGraph() bool {
+	return l.workspaceSharing != nil && l.workspaceSharing.ShareKnowledgeGraph
+}
 
 // buildChannelMeta extracts channel metadata from RunRequest for bootstrap decisions.
 // Returns nil when channel type is unknown (preserves normal bootstrap flow).
@@ -84,12 +105,12 @@ func (l *Loop) getOrCreateUserSetup(ctx context.Context, userID, channel string,
 			}
 			// Step 2: Seed context files (must run before buildMessages reads them).
 			// Passes isNew so SeedUserFiles knows whether to skip existing files.
-			if err := l.seedUserFiles(ctx, l.agentUUID, userID, isNew, channelMeta); err != nil {
+			if err := l.seedUserFiles(ctx, l.agentUUID, userID, l.agentType, isNew, channelMeta); err != nil {
 				slog.Warn("failed to seed user context files", "error", err)
 				// Seeding failed (e.g. SQLITE_BUSY after retries). Inject
 				// embedded bootstrap templates in-memory so the first turn
 				// still gets onboarding. DB seed will retry next session.
-				setup.fallbackBootstrap = bootstrap.EmbeddedUserFiles()
+				setup.fallbackBootstrap = bootstrap.EmbeddedUserFiles(l.agentType)
 			} else if l.cacheInvalidate != nil {
 				// SeedUserFiles writes via raw agentStore, bypassing the
 				// ContextFileInterceptor cache. Invalidate so LoadContextFiles
@@ -99,7 +120,7 @@ func (l *Loop) getOrCreateUserSetup(ctx context.Context, userID, channel string,
 			setup.seeded = true
 		} else if l.ensureUserFiles != nil {
 			// Legacy fallback: combined callback handles both profile + seed
-			ws, err := l.ensureUserFiles(ctx, l.agentUUID, userID, l.workspace, channel)
+			ws, err := l.ensureUserFiles(ctx, l.agentUUID, userID, l.agentType, l.workspace, channel)
 			if err != nil {
 				slog.Warn("failed to ensure user context files", "error", err)
 			} else if ws != "" {

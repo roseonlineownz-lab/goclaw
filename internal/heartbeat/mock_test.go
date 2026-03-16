@@ -1,6 +1,8 @@
 package heartbeat
 
 import (
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 )
@@ -11,7 +13,7 @@ type mockProviderResolver struct {
 	err      error
 }
 
-func (m *mockProviderResolver) GetByName(_ string) (providers.Provider, error) {
+func (m *mockProviderResolver) GetForTenant(_ uuid.UUID, _ string) (providers.Provider, error) {
 	return m.provider, m.err
 }
 

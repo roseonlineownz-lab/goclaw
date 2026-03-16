@@ -37,44 +37,50 @@ func (s *SQLiteKnowledgeGraphStore) UpsertEntity(ctx context.Context, entity *st
 	}
 	now := time.Now().UTC()
 	id := uuid.Must(uuid.NewV7()).String()
+	tid := tenantIDForInsert(ctx).String()
+
+	sc, scArgs := kgUserClauseFor(ctx, entity.UserID)
+	_ = sc // used only for reads; upsert conflict key uses explicit columns
 
 	var actualID string
 	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO kg_entities
-			(id, agent_id, user_id, team_id, contact_id, project_id,
-			 external_id, name, entity_type, description,
-			 properties, source_id, confidence, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(agent_id, COALESCE(user_id,''), external_id) DO UPDATE SET
+			(id, agent_id, user_id, external_id, name, entity_type, description,
+			 properties, source_id, confidence, tenant_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id, user_id, external_id) DO UPDATE SET
 			name        = excluded.name,
 			entity_type = excluded.entity_type,
 			description = excluded.description,
 			properties  = excluded.properties,
 			source_id   = excluded.source_id,
 			confidence  = excluded.confidence,
+			tenant_id   = excluded.tenant_id,
 			updated_at  = excluded.updated_at
 		RETURNING id`,
-		id, entity.AgentID, nilStr(entity.UserID),
-		nilStr(entity.TeamID), nilStr(entity.ContactID), nilStr(entity.ProjectID),
-		entity.ExternalID, entity.Name, entity.EntityType, entity.Description,
-		string(props), entity.SourceID, entity.Confidence, now, now,
+		id, entity.AgentID, entity.UserID, entity.ExternalID,
+		entity.Name, entity.EntityType, entity.Description,
+		string(props), entity.SourceID, entity.Confidence, tid, now, now,
 	).Scan(&actualID)
 	if err != nil {
 		return err
 	}
 	entity.ID = actualID
+	_ = scArgs
 	return nil
 }
 
 func (s *SQLiteKnowledgeGraphStore) GetEntity(ctx context.Context, agentID, userID, entityID string) (*store.Entity, error) {
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
+	sc, scArgs, _ := scopeClause(ctx)
 	args := append([]any{entityID, agentID}, userArgs...)
+	args = append(args, scArgs...)
 
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, agent_id, user_id, external_id, name, entity_type, description,
 		        properties, source_id, confidence, created_at, updated_at
 		 FROM kg_entities
-		 WHERE id = ? AND agent_id = ?`+userClause,
+		 WHERE id = ? AND agent_id = ?`+userClause+sc,
 		args...,
 	)
 	e, err := scanEntity(row)
@@ -89,9 +95,11 @@ func (s *SQLiteKnowledgeGraphStore) GetEntity(ctx context.Context, agentID, user
 
 func (s *SQLiteKnowledgeGraphStore) DeleteEntity(ctx context.Context, agentID, userID, entityID string) error {
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
+	sc, scArgs, _ := scopeClause(ctx)
 	args := append([]any{entityID, agentID}, userArgs...)
+	args = append(args, scArgs...)
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM kg_entities WHERE id = ? AND agent_id = ?`+userClause,
+		`DELETE FROM kg_entities WHERE id = ? AND agent_id = ?`+userClause+sc,
 		args...,
 	)
 	return err
@@ -117,6 +125,11 @@ func (s *SQLiteKnowledgeGraphStore) ListEntities(ctx context.Context, agentID, u
 		args = append(args, opts.EntityType)
 	}
 
+	sc, scArgs, _ := scopeClause(ctx)
+	if sc != "" {
+		where += sc
+		args = append(args, scArgs...)
+	}
 	args = append(args, limit, opts.Offset)
 
 	q := fmt.Sprintf(`
@@ -144,12 +157,17 @@ func (s *SQLiteKnowledgeGraphStore) SearchEntities(ctx context.Context, agentID,
 	pattern := "%" + escapeLike(query) + "%"
 
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
+	sc, scArgs, _ := scopeClause(ctx)
 
 	where := "agent_id = ? AND valid_until IS NULL AND (name || ' ' || COALESCE(description, '')) LIKE ? ESCAPE '\\'"
 	args := []any{agentID, pattern}
 	if userClause != "" {
 		where += userClause
 		args = append(args, userArgs...)
+	}
+	if sc != "" {
+		where += sc
+		args = append(args, scArgs...)
 	}
 	args = append(args, limit)
 
@@ -170,12 +188,17 @@ func (s *SQLiteKnowledgeGraphStore) Stats(ctx context.Context, agentID, userID s
 	stats := &store.GraphStats{EntityTypes: make(map[string]int)}
 
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
+	sc, scArgs, _ := scopeClause(ctx)
 
 	baseWhere := "agent_id = ? AND valid_until IS NULL"
 	baseArgs := []any{agentID}
 	if userClause != "" {
 		baseWhere += userClause
 		baseArgs = append(baseArgs, userArgs...)
+	}
+	if sc != "" {
+		baseWhere += sc
+		baseArgs = append(baseArgs, scArgs...)
 	}
 
 	if err := s.db.QueryRowContext(ctx,
@@ -207,9 +230,10 @@ func (s *SQLiteKnowledgeGraphStore) Stats(ctx context.Context, agentID, userID s
 
 	// Collect distinct user IDs when not filtering by specific user
 	if userID == "" {
+		uidArgs := append([]any{agentID}, scArgs...)
 		uidRows, uidErr := s.db.QueryContext(ctx,
-			`SELECT DISTINCT user_id FROM kg_entities WHERE agent_id = ? AND user_id != '' ORDER BY user_id`,
-			agentID,
+			`SELECT DISTINCT user_id FROM kg_entities WHERE agent_id = ?`+sc+` AND user_id != '' ORDER BY user_id`,
+			uidArgs...,
 		)
 		if uidErr == nil {
 			defer uidRows.Close()
@@ -251,6 +275,11 @@ func (s *SQLiteKnowledgeGraphStore) ListEntitiesTemporal(ctx context.Context, ag
 		}
 	}
 
+	sc, scArgs, _ := scopeClause(ctx)
+	if sc != "" {
+		where += sc
+		args = append(args, scArgs...)
+	}
 	args = append(args, limit, opts.Offset)
 
 	rows, err := s.db.QueryContext(ctx,
@@ -276,12 +305,16 @@ func (s *SQLiteKnowledgeGraphStore) SupersedeEntity(ctx context.Context, old *st
 
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
+	tid := tenantIDForInsert(ctx).String()
+
+	sc, scArgs, _ := scopeClause(ctx)
 
 	// Expire old entity
+	expireArgs := append([]any{nowStr, nowStr, old.AgentID, old.UserID, old.ExternalID}, scArgs...)
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE kg_entities SET valid_until = ?, updated_at = ?
-		 WHERE agent_id = ? AND user_id = ? AND external_id = ? AND valid_until IS NULL`,
-		nowStr, nowStr, old.AgentID, old.UserID, old.ExternalID,
+		 WHERE agent_id = ? AND user_id = ? AND external_id = ? AND valid_until IS NULL`+sc,
+		expireArgs...,
 	); err != nil {
 		return fmt.Errorf("supersede expire old: %w", err)
 	}
@@ -292,11 +325,11 @@ func (s *SQLiteKnowledgeGraphStore) SupersedeEntity(ctx context.Context, old *st
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO kg_entities
 			(id, agent_id, user_id, external_id, name, entity_type, description,
-			 properties, source_id, confidence, created_at, updated_at, valid_from)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 properties, source_id, confidence, tenant_id, created_at, updated_at, valid_from)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		newID, replacement.AgentID, replacement.UserID, replacement.ExternalID,
 		replacement.Name, replacement.EntityType, replacement.Description,
-		string(props), replacement.SourceID, replacement.Confidence,
+		string(props), replacement.SourceID, replacement.Confidence, tid,
 		nowStr, nowStr, nowStr,
 	); err != nil {
 		return fmt.Errorf("supersede insert new: %w", err)

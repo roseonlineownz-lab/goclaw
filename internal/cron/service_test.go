@@ -223,7 +223,6 @@ func TestService_AddJob_AtSchedule_DeleteAfterRun(t *testing.T) {
 // --- Job execution callback ---
 
 func TestService_StartStop_JobExecution(t *testing.T) {
-	setFastTick(t) // 20ms tick instead of 1s
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "cron.json")
 
@@ -235,7 +234,8 @@ func TestService_StartStop_JobExecution(t *testing.T) {
 
 	cs := NewService(storePath, handler)
 
-	interval := int64(50)
+	// Add a fast-interval job (every 100ms) — but runLoop ticks every 1s
+	interval := int64(100)
 	_, err := cs.AddJob("fast", Schedule{Kind: "every", EveryMS: &interval}, "tick", false, "", "", "")
 	if err != nil {
 		t.Fatalf("AddJob error: %v", err)
@@ -245,8 +245,8 @@ func TestService_StartStop_JobExecution(t *testing.T) {
 		t.Fatalf("Start error: %v", err)
 	}
 
-	// fast tick = 20ms; wait enough for several ticks + at least 1 due fire
-	time.Sleep(120 * time.Millisecond)
+	// runLoop ticks every 1s, wait enough for at least 1 tick
+	time.Sleep(1500 * time.Millisecond)
 	cs.Stop()
 
 	count := execCount.Load()
@@ -258,24 +258,22 @@ func TestService_StartStop_JobExecution(t *testing.T) {
 // --- Handler not set → no panic ---
 
 func TestService_NilHandler_NoPanic(t *testing.T) {
-	setFastTick(t)
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "cron.json")
 
 	cs := NewService(storePath, nil) // no handler
 
-	interval := int64(50)
+	interval := int64(100)
 	cs.AddJob("no-handler", Schedule{Kind: "every", EveryMS: &interval}, "tick", false, "", "", "")
 
 	cs.Start()
-	time.Sleep(120 * time.Millisecond) // wait for several fast ticks
-	cs.Stop()                          // should not panic
+	time.Sleep(1500 * time.Millisecond) // wait for at least 1 tick
+	cs.Stop()                           // should not panic
 }
 
 // --- Job failure with retry ---
 
 func TestService_JobFailure_Updates_LastError(t *testing.T) {
-	setFastTick(t)
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "cron.json")
 
@@ -286,11 +284,11 @@ func TestService_JobFailure_Updates_LastError(t *testing.T) {
 	cs := NewService(storePath, handler)
 	cs.SetRetryConfig(RetryConfig{MaxRetries: 0}) // no retry
 
-	interval := int64(50)
+	interval := int64(100)
 	job, _ := cs.AddJob("failing", Schedule{Kind: "every", EveryMS: &interval}, "fail", false, "", "", "")
 
 	cs.Start()
-	time.Sleep(120 * time.Millisecond) // wait for several fast ticks
+	time.Sleep(1500 * time.Millisecond) // wait for at least 1 tick
 	cs.Stop()
 
 	// Check last error
@@ -333,17 +331,16 @@ func TestService_Persistence_Roundtrip(t *testing.T) {
 // --- Run log ---
 
 func TestService_RunLog_PopulatedByAutoExecution(t *testing.T) {
-	setFastTick(t)
 	dir := t.TempDir()
 	cs := NewService(filepath.Join(dir, "cron.json"), func(job *Job) (string, error) {
 		return "ok", nil
 	})
 
-	interval := int64(50)
+	interval := int64(100)
 	job, _ := cs.AddJob("logger", Schedule{Kind: "every", EveryMS: &interval}, "tick", false, "", "", "")
 
 	cs.Start()
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	cs.Stop()
 
 	log := cs.GetRunLog(job.ID, 50)
@@ -387,15 +384,13 @@ func TestService_Start_AdvancesPastDueJobs(t *testing.T) {
 	}
 	cs1.saveUnsafe()
 
-	// Reload and Start — should advance all jobs to future, not fire them.
-	// setFastTick AFTER cs1 setup so cs1's saveUnsafe used real timestamps.
-	setFastTick(t)
+	// Reload and Start — should advance all jobs to future, not fire them
 	cs2 := NewService(storePath, handler)
 	if err := cs2.Start(); err != nil {
 		t.Fatalf("Start error: %v", err)
 	}
-	// Give time for several fast ticks; jobs should be in the future and not fire
-	time.Sleep(120 * time.Millisecond)
+	// Give just enough time for one potential tick, but jobs should be in the future
+	time.Sleep(1500 * time.Millisecond)
 	cs2.Stop()
 
 	// Verify no past-due executions happened (jobs were advanced, not fired)
@@ -563,13 +558,12 @@ func TestService_Start_DisablesPastDueAtJobs(t *testing.T) {
 	}
 	cs1.saveUnsafe()
 
-	// Reload and Start with fast tick
-	setFastTick(t)
+	// Reload and Start
 	cs2 := NewService(storePath, handler)
 	if err := cs2.Start(); err != nil {
 		t.Fatalf("Start error: %v", err)
 	}
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	cs2.Stop()
 
 	// Verify: past-due at job should be disabled, not executed

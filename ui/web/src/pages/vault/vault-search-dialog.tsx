@@ -25,12 +25,6 @@ export function VaultSearchDialog({ agentId, open, onOpenChange, onSelectResult 
   const [results, setResults] = useState<VaultSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
 
-  // Clear stale results when dialog closes
-  const handleOpenChange = useCallback((v: boolean) => {
-    if (!v) { setQuery(""); setResults([]); }
-    onOpenChange(v);
-  }, [onOpenChange]);
-
   const handleSearch = useCallback(async () => {
     if (!query.trim()) return;
     setSearching(true);
@@ -45,7 +39,7 @@ export function VaultSearchDialog({ agentId, open, onOpenChange, onSelectResult 
   }, [query, search]);
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg max-sm:inset-0">
         <DialogHeader>
           <DialogTitle>{t("search")}</DialogTitle>
@@ -79,7 +73,7 @@ export function VaultSearchDialog({ agentId, open, onOpenChange, onSelectResult 
                   className="w-full text-left p-2 rounded hover:bg-muted/50 flex items-center justify-between gap-2"
                   onClick={() => {
                     onSelectResult(r.document);
-                    handleOpenChange(false);
+                    onOpenChange(false);
                   }}
                 >
                   <div className="min-w-0">

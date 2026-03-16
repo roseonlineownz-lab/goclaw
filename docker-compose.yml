@@ -24,7 +24,7 @@
 
 services:
   goclaw:
-    image: ghcr.io/nextlevelbuilder/goclaw:latest
+    image: goclaw:local-flexcontent
     build:
       context: ${GOCLAW_DIR:-.}
       dockerfile: Dockerfile
@@ -39,7 +39,7 @@ services:
       - "${GOCLAW_PORT:-18790}:18790"
     env_file:
       - path: .env
-        required: false
+        required: true
     environment:
       - GOCLAW_HOST=0.0.0.0
       - GOCLAW_PORT=18790
@@ -54,6 +54,7 @@ services:
       - goclaw-workspace:/app/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "postgres:172.23.0.2"
     security_opt:
       - no-new-privileges:true
     init: true

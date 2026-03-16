@@ -44,6 +44,7 @@ export function AgentCreateDialog({ open, onOpenChange, onCreate }: AgentCreateD
       agentKey: "",
       provider: "",
       model: "",
+      agentType: "predefined",
       description: "",
       selfEvolve: false,
     },
@@ -103,6 +104,7 @@ export function AgentCreateDialog({ open, onOpenChange, onCreate }: AgentCreateD
         display_name: data.displayName || undefined,
         provider: data.provider,
         model: data.model,
+        agent_type: data.agentType,
         // Promoted fields at top level
         emoji: data.emoji?.trim() || null,
         agent_description: data.description?.trim() || null,

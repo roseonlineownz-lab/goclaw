@@ -12,6 +12,7 @@ export function useContactMerge() {
     async (body: MergeContactsRequest) => {
       const res = await http.post<MergeContactsResponse>("/v1/contacts/merge", body);
       await queryClient.invalidateQueries({ queryKey: queryKeys.contacts.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.tenantUsers.all });
       return res;
     },
     [http, queryClient],

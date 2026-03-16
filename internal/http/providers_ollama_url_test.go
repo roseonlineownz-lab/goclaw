@@ -238,11 +238,12 @@ func TestRegisterInMemoryOllamaURLNormalization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			providerReg := providers.NewRegistry()
+			providerReg := providers.NewRegistry(nil)
 			handler := NewProvidersHandler(newMockProviderStore(), newMockSecretsStore(), providerReg, "")
 
 			p := &store.LLMProviderData{
 				BaseModel:    store.BaseModel{ID: uuid.New()},
+				TenantID:     uuid.New(),
 				Name:         "my-ollama",
 				ProviderType: store.ProviderOllama,
 				APIBase:      tt.apiBase,
@@ -251,9 +252,9 @@ func TestRegisterInMemoryOllamaURLNormalization(t *testing.T) {
 
 			handler.registerInMemory(p)
 
-			runtimeProvider, err := providerReg.GetByName(p.Name)
+			runtimeProvider, err := providerReg.GetForTenant(p.TenantID, p.Name)
 			if err != nil {
-				t.Fatalf("GetByName() error = %v", err)
+				t.Fatalf("GetForTenant() error = %v", err)
 			}
 
 			type apiBaseProvider interface {

@@ -5,11 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -36,16 +33,16 @@ type AgentsHandler struct {
 	kgStore          store.KnowledgeGraphStore // for import (nil = disabled)
 	episodicStore    store.EpisodicStore       // for import (nil in SQLite/lite builds)
 	vaultStore       store.VaultStore          // for vault import (nil = disabled)
-	toolsReg         ToolPreviewLister         // for system prompt preview tool resolution (nil = fallback)
-	skillsLoader     SkillPreviewBuilder       // for system prompt preview pinned skills (nil = skip)
-	skillAccessStore store.SkillAccessStore    // for system prompt preview skill filtering (nil = skip)
+	toolsReg         ToolPreviewLister          // for system prompt preview tool resolution (nil = fallback)
+	skillsLoader     SkillPreviewBuilder        // for system prompt preview pinned skills (nil = skip)
+	skillAccessStore store.SkillAccessStore     // for system prompt preview skill filtering (nil = skip)
 	teamStore        store.TeamStore           // for system prompt preview team context (nil = skip)
 	agentLinkStore   store.AgentLinkStore      // for system prompt preview delegation targets (nil = skip)
-	defaultWorkspace string                    // default workspace path template (e.g. "~/.goclaw/workspace")
-	dataDir          string                    // resolved data directory (e.g. "~/.goclaw/data") — for team workspace export
-	msgBus           *bus.MessageBus           // for cache invalidation events (nil = no events)
-	summoner         *AgentSummoner            // LLM-based agent setup (nil = disabled)
-	isOwner          func(string) bool         // checks if user ID is a system owner (nil = no owners configured)
+	defaultWorkspace string                   // default workspace path template (e.g. "~/.goclaw/workspace")
+	dataDir          string                   // resolved data directory (e.g. "~/.goclaw/data") — for team workspace export
+	msgBus           *bus.MessageBus          // for cache invalidation events (nil = no events)
+	summoner         *AgentSummoner           // LLM-based agent setup (nil = disabled)
+	isOwner          func(string) bool        // checks if user ID is a system owner (nil = no owners configured)
 }
 
 // NewAgentsHandler creates a handler for agent management endpoints.
@@ -133,17 +130,10 @@ func (h *AgentsHandler) emitCacheInvalidate(kind, key string) {
 func (h *AgentsHandler) RegisterRoutes(mux *http.ServeMux) {
 	// Agent CRUD (reads: viewer+, writes: admin+)
 	mux.HandleFunc("GET /v1/agents", h.authMiddleware(h.handleList))
-	mux.HandleFunc("POST /v1/agents", h.memberMiddleware(h.handleCreate))
+	mux.HandleFunc("POST /v1/agents", h.adminMiddleware(h.handleCreate))
 	mux.HandleFunc("GET /v1/agents/{id}", h.authMiddleware(h.handleGet))
-	// Finding #15: PUT /v1/agents/{id} is gated by adminMiddleware (RoleAdmin required).
-	// Admin-only access significantly reduces abuse risk — rapid writes by a malicious admin
-	// are an insider threat with broader capabilities than tts_params mutation.
-	// No additional per-user rate limiter is added at this time (YAGNI). Re-evaluate
-	// if non-admin write paths are ever added or the endpoint is exposed via OAuth scopes.
 	mux.HandleFunc("PUT /v1/agents/{id}", h.adminMiddleware(h.handleUpdate))
 	mux.HandleFunc("DELETE /v1/agents/{id}", h.adminMiddleware(h.handleDelete))
-	// Bulk operations (admin+)
-	mux.HandleFunc("POST /v1/agents/sync-workspace", h.adminMiddleware(h.handleSyncWorkspace))
 	// Sharing (admin+)
 	mux.HandleFunc("GET /v1/agents/{id}/shares", h.authMiddleware(h.handleListShares))
 	mux.HandleFunc("POST /v1/agents/{id}/shares", h.adminMiddleware(h.handleShare))
@@ -151,7 +141,6 @@ func (h *AgentsHandler) RegisterRoutes(mux *http.ServeMux) {
 	// Agent operations (admin+)
 	mux.HandleFunc("POST /v1/agents/{id}/regenerate", h.adminMiddleware(h.handleRegenerate))
 	mux.HandleFunc("POST /v1/agents/{id}/resummon", h.adminMiddleware(h.handleResummon))
-	mux.HandleFunc("POST /v1/agents/{id}/cancel-summon", h.adminMiddleware(h.handleCancelSummon))
 	// Export (agent owner or system owner)
 	mux.HandleFunc("GET /v1/agents/{id}/system-prompt-preview", h.adminMiddleware(h.handleSystemPromptPreview))
 	mux.HandleFunc("GET /v1/agents/{id}/export/preview", h.authMiddleware(h.handleExportPreview))
@@ -184,10 +173,6 @@ func (h *AgentsHandler) adminMiddleware(next http.HandlerFunc) http.HandlerFunc 
 	return requireAuth(permissions.RoleAdmin, next)
 }
 
-func (h *AgentsHandler) memberMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return requireAuth(permissions.RoleMember, next)
-}
-
 func (h *AgentsHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	userID := store.UserIDFromContext(r.Context())
 	if userID == "" {
@@ -210,11 +195,7 @@ func (h *AgentsHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicAgents := make([]store.AgentData, 0, len(agents))
-	for i := range agents {
-		publicAgents = append(publicAgents, canonicalizeAgentForResponse(&agents[i]))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": publicAgents})
+	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
 }
 
 func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -225,24 +206,8 @@ func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgInvalidRequest, err.Error()))
-		return
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(rawBody, &probe); err != nil {
-		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgInvalidRequest, err.Error()))
-		return
-	}
-	if _, hasAgentType := probe["agent_type"]; hasAgentType {
-		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgAgentTypeRejected))
-		return
-	}
-
 	var req store.AgentData
-	if err := json.Unmarshal(rawBody, &req); err != nil {
-		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgInvalidRequest, err.Error()))
+	if !bindJSON(w, r, locale, &req) {
 		return
 	}
 
@@ -259,6 +224,18 @@ func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	req.OwnerID = userID
 
+	// Resolve tenant_id: explicit body field for cross-tenant; otherwise inherit from auth context.
+	if store.IsOwnerRole(r.Context()) {
+		if req.TenantID == uuid.Nil {
+			req.TenantID = store.TenantIDFromContext(r.Context())
+		}
+	} else {
+		req.TenantID = store.TenantIDFromContext(r.Context())
+	}
+
+	if req.AgentType == "" || req.AgentType == store.AgentTypeOpen {
+		req.AgentType = store.AgentTypePredefined // v3: open agents deprecated, default to predefined
+	}
 	if req.ContextWindow <= 0 {
 		req.ContextWindow = config.DefaultContextWindow
 	}
@@ -280,7 +257,7 @@ func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Check if predefined agent has a description for LLM summoning
 	description := req.AgentDescription
-	if description != "" && h.summoner != nil {
+	if req.AgentType == store.AgentTypePredefined && description != "" && h.summoner != nil {
 		req.Status = store.AgentStatusSummoning
 	} else if req.Status == "" {
 		req.Status = store.AgentStatusActive
@@ -309,18 +286,17 @@ func (h *AgentsHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Seed context files into agent_context_files (skipped for open agents).
 	// For summoning agents, templates serve as fallback if LLM fails.
-	if _, err := bootstrap.SeedToStore(r.Context(), h.agents, req.ID); err != nil {
+	if _, err := bootstrap.SeedToStore(r.Context(), h.agents, req.ID, req.AgentType); err != nil {
 		slog.Warn("failed to seed context files for new agent", "agent", req.AgentKey, "error", err)
 	}
 
 	// Start LLM summoning in background if applicable
 	if req.Status == store.AgentStatusSummoning {
-		go h.summoner.SummonAgent(req.ID, req.Provider, req.Model, description)
+		go h.summoner.SummonAgent(req.ID, req.TenantID, req.Provider, req.Model, description)
 	}
 
 	emitAudit(h.msgBus, r, "agent.created", "agent", req.ID.String())
-	publicAgent := canonicalizeAgentForResponse(&req)
-	writeJSON(w, http.StatusCreated, publicAgent)
+	writeJSON(w, http.StatusCreated, req)
 }
 
 func (h *AgentsHandler) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -342,30 +318,12 @@ func (h *AgentsHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		publicAgent := canonicalizeAgentForResponse(ag)
-		writeJSON(w, http.StatusOK, publicAgent)
+		writeJSON(w, http.StatusOK, ag)
 		return
 	}
 
 	ag, err := h.agents.GetByID(r.Context(), id)
 	if err != nil {
-		// GetByID scopes by owner_user_id for non-admin callers. If the caller has a share
-		// grant on this agent (owner is another user), the row won't match the owner filter.
-		// Fall back to unscoped lookup + explicit CanAccess check.
-		if !isOwner && userID != "" {
-			agUnscoped, unscopedErr := h.agents.GetByIDUnscoped(r.Context(), id)
-			if unscopedErr != nil {
-				writeError(w, http.StatusNotFound, protocol.ErrNotFound, i18n.T(locale, i18n.MsgNotFound, "agent", id.String()))
-				return
-			}
-			if ok, _, _ := h.agents.CanAccess(r.Context(), id, userID); !ok {
-				writeError(w, http.StatusNotFound, protocol.ErrNotFound, i18n.T(locale, i18n.MsgNotFound, "agent", id.String()))
-				return
-			}
-			publicAgent := canonicalizeAgentForResponse(agUnscoped)
-			writeJSON(w, http.StatusOK, publicAgent)
-			return
-		}
 		writeError(w, http.StatusNotFound, protocol.ErrNotFound, i18n.T(locale, i18n.MsgNotFound, "agent", id.String()))
 		return
 	}
@@ -377,15 +335,10 @@ func (h *AgentsHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	publicAgent := canonicalizeAgentForResponse(ag)
-	writeJSON(w, http.StatusOK, publicAgent)
+	writeJSON(w, http.StatusOK, ag)
 }
 
 func (h *AgentsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	// Finding #6: cap request body to 64 KB — prevents heap pressure from
-	// malicious large payloads stored in JSONB fields like tts_params.
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-
 	userID := store.UserIDFromContext(r.Context())
 	locale := store.LocaleFromContext(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -394,19 +347,17 @@ func (h *AgentsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tenant admins can update any agent in their tenant (adminMiddleware already
-	// verified RoleAdmin). System owners can update any agent across tenants.
-	// GetByID respects tenant scoping from context, so if the agent is returned
-	// it belongs to the caller's tenant.
+	// Only owner can update
 	ag, err := h.agents.GetByID(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, protocol.ErrNotFound, i18n.T(locale, i18n.MsgNotFound, "agent", id.String()))
 		return
 	}
+	if userID != "" && ag.OwnerID != userID && !h.isOwnerUser(userID) {
+		writeError(w, http.StatusForbidden, protocol.ErrUnauthorized, i18n.T(locale, i18n.MsgOwnerOnly, "update agent"))
+		return
+	}
 
-	// Finding #12: explicit tenant-scope guard as defense-in-depth.
-	// GetByID already applies context scope, but if a future refactor
-	// swaps to an unscoped variant this guard prevents cross-user mutation.
 	var updates map[string]any
 	if !bindJSON(w, r, locale, &updates) {
 		return
@@ -417,36 +368,13 @@ func (h *AgentsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	allowed := filterAllowedKeys(updates, agentAllowedFields)
 	allowed["restrict_to_workspace"] = true
 
-	// If agent_key is being changed, enforce the slug format. The router
-	// cache uses `agentKey` as its canonical key and splits on the
-	// last colon for exact-segment invalidation — a colon inside agent_key
-	// would silently break invalidation. Slug regex already rejects colons
-	// and any other shell/path-unfriendly characters.
-	if newKey, ok := allowed["agent_key"].(string); ok && newKey != "" {
-		if !isValidSlug(newKey) {
-			writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgInvalidSlug, "agent_key"))
-			return
-		}
-	}
-
 	// Validate v3 flag values in other_config (must be boolean).
-	// Also validate tts_params allow-list (Finding #5).
 	if oc, ok := allowed["other_config"]; ok && oc != nil {
 		switch v := oc.(type) {
 		case map[string]any:
 			if err := store.ValidateV3Flags(v); err != nil {
 				writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, err.Error())
 				return
-			}
-			// Finding #5: enforce tts_params key allow-list so arbitrary keys
-			// (e.g. __proto__, voice_settings.stability) cannot persist in JSONB.
-			if tp, ok := v["tts_params"]; ok && tp != nil {
-				if tpMap, ok := tp.(map[string]any); ok {
-					if err := validateAgentTTSParams(tpMap); err != nil {
-						writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, err.Error())
-						return
-					}
-				}
 			}
 		}
 	}
@@ -486,8 +414,8 @@ func (h *AgentsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.agents.Update(r.Context(), id, allowed); err != nil {
-		slog.Error("agents.update", "id", id, "user_id", userID, "error", err)
-		writeError(w, http.StatusInternalServerError, protocol.ErrInternal, i18n.T(locale, i18n.MsgFailedToUpdate, "agent", err.Error()))
+		slog.Error("agents.update", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, protocol.ErrInternal, i18n.T(locale, i18n.MsgFailedToUpdate, "agent", "internal error"))
 		return
 	}
 
@@ -503,7 +431,8 @@ func (h *AgentsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// Cascade: if status changed, broadcast so channel instances and cron jobs react.
 	if newStatus, ok := allowed["status"].(string); ok && newStatus != ag.Status {
 		if h.msgBus != nil {
-			bus.Broadcast(h.msgBus, bus.EventAgentStatusChanged,
+			bus.BroadcastForTenant(h.msgBus, bus.EventAgentStatusChanged,
+				store.TenantIDFromContext(r.Context()),
 				bus.AgentStatusChangedPayload{
 					AgentID:   id.String(),
 					OldStatus: ag.Status,
@@ -537,6 +466,21 @@ func (h *AgentsHandler) syncIdentityName(ctx context.Context, ag *store.AgentDat
 	}
 	if err := h.agents.SetAgentContextFile(ctx, ag.ID, bootstrap.IdentityFile, newContent); err != nil {
 		slog.Warn("agents.update: failed to sync IDENTITY.md name", "agent", ag.AgentKey, "error", err)
+	}
+
+	// For open agents, also update per-user IDENTITY.md copies.
+	if ag.AgentType == store.AgentTypeOpen {
+		if userFiles, err := h.agents.ListUserContextFilesByName(ctx, ag.ID, bootstrap.IdentityFile); err == nil {
+			for _, uf := range userFiles {
+				updated := bootstrap.UpdateIdentityField(uf.Content, "Name", newName)
+				if updated == uf.Content {
+					continue
+				}
+				if err := h.agents.SetUserContextFile(ctx, ag.ID, uf.UserID, bootstrap.IdentityFile, updated); err != nil {
+					slog.Warn("agents.update: failed to sync user IDENTITY.md name", "agent", ag.AgentKey, "user", uf.UserID, "error", err)
+				}
+			}
+		}
 	}
 }
 
@@ -572,57 +516,4 @@ func (h *AgentsHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	emitAudit(h.msgBus, r, "agent.deleted", "agent", id.String())
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
-}
-
-// handleSyncWorkspace updates all agents to use the new workspace root.
-// POST /v1/agents/sync-workspace
-// Body: {"workspace": "E:\\project\\workspace"}
-// Requires admin role.
-func (h *AgentsHandler) handleSyncWorkspace(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Workspace string `json:"workspace"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, "invalid JSON body")
-		return
-	}
-	if req.Workspace == "" {
-		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, "workspace is required")
-		return
-	}
-	// Path sanity check: reject traversal attempts
-	if strings.Contains(req.Workspace, "..") {
-		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, "workspace path cannot contain '..'")
-		return
-	}
-
-	// List all agents (empty ownerID = all agents)
-	agents, err := h.agents.List(r.Context(), "")
-	if err != nil {
-		slog.Error("agents.sync_workspace: list failed", "error", err)
-		writeError(w, http.StatusInternalServerError, protocol.ErrInternal, "failed to list agents")
-		return
-	}
-
-	// Update each agent's workspace to use the new root
-	newWorkspace := config.ExpandHome(req.Workspace)
-	var updated int
-	for _, ag := range agents {
-		// Build new workspace path: {newWorkspace}/{agentKey}
-		newPath := filepath.Join(newWorkspace, ag.AgentKey)
-		if ag.Workspace == newPath {
-			continue // already using correct path
-		}
-		// Use Update with map[string]any
-		if err := h.agents.Update(r.Context(), ag.ID, map[string]any{"workspace": newPath}); err != nil {
-			slog.Warn("agents.sync_workspace: update failed", "agent", ag.AgentKey, "error", err)
-			continue
-		}
-		h.emitCacheInvalidate(bus.CacheKindAgent, ag.AgentKey)
-		updated++
-	}
-
-	slog.Info("agents.sync_workspace: completed", "updated", updated, "total", len(agents), "workspace", newWorkspace)
-	emitAudit(h.msgBus, r, "agents.workspace_synced", "updated", strconv.Itoa(updated))
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": updated})
 }

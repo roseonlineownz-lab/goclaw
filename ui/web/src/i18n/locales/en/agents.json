@@ -138,11 +138,14 @@
     "modelVerified": "Model verified",
     "verificationFailed": "Verification failed",
     "noModelsHint": "This provider doesn't list models — type the model ID manually.",
+    "agentType": "Agent Type",
     "open": "Open",
     "openSubLabel": "Per-user context",
     "predefined": "Predefined",
     "predefinedSubLabel": "Agent-level config",
     "useOpenAgent": "Use Open agent instead (per-user context)",
+    "usePredefined": "Switch back to Predefined",
+    "switchToPredefined": "Switch",
     "openWarning": "Open agents create a separate context per user. Most use cases are better served by Predefined agents.",
     "describeAgent": "Describe Your Agent",
     "descriptionPlaceholder": "Describe your agent's personality, purpose, and behavior...",
@@ -166,8 +169,7 @@
       "skills": "Skills",
       "instances": "Instances",
       "permissions": "Permissions",
-      "evolution": "Evolution",
-      "hooks": "Hooks"
+      "evolution": "Evolution"
     },
     "summonFailed": "Summon Failed",
     "evolving": "Evolving",
@@ -591,7 +593,7 @@
     "saving": "Saving...",
     "saved": "Saved",
     "failedToSave": "Failed to save",
-    "usingGlobalDefaults": "Using system defaults"
+    "usingGlobalDefaults": "Using global defaults from config.json"
   },
   "files": {
     "readOnly": "Read-only",
@@ -608,6 +610,10 @@
     "saving": "Saving...",
     "save": "Save",
     "loading": "Loading...",
+    "openAgentTitle": "Open Agent - Per-User Context Files",
+    "openAgentDesc1": "This is an open agent. Context files (AGENTS.md, SOUL.md, TOOLS.md, etc.) are personalized for each user. They are automatically created from templates when a user first chats with this agent.",
+    "openAgentDesc2pre": "Agent-level files shown here are empty because open agents store all context per-user in the ",
+    "openAgentDesc2post": " table.",
     "contextFiles": "Context Files",
     "contextFile": "Context file",
     "perUser": "per-user",
@@ -717,10 +723,7 @@
     "retrying": "Retrying...",
     "done": "done",
     "fileLabelSOUL": "Soul & Personality",
-    "fileLabelIDENTITY": "Identity Card",
-    "takingTooLong": "Taking too long?",
-    "cancel": "Cancel",
-    "cancelling": "Cancelling..."
+    "fileLabelIDENTITY": "Identity Card"
   },
   "configGroups": {
     "core": "Core",
@@ -740,7 +743,6 @@
       "maxSpawnDepth": "Max Spawn Depth",
       "maxChildrenPerAgent": "Max Children Per Agent",
       "archiveAfter": "Archive After (minutes)",
-      "maxRetries": "Max Retries",
       "modelOverride": "Model Override",
       "inheritFromAgent": "(inherit from agent)"
     },
@@ -776,10 +778,7 @@
       "shareMemoryNote": "Toggling this does not migrate data — existing per-user memories become inaccessible in shared mode.",
       "shareKG": "Shared Knowledge Graph",
       "shareKGTip": "All users access the same knowledge graph. When off, each user has their own isolated KG with global canonical fallback for read operations.",
-      "shareKGNote": "Toggling this does not migrate data — existing per-user KG entities become inaccessible in shared mode.",
-      "shareSessions": "Share Sessions",
-      "shareSessionsTip": "Allow agent to access conversation sessions across all groups. When off, each user's sessions remain isolated.",
-      "shareSessionsNote": "Toggling this does not migrate data — existing per-user sessions become inaccessible in shared mode."
+      "shareKGNote": "Toggling this does not migrate data — existing per-user KG entities become inaccessible in shared mode."
     },
     "compaction": {
       "title": "Compaction",
@@ -794,7 +793,7 @@
     "contextPruning": {
       "title": "Context Pruning",
       "description": "Trim old tool results to save context window",
-      "descriptionSimple": "Automatically trims old tool results to prevent context overflow. Set mode to 'cache-ttl' to enable.",
+      "descriptionSimple": "Automatically trims old tool results to prevent context overflow. Enabled by default.",
       "mode": "Mode",
       "keepLastAssistants": "Keep Last Assistants",
       "softTrimRatio": "Soft Trim Ratio (0-1)",
@@ -807,7 +806,6 @@
       "hardClear": "Hard Clear",
       "enabled": "Enabled",
       "placeholderText": "Placeholder Text",
-      "cacheTtl": "Cache TTL",
       "advanced": "Advanced"
     },
     "sandbox": {
@@ -967,25 +965,6 @@
     "noLogs": "No heartbeat logs yet.",
     "logsPagination": "{{from}}–{{to}} of {{total}}"
   },
-  "hooks": {
-    "card": {
-      "title": "Hooks",
-      "loading": "Loading hooks...",
-      "empty": "No hooks configured",
-      "emptyDesc": "Hooks intercept agent lifecycle events like tool calls.",
-      "viewAll": "View all {{count}} hooks",
-      "addHook": "Add hook",
-      "nHooks": "{{count}} hooks"
-    },
-    "tab": {
-      "refresh": "Refresh",
-      "create": "Create Hook",
-      "emptyTitle": "No hooks configured",
-      "emptyDesc": "Hooks intercept agent lifecycle events like tool calls, session start/stop, and more.",
-      "createFirst": "Create your first hook",
-      "deleteConfirm": "Delete hook for \"{{event}}\"? This cannot be undone."
-    }
-  },
   "permissions": {
     "title": "Permissions",
     "description": "Control who can modify agent config and files. Owner always has full access.",
@@ -995,7 +974,6 @@
     "noRules": "No permission rules. Owner has implicit full access.",
     "userIdPlaceholder": "Search contacts or type ID...",
     "scopePlaceholder": "Select or type scope...",
-    "unknownWriterLabel": "User {{id}}",
     "types": {
       "file_writer": "File Writer",
       "file_writer_desc": "Controls who can edit files and manage cron in group chats. First user auto-added.",

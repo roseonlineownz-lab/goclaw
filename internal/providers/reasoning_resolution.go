@@ -32,13 +32,9 @@ func modelLeaksReasoning(model string) bool {
 	if m == "" {
 		return false
 	}
-	// Known leakers: Moonshot Kimi (any variant), DeepSeek-Reasoner family,
-	// and Gemma 4+ variants (for example "gemma4:8b" or "google/gemma-4-27b-it").
+	// Known leakers: Moonshot Kimi (any variant), DeepSeek-Reasoner family.
 	// Extend this list only after confirming the model does not honor effort="off".
-	return strings.Contains(m, "kimi") ||
-		strings.Contains(m, "deepseek-reasoner") ||
-		strings.Contains(m, "gemma4") ||
-		strings.Contains(m, "gemma-4")
+	return strings.Contains(m, "kimi") || strings.Contains(m, "deepseek-reasoner")
 }
 
 func ResolveReasoningDecision(provider Provider, model, requestedEffort, fallback, source string) (out ReasoningDecision) {

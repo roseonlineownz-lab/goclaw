@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
@@ -101,7 +100,7 @@ func Factory(name string, creds json.RawMessage, cfg json.RawMessage,
 		fsCfg.GroupPolicy = "pairing"
 	}
 
-	ch, err := New(fsCfg, msgBus, pairingSvc, nil, nil)
+	ch, err := New(fsCfg, msgBus, pairingSvc, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -112,11 +111,6 @@ func Factory(name string, creds json.RawMessage, cfg json.RawMessage,
 
 // FactoryWithPendingStore returns a ChannelFactory with persistent history support.
 func FactoryWithPendingStore(pendingStore store.PendingMessageStore) channels.ChannelFactory {
-	return FactoryWithPendingStoreAndAudio(pendingStore, nil)
-}
-
-// FactoryWithPendingStoreAndAudio returns a ChannelFactory with persistent history and STT support.
-func FactoryWithPendingStoreAndAudio(pendingStore store.PendingMessageStore, audioMgr *audio.Manager) channels.ChannelFactory {
 	return func(name string, creds json.RawMessage, cfg json.RawMessage,
 		msgBus *bus.MessageBus, pairingSvc store.PairingStore) (channels.Channel, error) {
 
@@ -171,7 +165,7 @@ func FactoryWithPendingStoreAndAudio(pendingStore store.PendingMessageStore, aud
 			fsCfg.GroupPolicy = "pairing"
 		}
 
-		ch, err := New(fsCfg, msgBus, pairingSvc, pendingStore, audioMgr)
+		ch, err := New(fsCfg, msgBus, pairingSvc, pendingStore)
 		if err != nil {
 			return nil, err
 		}

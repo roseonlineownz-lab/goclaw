@@ -14,6 +14,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	orch "github.com/nextlevelbuilder/goclaw/internal/orchestration"
 	"github.com/nextlevelbuilder/goclaw/internal/scheduler"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
@@ -46,15 +47,6 @@ func makeDelegateAnnounceCallback(
 		if meta.OriginSessionKey != "" {
 			batchMeta[tools.MetaOriginSessionKey] = meta.OriginSessionKey
 		}
-		if meta.OriginSenderID != "" {
-			batchMeta[tools.MetaOriginSenderID] = meta.OriginSenderID
-		}
-		if meta.OriginRole != "" {
-			batchMeta[tools.MetaOriginRole] = meta.OriginRole
-		}
-		if meta.OriginUserID != "" {
-			batchMeta[tools.MetaOriginUserID] = meta.OriginUserID
-		}
 		// Collect media from all items in the batch.
 		var batchMedia []bus.MediaFile
 		for _, item := range items {
@@ -62,7 +54,7 @@ func makeDelegateAnnounceCallback(
 		}
 		// Notify clients that leader is processing team results
 		// (bridges UI gap between last task.completed and announce run.started).
-		bus.Broadcast(msgBus, protocol.EventTeamLeaderProcessing, map[string]any{
+		bus.BroadcastForTenant(msgBus, protocol.EventTeamLeaderProcessing, meta.OriginTenantID, map[string]any{
 			"agentId": meta.ParentAgent,
 			"tasks":   len(items),
 		})
@@ -73,6 +65,7 @@ func makeDelegateAnnounceCallback(
 			ChatID:   meta.OriginChatID,
 			Content:  content,
 			UserID:   meta.OriginUserID,
+			TenantID: meta.OriginTenantID,
 			Metadata: batchMeta,
 			Media:    batchMedia,
 		})
@@ -93,16 +86,15 @@ type subagentAnnounceEntry struct {
 
 // subagentAnnounceRouting holds shared routing info captured by the first enqueue.
 type subagentAnnounceRouting struct {
-	QueueKey         string // key for sync.Map
-	SessionKey       string // original session key for RunRequest
+	QueueKey         string    // tenant-scoped key for sync.Map (tenantID:sessionKey)
+	SessionKey       string    // original session key (no tenant prefix) for RunRequest
+	TenantID         uuid.UUID // preserved for tenant-scoped scheduling
 	OrigChannel      string
 	OrigChannelType  string
 	OrigChatID       string
 	OrigPeerKind     string
 	OrigLocalKey     string
 	UserID           string
-	SenderID         string // real acting sender (preserves permission attribution through re-ingress, #915)
-	Role             string // caller's RBAC role; bypasses per-user grants for admin/operator/owner (#915)
 	ParentAgent      string
 	ParentTraceID    uuid.UUID
 	ParentRootSpanID uuid.UUID
@@ -127,6 +119,11 @@ func processSubagentAnnounceLoop(
 	msgBus *bus.MessageBus,
 	cfg *config.Config,
 ) {
+	// Ensure tenant scope is always set for the scheduler.
+	if r.TenantID != uuid.Nil {
+		ctx = store.WithTenantID(ctx, r.TenantID)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -171,8 +168,6 @@ func processSubagentAnnounceLoop(
 			PeerKind:         r.OrigPeerKind,
 			LocalKey:         r.OrigLocalKey,
 			UserID:           r.UserID,
-			SenderID:         r.SenderID, // preserves real acting sender for permission checks (#915)
-			Role:             r.Role,     // preserves RBAC role for admin bypass in group writes (#915)
 			RunID:            fmt.Sprintf("subagent-announce-%s-%d", r.ParentAgent, len(entries)),
 			RunKind:          "announce",
 			HideInput:        true,
@@ -187,16 +182,10 @@ func processSubagentAnnounceLoop(
 		if outcome.Err != nil {
 			if !errors.Is(outcome.Err, context.Canceled) {
 				slog.Error("subagent announce: lead run failed", "error", outcome.Err, "batch_size", len(entries))
-				errContent := formatAgentError(outcome.Err)
-				if isExternalChannel(r.OrigChannelType) {
-					slog.Info("subagent announce: suppressed error for external channel",
-						"channel", r.OrigChannel, "type", r.OrigChannelType)
-					errContent = ""
-				}
 				msgBus.PublishOutbound(bus.OutboundMessage{
 					Channel:  r.OrigChannel,
 					ChatID:   r.OrigChatID,
-					Content:  errContent,
+					Content:  formatAgentError(outcome.Err),
 					Metadata: r.OutMeta,
 				})
 			}

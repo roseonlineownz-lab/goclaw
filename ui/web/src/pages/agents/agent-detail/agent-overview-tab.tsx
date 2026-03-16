@@ -14,7 +14,6 @@ import { OrchestrationSection } from "./overview-sections/orchestration-section"
 import { CapabilitiesSection } from "./overview-sections/capabilities-section";
 import { ChatGPTOAuthRoutingSummarySection } from "./overview-sections/chatgpt-oauth-routing-summary-section";
 import { HeartbeatCard } from "./overview-sections/heartbeat-card";
-import { HooksSummaryCard } from "./overview-sections/hooks-summary-card";
 import { MemorySection } from "./config-sections";
 import type { UseAgentHeartbeatReturn } from "../hooks/use-agent-heartbeat";
 
@@ -23,11 +22,9 @@ interface AgentOverviewTabProps {
   onUpdate: (updates: Record<string, unknown>) => Promise<void>;
   heartbeat: UseAgentHeartbeatReturn;
   onManageCodexPool: () => void;
-  onViewHooks: () => void;
-  onAddHook: () => void;
 }
 
-export function AgentOverviewTab({ agent, onUpdate, heartbeat, onManageCodexPool, onViewHooks, onAddHook }: AgentOverviewTabProps) {
+export function AgentOverviewTab({ agent, onUpdate, heartbeat, onManageCodexPool }: AgentOverviewTabProps) {
   const { t } = useTranslation("agents");
 
   // Personality
@@ -84,8 +81,8 @@ export function AgentOverviewTab({ agent, onUpdate, heartbeat, onManageCodexPool
         tools_config: toolsEnabled
           ? { profile: tools.profile, allow: tools.allow, deny: tools.deny, alsoAllow: tools.alsoAllow, byProvider: tools.byProvider }
           : {},
-        // Promoted fields sent at top level (NOT NULL columns — send "" not null)
-        emoji: emoji.trim(),
+        // Promoted fields sent at top level
+        emoji: emoji.trim() || null,
         self_evolve: selfEvolve,
         skill_evolve: skillEvolve,
         skill_nudge_interval: skillEvolve ? skillNudgeInterval : 15,
@@ -144,7 +141,7 @@ export function AgentOverviewTab({ agent, onUpdate, heartbeat, onManageCodexPool
         </p>
       )}
 
-      {(
+      {agent.agent_type === "predefined" && (
         <EvolutionSection
           agentId={agent.id}
           selfEvolve={selfEvolve}
@@ -163,12 +160,6 @@ export function AgentOverviewTab({ agent, onUpdate, heartbeat, onManageCodexPool
       />
 
       <HeartbeatCard heartbeat={heartbeat} />
-
-      <HooksSummaryCard
-        agentId={agent.id}
-        onViewAll={onViewHooks}
-        onAddHook={onAddHook}
-      />
 
       <SkillsSection agentId={agent.id} />
       <PinnedSkillsSection agent={agent} onUpdate={onUpdate} />

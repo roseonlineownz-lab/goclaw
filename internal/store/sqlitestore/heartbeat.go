@@ -281,9 +281,9 @@ func (s *SQLiteHeartbeatStore) ListLogs(ctx context.Context, agentID uuid.UUID, 
 }
 
 // ListDeliveryTargets returns known delivery targets (channel, chatID, title, kind) from channel_contacts.
-// Queries contacts with contact_type IN ('group','topic','user').
+// Queries contacts with contact_type IN ('group','topic','user') for the given tenant.
 // For topic contacts, chatID is built as senderID + ":topic:" + threadID.
-func (s *SQLiteHeartbeatStore) ListDeliveryTargets(ctx context.Context) ([]store.DeliveryTarget, error) {
+func (s *SQLiteHeartbeatStore) ListDeliveryTargets(ctx context.Context, tenantID uuid.UUID) ([]store.DeliveryTarget, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT cc.sender_id,
 		        cc.thread_id,
@@ -294,8 +294,10 @@ func (s *SQLiteHeartbeatStore) ListDeliveryTargets(ctx context.Context) ([]store
 		             WHEN cc.peer_kind = 'group' THEN 'group'
 		             ELSE 'dm' END AS kind
 		 FROM channel_contacts cc
-		 WHERE cc.contact_type IN ('group', 'topic', 'user')
+		 WHERE cc.tenant_id = ?
+		   AND cc.contact_type IN ('group', 'topic', 'user')
 		 ORDER BY cc.channel_instance, cc.display_name`,
+		tenantID,
 	)
 	if err != nil {
 		return nil, err

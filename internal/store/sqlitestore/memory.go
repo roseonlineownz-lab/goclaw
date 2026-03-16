@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nextlevelbuilder/goclaw/internal/memory"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -19,7 +18,6 @@ type SQLiteMemoryStore struct {
 	provider store.EmbeddingProvider
 	mu       sync.RWMutex
 	cfg      SQLiteMemoryConfig
-	fsWriter memory.FSWriter // nil = FS-backed mode disabled
 }
 
 // SQLiteMemoryConfig configures the SQLite memory store.
@@ -47,14 +45,8 @@ func NewSQLiteMemoryStore(db *sql.DB) *SQLiteMemoryStore {
 	return &SQLiteMemoryStore{db: db, cfg: DefaultSQLiteMemoryConfig()}
 }
 
-// SetFSWriter attaches a filesystem writer for FS-backed content storage.
-// Must be called before the store is used; not safe for concurrent mutation.
-func (s *SQLiteMemoryStore) SetFSWriter(w memory.FSWriter) {
-	s.fsWriter = w
-}
-
-// SetEmbeddingProvider stores the provider used for generating halfvec BLOB
-// embeddings at index time and cosine-similarity search at query time.
+// SetEmbeddingProvider stores the provider reference but embeddings are not
+// persisted in SQLite (no vector column). Kept for interface compatibility.
 func (s *SQLiteMemoryStore) SetEmbeddingProvider(provider store.EmbeddingProvider) {
 	s.provider = provider
 }

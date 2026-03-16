@@ -1,7 +1,5 @@
 # Multi-Tenant Integration Guide
 
-**v4 Note:** This document describes the v3 architecture. v4 rc1 is single-tenant (multi-tenant scaffolding removed in Phase B). This guide is retained as architectural reference; see `docs/agent-identity-conventions.md` for v4 identity patterns.
-
 GoClaw is an **AI agent gateway** — it handles agents, chat, sessions, tools, MCP servers, and memory. It supports two deployment modes:
 
 1. **Personal / Single-tenant** — Use GoClaw directly as your AI backend. Built-in dashboard included.
@@ -306,7 +304,7 @@ Tenants can customize their environment without affecting other tenants:
 | Feature | Scope | How |
 |---------|-------|-----|
 | **LLM Providers** | Per-tenant provider configs | Each tenant registers own API keys + models |
-| **Builtin Tools** | Enable/disable + settings override per tenant | `builtin_tool_tenant_configs` (`enabled` + `settings` JSONB). 4-tier overlay (per-agent > tenant > global > hardcoded) resolved at Execute time — see `docs/03-tools-system.md` § 14 |
+| **Builtin Tools** | Enable/disable per tenant | `builtin_tool_tenant_configs` table |
 | **Skills** | Enable/disable per tenant | `skill_tenant_configs` table |
 | **MCP Servers** | Per-tenant + per-user credentials | Server-level shared, user-level overrides |
 | **MCP Require User Credentials** | Per-server setting | `settings.require_user_credentials` — forces per-user API keys |
@@ -329,7 +327,6 @@ When `require_user_credentials` is enabled, users without personal credentials c
 | Missing tenant context | Fail-closed: returns error, never unfiltered data |
 | API key storage | Keys hashed with SHA-256 at rest; only prefix shown in UI |
 | Tenant impersonation | Tenant resolved from API key binding, not client headers |
-| Cross-tenant privilege escalation on global writes | `store.IsMasterScope(ctx)` + `http.requireMasterScope(w, r)` guard every admin-gated write to global tables (`builtin_tools`, package management, config.*). Symmetric `requireTenantAdmin` guards tenant-scoped writes. Predicate shared between HTTP + WS layers. See commits `b419f352` (Phase 1 WS) + `6d7473b5` (Phase 0b HTTP) |
 | Privilege escalation | Role derived from key scopes, not client claims |
 | Gateway token abuse | Only configured owner IDs get cross-tenant; others are tenant-scoped |
 | System config access | Config page restricted to cross-tenant owners only |

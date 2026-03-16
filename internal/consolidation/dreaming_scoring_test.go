@@ -36,13 +36,15 @@ func TestDreamingWorkerUsesScoredListing(t *testing.T) {
 	worker := &dreamingWorker{
 		episodicStore: mockEp,
 		memoryStore:   mockMem,
-		registry:      testRegistry(mockProv),
+		provider:      mockProv,
+		model:         "test",
 		threshold:     5,
 		debounce:      1 * time.Second,
 	}
 
 	err := worker.Handle(context.Background(), eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
+		TenantID: uuid.New().String(),
 		AgentID:  "agent-scored",
 		UserID:   "user-scored",
 		Payload:  &eventbus.EpisodicCreatedPayload{},
@@ -90,13 +92,15 @@ func TestDreamingWorkerFiltersBelowThreshold(t *testing.T) {
 	worker := &dreamingWorker{
 		episodicStore: mockEp,
 		memoryStore:   mockMem,
-		registry:      testRegistry(mockProv),
+		provider:      mockProv,
+		model:         "test",
 		threshold:     5,
 		debounce:      1 * time.Second,
 	}
 
 	err := worker.Handle(context.Background(), eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
+		TenantID: uuid.New().String(),
 		AgentID:  "agent-filter",
 		UserID:   "user-filter",
 		Payload:  &eventbus.EpisodicCreatedPayload{},
@@ -138,13 +142,15 @@ func TestDreamingWorkerFilterEmptyStampsDebounce(t *testing.T) {
 	worker := &dreamingWorker{
 		episodicStore: mockEp,
 		memoryStore:   newMockMemoryStore(),
-		registry:      testRegistry(&mockProvider{chatResp: &providers.ChatResponse{Content: "noop"}}),
+		provider:      &mockProvider{chatResp: &providers.ChatResponse{Content: "noop"}},
+		model:         "test",
 		threshold:     5,
 		debounce:      10 * time.Minute, // realistic
 	}
 
 	ev := eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
+		TenantID: uuid.New().String(),
 		AgentID:  "agent-loop",
 		UserID:   "user-loop",
 		Payload:  &eventbus.EpisodicCreatedPayload{},

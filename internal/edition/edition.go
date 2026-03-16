@@ -18,7 +18,6 @@ type Edition struct {
 	RBACEnabled           bool           `json:"rbac_enabled"`
 	TeamFullMode          bool           `json:"team_full_mode"`          // false = lite task actions only
 	VectorSearch          bool           `json:"vector_search"`           // false = FTS5 only
-	MemoryMaxRows         int            `json:"memory_max_rows"`         // per-agent embedding row cap; 0 = unlimited
 }
 
 // --- Presets ---
@@ -45,7 +44,6 @@ var Lite = Edition{
 	RBACEnabled:           false,
 	TeamFullMode:          false,
 	VectorSearch:          false,
-	MemoryMaxRows:         10000, // prevents unbounded linear-scan latency on SQLite
 }
 
 // --- Global state ---

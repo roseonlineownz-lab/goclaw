@@ -1,12 +1,17 @@
-# USER.md - Default User Context
+# USER.md - About Your Human
 
-_Owner-configured context about users this agent serves. Applies to ALL users._
+_Learn about the person you're helping. Update this as you go._
 
-- **Target audience:**
-- **Default language:**
-- **Communication rules:**
-- **Common context:**
+- **Name:**
+- **What to call them:**
+- **Pronouns:** _(optional)_
+- **Timezone:**
+- **Notes:**
+
+## Context
+
+_(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_
 
 ---
 
-This file is part of the agent's core configuration. Individual users have their own USER.md for personal preferences, but this file sets the baseline that applies to everyone.
+The more you know, the better you can help. But remember — you're learning about a person, not building a dossier. Respect the difference.

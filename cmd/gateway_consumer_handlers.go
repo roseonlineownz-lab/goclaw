@@ -16,7 +16,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/safego"
 	"github.com/nextlevelbuilder/goclaw/internal/scheduler"
-	sessions "github.com/nextlevelbuilder/goclaw/internal/agentsessions"
+	"github.com/nextlevelbuilder/goclaw/internal/sessions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
@@ -31,6 +31,13 @@ func handleSubagentAnnounce(
 ) bool {
 	if !(msg.Channel == tools.ChannelSystem && strings.HasPrefix(msg.SenderID, "subagent:")) {
 		return false
+	}
+
+	// Inject tenant scope — same as processNormalMessage.
+	if msg.TenantID != uuid.Nil {
+		ctx = store.WithTenantID(ctx, msg.TenantID)
+	} else {
+		ctx = store.WithTenantID(ctx, store.MasterTenantID)
 	}
 
 	origChannel := msg.Metadata[tools.MetaOriginChannel]
@@ -102,25 +109,17 @@ func handleSubagentAnnounce(
 		Iterations:   iterations,
 	}
 
-	// Preserve real acting sender + RBAC role from original turn so permission
-	// checks (e.g. write_file in group chat) attribute to the user and can
-	// bypass per-user grants for authenticated admins, not the synthetic
-	// "subagent:<id>" sender of the announce message itself (#915).
-	originSenderID := msg.Metadata[tools.MetaOriginSenderID]
-	originRole := msg.Metadata[tools.MetaOriginRole]
-
-	queueKey := sessionKey
+	queueKey := fmt.Sprintf("%s:%s", msg.TenantID, sessionKey)
 	routing := subagentAnnounceRouting{
 		QueueKey:         queueKey,
 		SessionKey:       sessionKey,
+		TenantID:         msg.TenantID,
 		OrigChannel:      origChannel,
 		OrigChannelType:  origChannelType,
 		OrigChatID:       msg.ChatID,
 		OrigPeerKind:     origPeerKind,
 		OrigLocalKey:     origLocalKey,
 		UserID:           announceUserID,
-		SenderID:         originSenderID,
-		Role:             originRole,
 		ParentAgent:      parentAgent,
 		ParentTraceID:    parentTraceID,
 		ParentRootSpanID: parentRootSpanID,
@@ -130,14 +129,16 @@ func handleSubagentAnnounce(
 	// Enqueue into producer-consumer queue using tenant-scoped key from routing.
 	isProcessor := enqueueSubagentAnnounce(queueKey, entry)
 	if isProcessor {
-		deps.BgWg.Go(func() {
+		deps.BgWg.Add(1)
+		go func() {
+			defer deps.BgWg.Done()
 			defer safego.Recover(nil, "component", "subagent_announce_loop", "session", sessionKey)
 
 			// Fetch live roster for merged announce context.
 			roster := deps.SubagentMgr.RosterForParent(parentAgent)
 
 			processSubagentAnnounceLoop(ctx, routing, roster, deps.SubagentMgr, deps.Sched, deps.MsgBus, deps.Cfg)
-		})
+		}()
 	}
 
 	return true
@@ -153,6 +154,13 @@ func handleTeammateMessage(
 ) bool {
 	if !(msg.Channel == tools.ChannelSystem && strings.HasPrefix(msg.SenderID, "teammate:")) {
 		return false
+	}
+
+	// Inject tenant scope — same as processNormalMessage.
+	if msg.TenantID != uuid.Nil {
+		ctx = store.WithTenantID(ctx, msg.TenantID)
+	} else {
+		ctx = store.WithTenantID(ctx, store.MasterTenantID)
 	}
 
 	origChannel := msg.Metadata[tools.MetaOriginChannel]
@@ -199,13 +207,6 @@ func handleTeammateMessage(
 		announceUserID = fmt.Sprintf("group:%s:%s", origChannel, origChatID)
 	}
 
-	// Preserve real acting sender + RBAC role through teammate dispatch so
-	// permission checks during the teammate's turn (e.g. write_file in group
-	// chat) attribute to the original user and can bypass per-user grants
-	// for authenticated admins (#915).
-	teammateSenderID := msg.Metadata[tools.MetaOriginSenderID]
-	teammateRole := msg.Metadata[tools.MetaOriginRole]
-
 	outMeta := buildAnnounceOutMeta(origLocalKey)
 
 	// Link member agent trace back to lead's trace for unified tracing.
@@ -234,8 +235,6 @@ func handleTeammateMessage(
 		PeerKind:        origPeerKind,
 		LocalKey:        origLocalKey,
 		UserID:          announceUserID,
-		SenderID:        teammateSenderID, // real user who triggered the teammate dispatch (#915)
-		Role:            teammateRole,     // RBAC role for admin bypass during teammate turn (#915)
 		RunID:           fmt.Sprintf("teammate-%s-%s", msg.Metadata[tools.MetaFromAgent], msg.Metadata[tools.MetaToAgent]),
 		Stream:          false,
 		TeamTaskID:      msg.Metadata[tools.MetaTeamTaskID],
@@ -394,7 +393,7 @@ func handleResetCommand(
 			sessionKey = sessions.BuildGroupTopicSessionKey(agentID, msg.Channel, msg.ChatID, topicID)
 		}
 	}
-	ctx := context.Background()
+	ctx := store.WithTenantID(context.Background(), msg.TenantID)
 	deps.SessStore.Reset(ctx, sessionKey)
 	deps.SessStore.Save(ctx, sessionKey)
 	providers.ResetCLISession("", sessionKey)

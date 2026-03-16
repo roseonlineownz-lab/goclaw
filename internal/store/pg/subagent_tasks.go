@@ -23,12 +23,14 @@ func NewPGSubagentTaskStore(db *sql.DB) *PGSubagentTaskStore {
 	return &PGSubagentTaskStore{db: db}
 }
 
-const subagentTaskInsertCols = `parent_agent_key, session_key, subject, description,
+const subagentTaskInsertCols = `tenant_id, parent_agent_key, session_key, subject, description,
 	status, result, depth, model, provider, iterations, input_tokens, output_tokens,
-	origin_channel, origin_chat_id, origin_peer_kind, origin_user_id, spawned_by, project_id, metadata`
+	origin_channel, origin_chat_id, origin_peer_kind, origin_user_id, spawned_by, metadata`
 
 // Create persists a new subagent task at spawn time.
 func (s *PGSubagentTaskStore) Create(ctx context.Context, task *store.SubagentTaskData) error {
+	tid := tenantIDForInsert(ctx)
+
 	metaJSON := []byte("{}")
 	if len(task.Metadata) > 0 {
 		if b, err := json.Marshal(task.Metadata); err == nil {
@@ -41,18 +43,18 @@ func (s *PGSubagentTaskStore) Create(ctx context.Context, task *store.SubagentTa
 		ON CONFLICT (id) DO NOTHING`, subagentTaskInsertCols)
 
 	_, err := s.db.ExecContext(ctx, q,
-		task.ID, task.ParentAgentKey, task.SessionKey, task.Subject, task.Description,
+		task.ID, tid, task.ParentAgentKey, task.SessionKey, task.Subject, task.Description,
 		task.Status, task.Result, task.Depth, task.Model, task.Provider,
 		task.Iterations, task.InputTokens, task.OutputTokens,
 		task.OriginChannel, task.OriginChatID, task.OriginPeerKind, task.OriginUserID,
-		task.SpawnedBy, nilUUID(task.ProjectID), metaJSON,
+		task.SpawnedBy, metaJSON,
 	)
 	return err
 }
 
-const subagentTaskSelectCols = `id, parent_agent_key, session_key, subject, description,
+const subagentTaskSelectCols = `id, tenant_id, parent_agent_key, session_key, subject, description,
 	status, result, depth, model, provider, iterations, input_tokens, output_tokens,
-	origin_channel, origin_chat_id, origin_peer_kind, origin_user_id, spawned_by, project_id,
+	origin_channel, origin_chat_id, origin_peer_kind, origin_user_id, spawned_by,
 	completed_at, archived_at, COALESCE(metadata, '{}'), created_at, updated_at`
 
 // scanTask scans a single row into SubagentTaskData.
@@ -60,10 +62,10 @@ func scanTask(row interface{ Scan(...any) error }) (*store.SubagentTaskData, err
 	var t store.SubagentTaskData
 	var metaJSON []byte
 	err := row.Scan(
-		&t.ID, &t.ParentAgentKey, &t.SessionKey, &t.Subject, &t.Description,
+		&t.ID, &t.TenantID, &t.ParentAgentKey, &t.SessionKey, &t.Subject, &t.Description,
 		&t.Status, &t.Result, &t.Depth, &t.Model, &t.Provider,
 		&t.Iterations, &t.InputTokens, &t.OutputTokens,
-		&t.OriginChannel, &t.OriginChatID, &t.OriginPeerKind, &t.OriginUserID, &t.SpawnedBy, &t.ProjectID,
+		&t.OriginChannel, &t.OriginChatID, &t.OriginPeerKind, &t.OriginUserID, &t.SpawnedBy,
 		&t.CompletedAt, &t.ArchivedAt, &metaJSON, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
@@ -75,10 +77,14 @@ func scanTask(row interface{ Scan(...any) error }) (*store.SubagentTaskData, err
 	return &t, nil
 }
 
-// Get retrieves a single task by ID.
+// Get retrieves a single task by ID (tenant-scoped).
 func (s *PGSubagentTaskStore) Get(ctx context.Context, id uuid.UUID) (*store.SubagentTaskData, error) {
-	q := fmt.Sprintf(`SELECT %s FROM subagent_tasks WHERE id = $1`, subagentTaskSelectCols)
-	row := s.db.QueryRowContext(ctx, q, id)
+	tid, err := requireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf(`SELECT %s FROM subagent_tasks WHERE id = $1 AND tenant_id = $2`, subagentTaskSelectCols)
+	row := s.db.QueryRowContext(ctx, q, id, tid)
 	t, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -92,6 +98,11 @@ func (s *PGSubagentTaskStore) UpdateStatus(
 	status string, result *string, iterations int,
 	inputTokens, outputTokens int64,
 ) error {
+	tid, err := requireTenantID(ctx)
+	if err != nil {
+		return err
+	}
+
 	var completedAt *time.Time
 	if status != "running" {
 		now := time.Now().UTC()
@@ -102,10 +113,10 @@ func (s *PGSubagentTaskStore) UpdateStatus(
 		status = $1, result = $2, iterations = $3,
 		input_tokens = $4, output_tokens = $5,
 		completed_at = $6, updated_at = NOW()
-		WHERE id = $7`
-	_, err := s.db.ExecContext(ctx, q,
+		WHERE id = $7 AND tenant_id = $8`
+	_, err = s.db.ExecContext(ctx, q,
 		status, result, iterations, inputTokens, outputTokens,
-		completedAt, id,
+		completedAt, id, tid,
 	)
 	return err
 }
@@ -114,40 +125,49 @@ func (s *PGSubagentTaskStore) UpdateStatus(
 func (s *PGSubagentTaskStore) ListByParent(
 	ctx context.Context, parentAgentKey string, statusFilter string,
 ) ([]store.SubagentTaskData, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
+	tid, err := requireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var rows *sql.Rows
 	if statusFilter != "" {
 		q := fmt.Sprintf(`SELECT %s FROM subagent_tasks
-			WHERE parent_agent_key = $1 AND status = $2
+			WHERE tenant_id = $1 AND parent_agent_key = $2 AND status = $3
 			ORDER BY created_at DESC LIMIT 50`, subagentTaskSelectCols)
-		rows, err = s.db.QueryContext(ctx, q, parentAgentKey, statusFilter)
+		rows, err = s.db.QueryContext(ctx, q, tid, parentAgentKey, statusFilter)
 	} else {
 		q := fmt.Sprintf(`SELECT %s FROM subagent_tasks
-			WHERE parent_agent_key = $1
+			WHERE tenant_id = $1 AND parent_agent_key = $2
 			ORDER BY created_at DESC LIMIT 50`, subagentTaskSelectCols)
-		rows, err = s.db.QueryContext(ctx, q, parentAgentKey)
+		rows, err = s.db.QueryContext(ctx, q, tid, parentAgentKey)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	return collectTasks(rows)
 }
 
-// ListBySession returns tasks for a specific session key.
+// ListBySession returns tasks for a specific session key (tenant-scoped).
 func (s *PGSubagentTaskStore) ListBySession(
 	ctx context.Context, sessionKey string,
 ) ([]store.SubagentTaskData, error) {
+	tid, err := requireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	q := fmt.Sprintf(`SELECT %s FROM subagent_tasks
-		WHERE session_key = $1
+		WHERE tenant_id = $1 AND session_key = $2
 		ORDER BY created_at DESC LIMIT 50`, subagentTaskSelectCols)
-	rows, err := s.db.QueryContext(ctx, q, sessionKey)
+	rows, err := s.db.QueryContext(ctx, q, tid, sessionKey)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	return collectTasks(rows)
 }
 
@@ -166,12 +186,19 @@ func (s *PGSubagentTaskStore) Archive(ctx context.Context, olderThan time.Durati
 
 // UpdateMetadata merges metadata on an existing task.
 func (s *PGSubagentTaskStore) UpdateMetadata(ctx context.Context, id uuid.UUID, metadata map[string]any) error {
+	tid, err := requireTenantID(ctx)
+	if err != nil {
+		return err
+	}
+
 	metaJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	q := `UPDATE subagent_tasks SET metadata = metadata || $1, updated_at = NOW() WHERE id = $2`
-	_, err = s.db.ExecContext(ctx, q, metaJSON, id)
+
+	q := `UPDATE subagent_tasks SET metadata = metadata || $1, updated_at = NOW()
+		WHERE id = $2 AND tenant_id = $3`
+	_, err = s.db.ExecContext(ctx, q, metaJSON, id, tid)
 	return err
 }
 

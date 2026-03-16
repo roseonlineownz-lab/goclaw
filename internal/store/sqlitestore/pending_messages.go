@@ -28,22 +28,23 @@ func (s *SQLitePendingMessageStore) AppendBatch(ctx context.Context, msgs []stor
 		return nil
 	}
 
-	const cols = 10
+	const cols = 11
 	placeholders := make([]string, len(msgs))
 	args := make([]any, 0, len(msgs)*cols)
 	now := time.Now()
+	tid := tenantIDForInsert(ctx)
 
 	for i := range msgs {
 		if msgs[i].ID == uuid.Nil {
 			msgs[i].ID = uuid.Must(uuid.NewV7())
 		}
-		placeholders[i] = "(?,?,?,?,?,?,?,?,?,?)"
+		placeholders[i] = "(?,?,?,?,?,?,?,?,?,?,?)"
 		args = append(args, msgs[i].ID, msgs[i].ChannelName, msgs[i].HistoryKey,
-			msgs[i].Sender, msgs[i].SenderID, msgs[i].Body, msgs[i].PlatformMsgID, msgs[i].IsSummary, now, now)
+			msgs[i].Sender, msgs[i].SenderID, msgs[i].Body, msgs[i].PlatformMsgID, msgs[i].IsSummary, now, now, tid)
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO channel_pending_messages (id, channel_name, history_key, sender, sender_id, body, platform_msg_id, is_summary, created_at, updated_at)
+		`INSERT INTO channel_pending_messages (id, channel_name, history_key, sender, sender_id, body, platform_msg_id, is_summary, created_at, updated_at, tenant_id)
 		 VALUES `+strings.Join(placeholders, ","),
 		args...,
 	)
@@ -51,12 +52,17 @@ func (s *SQLitePendingMessageStore) AppendBatch(ctx context.Context, msgs []stor
 }
 
 func (s *SQLitePendingMessageStore) ListByKey(ctx context.Context, channelName, historyKey string) ([]store.PendingMessage, error) {
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]any{channelName, historyKey}, tArgs...)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, channel_name, history_key, sender, sender_id, body, platform_msg_id, is_summary, created_at, updated_at
 		 FROM channel_pending_messages
-		 WHERE channel_name = ? AND history_key = ?
+		 WHERE channel_name = ? AND history_key = ?`+tClause+`
 		 ORDER BY created_at ASC`,
-		channelName, historyKey,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -78,9 +84,14 @@ func (s *SQLitePendingMessageStore) ListByKey(ctx context.Context, channelName, 
 }
 
 func (s *SQLitePendingMessageStore) DeleteByKey(ctx context.Context, channelName, historyKey string) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM channel_pending_messages WHERE channel_name = ? AND history_key = ?`,
-		channelName, historyKey,
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return err
+	}
+	args := append([]any{channelName, historyKey}, tArgs...)
+	_, err = s.db.ExecContext(ctx,
+		`DELETE FROM channel_pending_messages WHERE channel_name = ? AND history_key = ?`+tClause,
+		args...,
 	)
 	return err
 }
@@ -121,9 +132,9 @@ func (s *SQLitePendingMessageStore) Compact(ctx context.Context, deleteIDs []uui
 	}
 	now := time.Now()
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO channel_pending_messages (id, channel_name, history_key, sender, sender_id, body, platform_msg_id, is_summary, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		summary.ID, summary.ChannelName, summary.HistoryKey, summary.Sender, summary.SenderID, summary.Body, summary.PlatformMsgID, true, now, now,
+		`INSERT INTO channel_pending_messages (id, channel_name, history_key, sender, sender_id, body, platform_msg_id, is_summary, created_at, updated_at, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		summary.ID, summary.ChannelName, summary.HistoryKey, summary.Sender, summary.SenderID, summary.Body, summary.PlatformMsgID, true, now, now, tenantIDForInsert(ctx),
 	)
 	if err != nil {
 		return fmt.Errorf("compact insert summary: %w", err)
@@ -134,9 +145,10 @@ func (s *SQLitePendingMessageStore) Compact(ctx context.Context, deleteIDs []uui
 
 func (s *SQLitePendingMessageStore) DeleteStale(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
+	tid := tenantIDForInsert(ctx)
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM channel_pending_messages WHERE updated_at < ?`,
-		cutoff,
+		`DELETE FROM channel_pending_messages WHERE updated_at < ? AND tenant_id = ?`,
+		cutoff, tid,
 	)
 	if err != nil {
 		return 0, err
@@ -145,6 +157,10 @@ func (s *SQLitePendingMessageStore) DeleteStale(ctx context.Context, olderThan t
 }
 
 func (s *SQLitePendingMessageStore) ListGroups(ctx context.Context) ([]store.PendingMessageGroup, error) {
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// SQLite: BOOL_OR → MAX(is_summary), EXISTS subquery logic preserved
 	q := `SELECT channel_name, history_key,
 		        COUNT(*) AS message_count,
@@ -163,10 +179,11 @@ func (s *SQLitePendingMessageStore) ListGroups(ctx context.Context) ([]store.Pen
 		          ) AS has_summary,
 		        MAX(created_at) AS last_activity
 		 FROM channel_pending_messages m
+		 WHERE 1=1` + tClause + `
 		 GROUP BY channel_name, history_key
 		 ORDER BY last_activity DESC`
 
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.db.QueryContext(ctx, q, tArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -184,18 +201,28 @@ func (s *SQLitePendingMessageStore) ListGroups(ctx context.Context) ([]store.Pen
 }
 
 func (s *SQLitePendingMessageStore) CountAll(ctx context.Context) (int64, error) {
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return 0, err
+	}
 	var count int64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM channel_pending_messages`,
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM channel_pending_messages WHERE 1=1`+tClause,
+		tArgs...,
 	).Scan(&count)
 	return count, err
 }
 
 func (s *SQLitePendingMessageStore) CountByKey(ctx context.Context, channelName, historyKey string) (int, error) {
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return 0, err
+	}
+	args := append([]any{channelName, historyKey}, tArgs...)
 	var count int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM channel_pending_messages WHERE channel_name = ? AND history_key = ?`,
-		channelName, historyKey,
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM channel_pending_messages WHERE channel_name = ? AND history_key = ?`+tClause,
+		args...,
 	).Scan(&count)
 	return count, err
 }
@@ -213,11 +240,24 @@ func (s *SQLitePendingMessageStore) ResolveGroupTitles(ctx context.Context, grou
 		args = append(args, g.ChannelName, g.HistoryKey)
 	}
 
+	if !store.IsCrossTenant(ctx) {
+		tid := store.TenantIDFromContext(ctx)
+		if tid == uuid.Nil {
+			tid = store.MasterTenantID
+		}
+		args = append(args, tid)
+	}
+
+	tenantFilter := ""
+	if !store.IsCrossTenant(ctx) {
+		tenantFilter = " AND tenant_id = ?"
+	}
+
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT session_key, json_extract(metadata, '$.chat_title')"+
 			" FROM sessions"+
 			" WHERE json_extract(metadata, '$.chat_title') != ''"+
-			" AND ("+strings.Join(conditions, " OR ")+")",
+			" AND ("+strings.Join(conditions, " OR ")+")"+tenantFilter,
 		args...,
 	)
 	if err != nil {

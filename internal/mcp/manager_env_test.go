@@ -5,57 +5,32 @@ import (
 )
 
 func TestResolveEnvVars(t *testing.T) {
-	t.Setenv("HOME", "/home/testuser")
-	t.Setenv("USER", "testuser")
+	t.Setenv("TEST_MCP_TOKEN", "secret123")
 
 	tests := []struct {
-		name    string
-		input   map[string]string
-		want    map[string]string
-		wantErr bool
+		name  string
+		input map[string]string
+		want  map[string]string
 	}{
 		{
-			name:    "resolves allowed env prefix",
-			input:   map[string]string{"X-User": "env:USER", "X-Custom": "literal"},
-			want:    map[string]string{"X-User": "testuser", "X-Custom": "literal"},
-			wantErr: false,
+			"resolves env prefix",
+			map[string]string{"Authorization": "env:TEST_MCP_TOKEN", "X-Custom": "literal"},
+			map[string]string{"Authorization": "secret123", "X-Custom": "literal"},
 		},
 		{
-			name:    "resolves HOME env var",
-			input:   map[string]string{"X-Home": "env:HOME"},
-			want:    map[string]string{"X-Home": "/home/testuser"},
-			wantErr: false,
+			"missing env var resolves to empty",
+			map[string]string{"X-Missing": "env:NONEXISTENT_VAR_XYZ"},
+			map[string]string{"X-Missing": ""},
 		},
 		{
-			name:    "nil map",
-			input:   nil,
-			want:    map[string]string{},
-			wantErr: false,
-		},
-		{
-			name:    "rejects non-allowlisted env var",
-			input:   map[string]string{"Authorization": "env:AWS_SECRET_KEY"},
-			wantErr: true,
-		},
-		{
-			name:    "rejects sensitive env var",
-			input:   map[string]string{"X-Token": "env:DATABASE_PASSWORD"},
-			wantErr: true,
+			"nil map",
+			nil,
+			map[string]string{},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveEnvVars(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-				return
-			}
+			got := resolveEnvVars(tt.input)
 			for k, v := range tt.want {
 				if got[k] != v {
 					t.Errorf("key %q: got %q, want %q", k, got[k], v)

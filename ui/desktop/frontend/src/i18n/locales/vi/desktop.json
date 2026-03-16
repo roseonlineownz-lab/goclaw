@@ -26,10 +26,7 @@
     "fileLabelSOUL": "Tính cách cốt lõi",
     "fileLabelIDENTITY": "Danh tính & kiến thức",
     "agentReady": "{{name}} đã sẵn sàng!",
-    "retrying": "Đang thử lại...",
-    "takingTooLong": "Mất quá nhiều thời gian?",
-    "cancel": "Huỷ",
-    "cancelling": "Đang huỷ..."
+    "retrying": "Đang thử lại..."
   },
   "settings": {
     "title": "Settings",

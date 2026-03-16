@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/nextlevelbuilder/goclaw/internal/config"
 )
 
 // WorkspaceLayer transforms a base path into a scoped path.
@@ -20,12 +22,11 @@ func ResolveWorkspace(base string, layers ...WorkspaceLayer) string {
 	return base
 }
 
-// TenantLayer is a no-op in v4 single-tenant. Returns base unchanged.
-// Kept temporarily for source-compat with remaining callers; will be removed
-// once all call sites are migrated.
-func TenantLayer(_ uuid.UUID, _ string) WorkspaceLayer {
+// TenantLayer scopes to tenant subdirectory.
+// Master tenant is a no-op (backward compat — returns base unchanged).
+func TenantLayer(tenantID uuid.UUID, slug string) WorkspaceLayer {
 	return func(base string) string {
-		return base
+		return config.TenantWorkspace(base, tenantID, slug)
 	}
 }
 

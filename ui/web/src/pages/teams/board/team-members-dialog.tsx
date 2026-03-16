@@ -52,7 +52,7 @@ export function TeamMembersDialog({
   const memberIds = useMemo(() => new Set(members.map((m) => m.agent_id)), [members]);
   const available = useMemo(
     () => agents
-      .filter((a) => a.status === "active" && !memberIds.has(a.id))
+      .filter((a) => a.agent_type === "predefined" && a.status === "active" && !memberIds.has(a.id))
       .map((a) => ({ value: a.id, label: a.display_name || a.agent_key })),
     [agents, memberIds],
   );

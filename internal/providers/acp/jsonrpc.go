@@ -72,7 +72,6 @@ func (c *Conn) readLoop() {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		slog.Debug("acp.jsonrpc: < READ", "line", string(line))
 		if len(line) == 0 {
 			continue
 		}
@@ -208,7 +207,6 @@ func (c *Conn) writeMessage(msg *jsonrpcMessage) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	slog.Debug("acp.jsonrpc: > WRITE", "data", string(data))
 	_, err = c.writer.Write(data)
 	return err
 }

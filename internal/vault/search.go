@@ -4,22 +4,11 @@ package vault
 
 import (
 	"context"
-	"slices"
 	"sort"
 	"sync"
 
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
-
-// shouldFanout returns true when a store with the given key participates in
-// the current fan-out. An empty DocTypes list fans out to all sources
-// (backwards-compatible default); otherwise the key must be present.
-func shouldFanout(docTypes []string, key string) bool {
-	if len(docTypes) == 0 {
-		return true
-	}
-	return slices.Contains(docTypes, key)
-}
 
 // SearchWeights controls relative weighting of each search source.
 type SearchWeights struct {
@@ -35,17 +24,16 @@ func DefaultSearchWeights() SearchWeights {
 
 // UnifiedSearchOptions configures a cross-store search query.
 type UnifiedSearchOptions struct {
-	Query        string
-	AgentID      string
-	UserID       string
-	TeamID       *string // nil = no filter (owner), ptr-to-empty = personal, ptr-to-uuid = team
-	ChatID       *string // isolated-team scope: filter docs to (chat_id = ChatID OR chat_id IS NULL)
-	TeamIsolated bool    // true = apply ChatID filter; false = shared/personal (ignore ChatID)
-	Scope        string
-	DocTypes     []string
-	MaxResults   int
-	MinScore     float64
-	Weights      SearchWeights
+	Query      string
+	AgentID    string
+	UserID     string
+	TenantID   string
+	TeamID     *string // nil = no filter (owner), ptr-to-empty = personal, ptr-to-uuid = team
+	Scope      string
+	DocTypes   []string
+	MaxResults int
+	MinScore   float64
+	Weights    SearchWeights
 }
 
 // UnifiedSearchResult is a normalized result from any search source.
@@ -92,15 +80,14 @@ func (s *VaultSearchService) Search(ctx context.Context, opts UnifiedSearchOptio
 	if s.vaultStore != nil {
 		wg.Go(func() {
 			results, err := s.vaultStore.Search(ctx, store.VaultSearchOptions{
-				Query:        opts.Query,
-				AgentID:      opts.AgentID,
-				TeamID:       opts.TeamID,
-				ChatID:       opts.ChatID,
-				TeamIsolated: opts.TeamIsolated,
-				Scope:        opts.Scope,
-				DocTypes:     opts.DocTypes,
-				MaxResults:   opts.MaxResults * 2,
-				MinScore:     opts.MinScore,
+				Query:      opts.Query,
+				AgentID:    opts.AgentID,
+				TenantID:   opts.TenantID,
+				TeamID:     opts.TeamID,
+				Scope:      opts.Scope,
+				DocTypes:   opts.DocTypes,
+				MaxResults: opts.MaxResults * 2,
+				MinScore:   opts.MinScore,
 			})
 			if err != nil {
 				return
@@ -124,7 +111,7 @@ func (s *VaultSearchService) Search(ctx context.Context, opts UnifiedSearchOptio
 	}
 
 	// Fan-out: episodic
-	if s.episodicStore != nil && shouldFanout(opts.DocTypes, "episodic") {
+	if s.episodicStore != nil {
 		wg.Go(func() {
 			results, err := s.episodicStore.Search(ctx, opts.Query, opts.AgentID, opts.UserID, store.EpisodicSearchOptions{
 				MaxResults: opts.MaxResults * 2,
@@ -152,7 +139,7 @@ func (s *VaultSearchService) Search(ctx context.Context, opts UnifiedSearchOptio
 	}
 
 	// Fan-out: knowledge graph
-	if s.kgStore != nil && shouldFanout(opts.DocTypes, "kg") {
+	if s.kgStore != nil {
 		wg.Go(func() {
 			entities, err := s.kgStore.SearchEntities(ctx, opts.AgentID, opts.UserID, opts.Query, opts.MaxResults*2)
 			if err != nil {

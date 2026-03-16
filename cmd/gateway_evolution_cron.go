@@ -94,6 +94,8 @@ func releaseAdvisoryLock(ctx context.Context, conn *sql.Conn) {
 }
 
 // runSuggestionAnalysis lists agents with evolution enabled and runs analysis.
+// Note: List(ctx, "") uses bare context (no tenant) to list ALL agents cross-tenant.
+// Per-agent calls are scoped via WithTenantID.
 func runSuggestionAnalysis(stores *store.Stores, engine *agent.SuggestionEngine) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -124,7 +126,8 @@ func runSuggestionAnalysis(stores *store.Stores, engine *agent.SuggestionEngine)
 		if !flags.EvolutionSuggest {
 			continue // metrics enabled but suggestions disabled — skip analysis
 		}
-		if _, err := engine.Analyze(ctx, ag.ID); err != nil {
+		agentCtx := store.WithTenantID(ctx, ag.TenantID)
+		if _, err := engine.Analyze(agentCtx, ag.ID); err != nil {
 			slog.Debug("evolution.cron.analyze_failed", "agent", ag.ID, "error", err)
 		}
 		count++
@@ -158,7 +161,7 @@ func runEvolutionEvaluation(stores *store.Stores) {
 		if !flags.EvolutionSuggest {
 			continue // skip evaluation for agents with suggestions disabled
 		}
-		agentCtx := ctx
+		agentCtx := store.WithTenantID(ctx, ag.TenantID)
 		if err := agent.EvaluateApplied(agentCtx, ag.ID, guardrails, stores.EvolutionMetrics, stores.EvolutionSuggestions, stores.Agents); err != nil {
 			slog.Debug("evolution.cron.eval_failed", "agent", ag.ID, "error", err)
 		}

@@ -26,11 +26,11 @@ func (l *Loop) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		event.TeamID = req.TeamID
 		event.TeamTaskID = req.TeamTaskID
 		event.ParentAgentID = req.ParentAgentID
-		event.SenderID = req.SenderID
 		event.UserID = req.UserID
 		event.Channel = req.Channel
 		event.ChatID = req.ChatID
 		event.SessionKey = req.SessionKey
+		event.TenantID = store.TenantIDFromContext(ctx)
 		l.emit(event)
 	}
 
@@ -40,14 +40,6 @@ func (l *Loop) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		RunID:   req.RunID,
 		Payload: map[string]any{"message": req.Message},
 	})
-
-	// Propagate 5D scope from request into context so tools (memory, episodic)
-	// can apply the correct bucket filter without re-querying session data.
-	if req.TeamID != "" {
-		if tid, err := uuid.Parse(req.TeamID); err == nil {
-			ctx = store.WithTeamID(ctx, tid)
-		}
-	}
 
 	// Create trace
 	var traceID uuid.UUID
@@ -103,10 +95,6 @@ func (l *Loop) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				trace.TeamID = &tid
 			}
 		}
-		// Propagate channel contact to trace for channel-originated invocations.
-		if cid := store.ContactIDFromContext(ctx); cid != uuid.Nil {
-			trace.ContactID = &cid
-		}
 		if err := l.traceCollector.CreateTrace(ctx, trace); err != nil {
 			slog.Warn("tracing: failed to create trace", "error", err)
 		} else {
@@ -114,12 +102,6 @@ func (l *Loop) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 			ctx = tracing.WithCollector(ctx, l.traceCollector)
 			if trace.TeamID != nil {
 				ctx = tracing.WithTraceTeamID(ctx, *trace.TeamID)
-			}
-
-			// Notify the gateway so it can associate this traceID with the active run
-			// entry for force-abort (forceMarkTraceAborted needs traceID at abort time).
-			if req.OnTraceCreated != nil {
-				req.OnTraceCreated(traceID)
 			}
 
 			// Pre-generate root "agent" span ID so LLM/tool spans can reference it as parent.

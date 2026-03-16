@@ -12,7 +12,7 @@ import (
 // ListEntitiesTemporal queries entities with temporal awareness.
 // AsOf=nil: current facts only (valid_until IS NULL). AsOf set: facts valid at that time.
 func (s *PGKnowledgeGraphStore) ListEntitiesTemporal(ctx context.Context, agentID, userID string, opts store.EntityListOptions, temporal store.TemporalQueryOptions) ([]store.Entity, error) {
-	aid := parseUUIDOrNil(agentID)
+	aid := mustParseUUID(agentID)
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
@@ -68,10 +68,7 @@ func (s *PGKnowledgeGraphStore) ListEntitiesTemporal(ctx context.Context, agentI
 
 // SupersedeEntity atomically expires the old entity and inserts a replacement.
 func (s *PGKnowledgeGraphStore) SupersedeEntity(ctx context.Context, old *store.Entity, replacement *store.Entity) error {
-	aid, err := parseUUID(old.AgentID)
-	if err != nil {
-		return fmt.Errorf("kg supersede entity: %w", err)
-	}
+	aid := mustParseUUID(old.AgentID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("supersede begin tx: %w", err)
@@ -79,12 +76,20 @@ func (s *PGKnowledgeGraphStore) SupersedeEntity(ctx context.Context, old *store.
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
+	tid := tenantIDForInsert(ctx)
+
+	// Tenant scope for UPDATE
+	tc, tcArgs, _, err := scopeClause(ctx, 6)
+	if err != nil {
+		return err
+	}
 
 	// Expire old entity
+	expireArgs := append([]any{now, now, aid, old.UserID, old.ExternalID}, tcArgs...)
 	_, err = tx.ExecContext(ctx, `
 		UPDATE kg_entities SET valid_until = $1, updated_at = $2
-		WHERE agent_id = $3 AND user_id = $4 AND external_id = $5 AND valid_until IS NULL`,
-		now, now, aid, old.UserID, old.ExternalID)
+		WHERE agent_id = $3 AND user_id = $4 AND external_id = $5 AND valid_until IS NULL`+tc,
+		expireArgs...)
 	if err != nil {
 		return fmt.Errorf("supersede expire old: %w", err)
 	}
@@ -93,11 +98,11 @@ func (s *PGKnowledgeGraphStore) SupersedeEntity(ctx context.Context, old *store.
 	props, _ := json.Marshal(replacement.Properties)
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO kg_entities (id, agent_id, user_id, external_id, name, entity_type,
-		    description, properties, source_id, confidence, created_at, updated_at, valid_from)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11)`,
+		    description, properties, source_id, confidence, tenant_id, created_at, updated_at, valid_from)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12)`,
 		aid, replacement.UserID, replacement.ExternalID,
 		replacement.Name, replacement.EntityType, replacement.Description,
-		props, replacement.SourceID, replacement.Confidence, now, now)
+		props, replacement.SourceID, replacement.Confidence, tid, now, now)
 	if err != nil {
 		return fmt.Errorf("supersede insert new: %w", err)
 	}

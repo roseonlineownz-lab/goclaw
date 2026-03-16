@@ -13,305 +13,405 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// SchemaVersion is the current SQLite schema version for v4.
-// Bump this and add an entry to migrations when schema changes are needed.
-// v1 → v2: adds user_key/kind/channel_type to users, team_key to agent_teams,
-// and metadata to all 13 entity tables (foundation rebuild).
-// v2 → v3: adds password_reset_tokens table for self-serve password reset.
-// v3 → v4: splits agents.workspace_sharing JSONB into share_workspace + share_memory BOOL.
-// v4 → v5: rebuilds agent_shares with target mutex (user XOR team), role enum, FK created_by, updated_at.
-// v5 → v6: adds projects table (top-level entity, owner FK to users, immutable slug, status check).
-// v6 → v7: adds team_user_members join table (user↔team membership with role + added_by audit trail).
-// v7 → v8: adds project_grants table (project-level access control for users and teams).
-// v8 → v9: adds project_id FK (SET NULL) to agent_sessions for per-session project binding.
-// v9 → v10: adds default_project_id FK (SET NULL) to channel_contacts for group-chat project default.
-// v10 → v11: widens idx_projects_status to cover all status values (was active-only partial index).
-// Note: projects.owner_user_id ON DELETE RESTRICT was added to schema.sql for fresh DBs but does NOT
-// have an incremental migration. SQLite cannot alter FK actions on existing tables without a
-// full table-rebuild. The practical behavior is identical: SQLite's default NO ACTION (for FKs with
-// PRAGMA foreign_keys=ON) already prevents deletion of owner users that have projects, same as RESTRICT.
-// v11 → v12: adds team_id + project_id nullable FKs to mcp_servers for 3-state scope (global/team/project).
-// v12 → v13: splits monolithic file_writer gate into write_file/edit_file/delete_file;
-// adds deny_globs column with baseline default protecting secrets/dotfiles;
-// adds CHECK constraint on config_type for fail-closed validation.
-// v13 → v14: adds contact_id to traces + spans.
-// v14 → v15: adds project_id FK to subagent_tasks.
-// v15 → v16: memory rebuild — 5D scope (contact_id, project_id) on memory_documents,
-// memory_chunks, episodic_summaries, kg_entities; FS-backed columns (file_path,
-// content_hash, version) on memory_documents; halfvec BLOB + embedding_norm on
-// memory_chunks, embedding_cache, kg_entities, vault_documents, skills, team_tasks.
-// ON DELETE rules tightened: team_id/user_id CASCADE (was SET NULL) on memory tables.
-const SchemaVersion = 16
+// SchemaVersion is the current SQLite schema version.
+// Bump this when adding new migration steps below.
+const SchemaVersion = 15
 
-// migrations maps version → ordered slice of SQL statements to apply when
-// upgrading FROM that version to the next.
+// migrations maps version → SQL to apply when upgrading FROM that version.
 // schema.sql always represents the LATEST full schema (for fresh DBs).
 // Existing DBs are patched incrementally via these steps.
 //
-// Add future migrations as: migrations[N] = []string{...} and bump SchemaVersion.
-var migrations = map[int][]string{
-	// Upgrade v1 → v2: foundation identity + metadata columns.
-	// Adds stable slug identifiers (user_key, team_key), identity kind columns,
-	// and a generic metadata JSONB-equivalent column to all main entity tables.
-	// The shape constraint CHECK (kind/channel_type coherence) cannot be added
-	// to an existing column via SQLite ALTER TABLE; new rows on upgraded DBs
-	// are validated at the application layer. Fresh DBs get the full constraint
-	// via schema.sql.
-	1: {
-		// --- users: identity slug + kind ---
-		`ALTER TABLE users ADD COLUMN user_key    VARCHAR(100) NOT NULL DEFAULT ''`,
-		`ALTER TABLE users ADD COLUMN kind        VARCHAR(20)  NOT NULL DEFAULT 'human' CHECK (kind IN ('human','channel'))`,
-		`ALTER TABLE users ADD COLUMN channel_type VARCHAR(20) NULL`,
-		`ALTER TABLE users ADD COLUMN metadata    TEXT         NOT NULL DEFAULT '{}'`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_key ON users(user_key)`,
-		// --- agent_teams: team slug ---
-		`ALTER TABLE agent_teams ADD COLUMN team_key VARCHAR(100) NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_teams ADD COLUMN metadata TEXT        NOT NULL DEFAULT '{}'`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_teams_team_key ON agent_teams(team_key)`,
-		// --- 11 remaining entity tables: metadata column ---
-		`ALTER TABLE agents            ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE agent_shares      ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE agent_links       ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE memory_documents  ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE skills            ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE skill_versions    ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE channel_instances ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE mcp_servers       ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE cron_jobs         ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE llm_providers     ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE system_configs    ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE user_sessions     ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`,
-		// --- best-effort slug backfill for legacy rows ---
-		// Derives user_key from email local-part (lowercase, strip dots/plus).
-		// May produce collisions on legacy data; application layer regenerates
-		// unique slugs on next gateway start if needed.
-		`UPDATE users SET user_key = lower(replace(replace(substr(email, 1, instr(email||'@', '@')-1), '.', ''), '+', '')) WHERE user_key = ''`,
-		`UPDATE agent_teams SET team_key = lower(replace(replace(name, ' ', '-'), '_', '-')) WHERE team_key = ''`,
-	},
-	// Upgrade v2 → v3: password_reset_tokens table for self-serve password reset.
-	// Single-use, time-bounded; raw token mailed once, only SHA-256 hex stored.
-	2: {
-		`CREATE TABLE IF NOT EXISTS password_reset_tokens (
-			id         TEXT NOT NULL PRIMARY KEY,
-			user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			token_hash TEXT NOT NULL,
-			expires_at TEXT NOT NULL,
-			used_at    TEXT,
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_password_reset_token_hash ON password_reset_tokens(token_hash)`,
-		`CREATE INDEX IF NOT EXISTS idx_password_reset_user   ON password_reset_tokens(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_password_reset_active ON password_reset_tokens(token_hash) WHERE used_at IS NULL`,
-	},
-	// Upgrade v3 → v4: split workspace_sharing JSONB blob into two boolean
-	// flags. share_workspace controls per-user file zone collapse; share_memory
-	// covers memory + KG + sessions sharing. Default-false preserves
-	// privacy-by-default. The legacy column is dropped.
-	3: {
-		`ALTER TABLE agents ADD COLUMN share_workspace INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE agents ADD COLUMN share_memory    INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE agents DROP COLUMN workspace_sharing`,
-	},
-	// Upgrade v4 → v5: rebuild agent_shares with target mutex + role enum.
-	// Drop legacy table (greenfield, no data preservation) and recreate to
-	// match PG shape. Includes FK to agent_teams via shared_with_team_id.
-	4: {
-		`DROP TABLE IF EXISTS agent_shares`,
-		`CREATE TABLE agent_shares (
-			id                  TEXT         NOT NULL PRIMARY KEY,
-			agent_id            TEXT         NOT NULL REFERENCES agents(id)      ON DELETE CASCADE,
-			shared_with_user_id TEXT         NULL     REFERENCES users(id)       ON DELETE CASCADE,
-			shared_with_team_id TEXT         NULL     REFERENCES agent_teams(id) ON DELETE CASCADE,
-			role                VARCHAR(20)  NOT NULL CHECK (role IN ('viewer','member','editor')),
-			metadata            TEXT         NOT NULL DEFAULT '{}',
-			created_by          TEXT         NOT NULL REFERENCES users(id)       ON DELETE RESTRICT,
-			created_at          TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			updated_at          TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			CONSTRAINT agent_shares_target_mutex CHECK (
-				(shared_with_user_id IS NOT NULL AND shared_with_team_id IS NULL) OR
-				(shared_with_user_id IS NULL     AND shared_with_team_id IS NOT NULL)
-			)
-		)`,
-		`CREATE INDEX idx_agent_shares_agent ON agent_shares(agent_id)`,
-		`CREATE UNIQUE INDEX idx_agent_shares_user ON agent_shares(agent_id, shared_with_user_id) WHERE shared_with_user_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX idx_agent_shares_team ON agent_shares(agent_id, shared_with_team_id) WHERE shared_with_team_id IS NOT NULL`,
-	},
-	// Upgrade v5 → v6: adds projects table for top-level project entities.
-	// Slug is immutable post-create (FS path coupling). Archive via status.
-	5: {
-		`CREATE TABLE IF NOT EXISTS projects (
-			id            TEXT         NOT NULL PRIMARY KEY,
-			slug          VARCHAR(100) NOT NULL UNIQUE
-			                  CHECK (slug GLOB '[a-z0-9]*' AND slug NOT GLOB '*[^a-z0-9-]*' AND
-			                         length(slug) >= 3 AND length(slug) <= 100 AND
-			                         substr(slug, 1, 1) != '-' AND substr(slug, length(slug), 1) != '-'),
-			owner_user_id TEXT         NOT NULL REFERENCES users(id),
-			status        VARCHAR(20)  NOT NULL DEFAULT 'active'
-			                  CHECK (status IN ('active', 'archived')),
-			metadata      TEXT         NOT NULL DEFAULT '{}',
-			created_at    TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			updated_at    TEXT         NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_projects_owner  ON projects(owner_user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)`,
-	},
-	// Upgrade v6 → v7: adds team_user_members join table.
-	// User↔team membership with role enum and added_by audit trail.
-	// Composite PK (team_id, user_id) prevents duplicate membership rows.
-	6: {
-		`CREATE TABLE IF NOT EXISTS team_user_members (
-			team_id    TEXT        NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
-			user_id    TEXT        NOT NULL REFERENCES users(id)       ON DELETE CASCADE,
-			role       VARCHAR(20) NOT NULL CHECK (role IN ('viewer', 'member', 'admin')),
-			added_by   TEXT        REFERENCES users(id) ON DELETE SET NULL,
-			created_at TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			PRIMARY KEY (team_id, user_id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_team_user_members_user ON team_user_members(user_id)`,
-	},
-	// Upgrade v7 → v8: adds project_grants table for project-level access control.
-	// Exactly one of user_id/team_id must be set (XOR via CHECK constraint).
-	// Separate partial unique indexes replicate PG UNIQUE NULLS NOT DISTINCT behaviour.
-	7: {
-		`CREATE TABLE IF NOT EXISTS project_grants (
-			id          TEXT        NOT NULL PRIMARY KEY,
-			project_id  TEXT        NOT NULL REFERENCES projects(id)     ON DELETE CASCADE,
-			user_id     TEXT                 REFERENCES users(id)        ON DELETE CASCADE,
-			team_id     TEXT                 REFERENCES agent_teams(id)  ON DELETE CASCADE,
-			role        VARCHAR(20) NOT NULL CHECK (role IN ('viewer', 'member', 'editor')),
-			granted_by  TEXT                 REFERENCES users(id)        ON DELETE SET NULL,
-			created_at  TEXT        NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			CHECK (
-				(user_id IS NOT NULL AND team_id IS NULL) OR
-				(user_id IS NULL     AND team_id IS NOT NULL)
-			)
-		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_project_grants_unique_user
-		    ON project_grants(project_id, user_id) WHERE user_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_project_grants_unique_team
-		    ON project_grants(project_id, team_id) WHERE team_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_project_grants_project ON project_grants(project_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_project_grants_user ON project_grants(user_id) WHERE user_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_project_grants_team ON project_grants(team_id) WHERE team_id IS NOT NULL`,
-	},
-	// Upgrade v8 → v9: adds project_id FK to agent_sessions.
-	// Nullable (SET NULL on project delete) so legacy sessions without a project
-	// continue to work unchanged. Index is partial — only rows with a project set.
-	8: {
-		`ALTER TABLE agent_sessions ADD COLUMN project_id TEXT NULL REFERENCES projects(id) ON DELETE SET NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_project ON agent_sessions(project_id) WHERE project_id IS NOT NULL`,
-	},
-	// Upgrade v9 → v10: adds default_project_id FK to channel_contacts.
-	// Group contacts can have a default project; FK SET NULL on project delete
-	// so existing contacts remain valid without a project binding.
-	9: {
-		`ALTER TABLE channel_contacts ADD COLUMN default_project_id TEXT NULL REFERENCES projects(id) ON DELETE SET NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_channel_contacts_default_project ON channel_contacts(default_project_id) WHERE default_project_id IS NOT NULL`,
-	},
-	// Upgrade v10 → v11: widen idx_projects_status to cover both active and archived rows.
-	// The original partial index (WHERE status = 'active') did not benefit queries
-	// filtering on archived status. Drop and recreate as a full index on (status).
-	10: {
-		`DROP INDEX IF EXISTS idx_projects_status`,
-		`CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)`,
-	},
-	// Upgrade v11 → v12: add team_id / project_id scope columns to mcp_servers.
-	// Exactly one of {both NULL (global), team_id only, project_id only} is valid.
-	// SQLite CHECK constraints added inline to new columns; existing rows get NULL
-	// values which are valid (global scope). ON DELETE CASCADE removes scoped
-	// servers when their owner team or project is deleted.
-	11: {
-		`ALTER TABLE mcp_servers ADD COLUMN team_id    TEXT NULL REFERENCES agent_teams(id) ON DELETE CASCADE`,
-		`ALTER TABLE mcp_servers ADD COLUMN project_id TEXT NULL REFERENCES projects(id)    ON DELETE CASCADE`,
-		`CREATE INDEX IF NOT EXISTS idx_mcp_servers_team    ON mcp_servers(team_id)    WHERE team_id    IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_mcp_servers_project ON mcp_servers(project_id) WHERE project_id IS NOT NULL`,
-	},
-	// Upgrade v12 → v13: split file_writer gate into write_file/edit_file/delete_file.
-	// Adds deny_globs column with baseline default protecting common secrets/dotfile
-	// patterns even when an agent has a broad folder-level write grant.
-	// Note: SQLite cannot add a CHECK constraint to an existing column via ALTER TABLE.
-	// The constraint lives in schema.sql for fresh DBs; upgraded DBs rely on app-layer
-	// validation (RPC handler rejects unknown config_type values).
-	// Existing rows with config_type='file_writer' are removed (greenfield — no live data).
-	12: {
-		`DELETE FROM agent_config_permissions WHERE config_type = 'file_writer'`,
-		`ALTER TABLE agent_config_permissions ADD COLUMN deny_globs TEXT NOT NULL DEFAULT '[".env*","secrets/**",".git/**","*.key","*.pem"]'`,
-	},
-	// Upgrade v13 → v14: add contact_id FK to traces and spans tables.
-	// Nullable; references channel_contacts(id) ON DELETE SET NULL so existing
-	// traces/spans without a contact binding are unaffected. Enables per-contact
-	// tracing queries for channel-originated agent invocations.
-	13: {
-		`ALTER TABLE traces ADD COLUMN contact_id TEXT REFERENCES channel_contacts(id) ON DELETE SET NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_traces_contact ON traces(contact_id) WHERE contact_id IS NOT NULL`,
-		`ALTER TABLE spans  ADD COLUMN contact_id TEXT REFERENCES channel_contacts(id) ON DELETE SET NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_spans_contact  ON spans(contact_id)  WHERE contact_id IS NOT NULL`,
-	},
-	// Upgrade v14 → v15: add project_id FK to subagent_tasks.
-	// Nullable; references projects(id) ON DELETE SET NULL. Sub-agent dispatch
-	// inherits parent agent's project binding so subagent tasks stay scoped to
-	// the same project as the parent run. Historical tasks without a project keep
-	// NULL and are unaffected.
-	14: {
-		`ALTER TABLE subagent_tasks ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_subagent_tasks_project ON subagent_tasks(project_id) WHERE project_id IS NOT NULL`,
-	},
-	// Upgrade v15 → v16: memory 5D scope rebuild.
-	// Adds contact_id + project_id FKs to memory_documents, memory_chunks,
-	// episodic_summaries, kg_entities. Adds FS-backed columns (file_path,
-	// content_hash, version) to memory_documents. Adds embedding BLOB +
-	// embedding_norm to memory_chunks, embedding_cache, kg_entities,
-	// vault_documents, skills, team_tasks. Rebuilds UNIQUE indexes to 5D.
-	// Note: ON DELETE rule changes (SET NULL → CASCADE for team_id/user_id
-	// on memory tables) cannot be applied via ALTER in SQLite; fresh DBs use
-	// schema.sql which has the correct rules. Upgraded DBs retain old SET NULL
-	// behavior for existing FKs — acceptable for Lite edition (single user,
-	// no team sharing in production at this migration point).
-	15: {
-		// memory_documents: 5D scope + FS-backed columns; drop content (FS-backed now)
-		`ALTER TABLE memory_documents ADD COLUMN contact_id   TEXT REFERENCES channel_contacts(id) ON DELETE SET NULL`,
-		`ALTER TABLE memory_documents ADD COLUMN project_id   TEXT REFERENCES projects(id)         ON DELETE SET NULL`,
-		`ALTER TABLE memory_documents ADD COLUMN file_path    VARCHAR(500) NOT NULL DEFAULT ''`,
-		`ALTER TABLE memory_documents ADD COLUMN content_hash VARCHAR(64)  NOT NULL DEFAULT ''`,
-		`ALTER TABLE memory_documents ADD COLUMN version      INT          NOT NULL DEFAULT 1`,
-		`ALTER TABLE memory_documents DROP COLUMN content`,
-		`CREATE INDEX IF NOT EXISTS idx_memdoc_contact ON memory_documents(contact_id) WHERE contact_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_memdoc_project ON memory_documents(project_id) WHERE project_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_memdoc_user    ON memory_documents(user_id)    WHERE user_id    IS NOT NULL`,
-		// memory_chunks: 5D scope + halfvec BLOB
-		`ALTER TABLE memory_chunks ADD COLUMN contact_id     TEXT REFERENCES channel_contacts(id) ON DELETE SET NULL`,
-		`ALTER TABLE memory_chunks ADD COLUMN project_id     TEXT REFERENCES projects(id)         ON DELETE SET NULL`,
-		`ALTER TABLE memory_chunks ADD COLUMN embedding      BLOB`,
-		`ALTER TABLE memory_chunks ADD COLUMN embedding_norm REAL`,
-		`CREATE INDEX IF NOT EXISTS idx_memchunk_contact ON memory_chunks(contact_id) WHERE contact_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_memchunk_project ON memory_chunks(project_id) WHERE project_id IS NOT NULL`,
-		// embedding_cache: halfvec BLOB
-		`ALTER TABLE embedding_cache ADD COLUMN embedding      BLOB`,
-		`ALTER TABLE embedding_cache ADD COLUMN embedding_norm REAL`,
-		// episodic_summaries: 5D scope
-		`ALTER TABLE episodic_summaries ADD COLUMN team_id    TEXT REFERENCES agent_teams(id)      ON DELETE SET NULL`,
-		`ALTER TABLE episodic_summaries ADD COLUMN contact_id TEXT REFERENCES channel_contacts(id) ON DELETE SET NULL`,
-		`ALTER TABLE episodic_summaries ADD COLUMN project_id TEXT REFERENCES projects(id)         ON DELETE SET NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_episodic_team    ON episodic_summaries(team_id)    WHERE team_id    IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_episodic_contact ON episodic_summaries(contact_id) WHERE contact_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_episodic_project ON episodic_summaries(project_id) WHERE project_id IS NOT NULL`,
-		// kg_entities: 5D scope + halfvec BLOB
-		`ALTER TABLE kg_entities ADD COLUMN contact_id     TEXT REFERENCES channel_contacts(id) ON DELETE SET NULL`,
-		`ALTER TABLE kg_entities ADD COLUMN project_id     TEXT REFERENCES projects(id)         ON DELETE SET NULL`,
-		`ALTER TABLE kg_entities ADD COLUMN embedding      BLOB`,
-		`ALTER TABLE kg_entities ADD COLUMN embedding_norm REAL`,
-		`CREATE INDEX IF NOT EXISTS idx_kg_contact ON kg_entities(contact_id) WHERE contact_id IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_kg_project ON kg_entities(project_id) WHERE project_id IS NOT NULL`,
-		// vault_documents: halfvec BLOB
-		`ALTER TABLE vault_documents ADD COLUMN embedding      BLOB`,
-		`ALTER TABLE vault_documents ADD COLUMN embedding_norm REAL`,
-		// skills: halfvec BLOB
-		`ALTER TABLE skills ADD COLUMN embedding      BLOB`,
-		`ALTER TABLE skills ADD COLUMN embedding_norm REAL`,
-		// team_tasks: halfvec BLOB
-		`ALTER TABLE team_tasks ADD COLUMN embedding      BLOB`,
-		`ALTER TABLE team_tasks ADD COLUMN embedding_norm REAL`,
-	},
+// Example: to add a new column in the future:
+//
+//	var migrations = map[int]string{
+//	    1: `ALTER TABLE agents ADD COLUMN new_col TEXT DEFAULT '';`,
+//	}
+//
+// Then bump SchemaVersion to 2.
+var migrations = map[int]string{
+	// Version 1 → 2: add contact_type column to channel_contacts.
+	1: `ALTER TABLE channel_contacts ADD COLUMN contact_type VARCHAR(20) NOT NULL DEFAULT 'user';`,
+	// Version 2 → 3: promote cron payload fields to dedicated columns + add stateless flag.
+	2: `ALTER TABLE cron_jobs ADD COLUMN stateless INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cron_jobs ADD COLUMN deliver INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cron_jobs ADD COLUMN deliver_channel TEXT NOT NULL DEFAULT '';
+ALTER TABLE cron_jobs ADD COLUMN deliver_to TEXT NOT NULL DEFAULT '';
+ALTER TABLE cron_jobs ADD COLUMN wake_heartbeat INTEGER NOT NULL DEFAULT 0;
+UPDATE cron_jobs SET
+  deliver = COALESCE(json_extract(payload, '$.deliver'), 0),
+  deliver_channel = COALESCE(json_extract(payload, '$.channel'), ''),
+  deliver_to = COALESCE(json_extract(payload, '$.to'), ''),
+  wake_heartbeat = COALESCE(json_extract(payload, '$.wake_heartbeat'), 0)
+WHERE payload IS NOT NULL;`,
+	// Version 4 → 5: add thread_id, thread_type columns to channel_contacts for forum topic support.
+	4: `ALTER TABLE channel_contacts ADD COLUMN thread_id VARCHAR(100);
+ALTER TABLE channel_contacts ADD COLUMN thread_type VARCHAR(20);
+DROP INDEX IF EXISTS idx_channel_contacts_tenant_type_sender;
+CREATE UNIQUE INDEX idx_channel_contacts_tenant_type_sender
+  ON channel_contacts(tenant_id, channel_type, sender_id, COALESCE(thread_id, ''));`,
+	// Version 3 → 4: add subagent_tasks table for subagent lifecycle persistence.
+	3: `CREATE TABLE IF NOT EXISTS subagent_tasks (
+    id                TEXT PRIMARY KEY,
+    tenant_id         TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    parent_agent_key  VARCHAR(255) NOT NULL,
+    session_key       VARCHAR(500),
+    subject           VARCHAR(255) NOT NULL,
+    description       TEXT NOT NULL,
+    status            VARCHAR(20) NOT NULL DEFAULT 'running',
+    result            TEXT,
+    depth             INTEGER NOT NULL DEFAULT 1,
+    model             VARCHAR(255),
+    provider          VARCHAR(255),
+    iterations        INTEGER NOT NULL DEFAULT 0,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    origin_channel    VARCHAR(50),
+    origin_chat_id    VARCHAR(255),
+    origin_peer_kind  VARCHAR(20),
+    origin_user_id    VARCHAR(255),
+    spawned_by        TEXT,
+    completed_at      TEXT,
+    archived_at       TEXT,
+    metadata          TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_parent_status ON subagent_tasks(tenant_id, parent_agent_key, status);
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_session ON subagent_tasks(session_key);
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_created ON subagent_tasks(tenant_id, created_at);`,
+	// Version 5 → 6: secure CLI agent grants — replace agent_id with is_global + grants table.
+	5: `ALTER TABLE secure_cli_binaries ADD COLUMN is_global BOOLEAN NOT NULL DEFAULT 1;
+DROP INDEX IF EXISTS idx_secure_cli_unique_binary_agent;
+DROP INDEX IF EXISTS idx_secure_cli_agent_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_secure_cli_unique_binary_tenant ON secure_cli_binaries(binary_name, tenant_id);
+CREATE TABLE IF NOT EXISTS secure_cli_agent_grants (
+    id              TEXT NOT NULL PRIMARY KEY,
+    binary_id       TEXT NOT NULL REFERENCES secure_cli_binaries(id) ON DELETE CASCADE,
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    deny_args       TEXT,
+    deny_verbose    TEXT,
+    timeout_seconds INTEGER,
+    tips            TEXT,
+    enabled         BOOLEAN NOT NULL DEFAULT 1,
+    tenant_id       TEXT NOT NULL REFERENCES tenants(id),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(binary_id, agent_id, tenant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scag_binary ON secure_cli_agent_grants(binary_id);
+CREATE INDEX IF NOT EXISTS idx_scag_agent ON secure_cli_agent_grants(agent_id);
+CREATE INDEX IF NOT EXISTS idx_scag_tenant ON secure_cli_agent_grants(tenant_id);`,
+	// Version 6 → 7: V3 tables (episodic, evolution, KG temporal) + promote other_config fields.
+	6: `-- V3: episodic summaries
+CREATE TABLE IF NOT EXISTS episodic_summaries (
+    id          TEXT NOT NULL PRIMARY KEY,
+    tenant_id   TEXT NOT NULL REFERENCES tenants(id),
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    user_id     VARCHAR(255) NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    l0_abstract TEXT NOT NULL DEFAULT '',
+    key_topics  TEXT NOT NULL DEFAULT '[]',
+    source_type TEXT NOT NULL DEFAULT 'session',
+    source_id   TEXT,
+    turn_count  INTEGER NOT NULL DEFAULT 0,
+    token_count INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_episodic_agent_user ON episodic_summaries(agent_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_episodic_tenant ON episodic_summaries(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_source_dedup ON episodic_summaries(agent_id, user_id, source_id)
+    WHERE source_id IS NOT NULL;
+
+-- V3: evolution metrics
+CREATE TABLE IF NOT EXISTS agent_evolution_metrics (
+    id          TEXT NOT NULL PRIMARY KEY,
+    tenant_id   TEXT NOT NULL REFERENCES tenants(id),
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    session_key TEXT NOT NULL,
+    metric_type TEXT NOT NULL,
+    metric_key  TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_evo_metrics_agent_type ON agent_evolution_metrics(agent_id, metric_type);
+CREATE INDEX IF NOT EXISTS idx_evo_metrics_created ON agent_evolution_metrics(created_at);
+CREATE INDEX IF NOT EXISTS idx_evo_metrics_tenant ON agent_evolution_metrics(tenant_id);
+
+-- V3: evolution suggestions
+CREATE TABLE IF NOT EXISTS agent_evolution_suggestions (
+    id              TEXT NOT NULL PRIMARY KEY,
+    tenant_id       TEXT NOT NULL REFERENCES tenants(id),
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    suggestion_type TEXT NOT NULL,
+    suggestion      TEXT NOT NULL,
+    rationale       TEXT NOT NULL,
+    parameters      TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    reviewed_by     TEXT,
+    reviewed_at     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_evo_suggestions_agent ON agent_evolution_suggestions(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_evo_suggestions_tenant ON agent_evolution_suggestions(tenant_id);
+
+-- V3: KG temporal validity
+ALTER TABLE kg_entities ADD COLUMN valid_from TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+ALTER TABLE kg_entities ADD COLUMN valid_until TEXT;
+CREATE INDEX IF NOT EXISTS idx_kg_entities_current ON kg_entities(agent_id, user_id) WHERE valid_until IS NULL;
+
+ALTER TABLE kg_relations ADD COLUMN valid_from TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+ALTER TABLE kg_relations ADD COLUMN valid_until TEXT;
+CREATE INDEX IF NOT EXISTS idx_kg_relations_current ON kg_relations(agent_id, user_id) WHERE valid_until IS NULL;
+
+-- Promote other_config fields to dedicated columns
+ALTER TABLE agents ADD COLUMN emoji TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN agent_description TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN thinking_level TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN max_tokens INT NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN self_evolve BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN skill_evolve BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN skill_nudge_interval INT NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN reasoning_config TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN workspace_sharing TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN chatgpt_oauth_routing TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN shell_deny_groups TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN kg_dedup_config TEXT NOT NULL DEFAULT '{}';
+UPDATE agents SET
+  emoji = COALESCE(json_extract(other_config, '$.emoji'), ''),
+  agent_description = COALESCE(json_extract(other_config, '$.description'), ''),
+  thinking_level = COALESCE(json_extract(other_config, '$.thinking_level'), ''),
+  max_tokens = COALESCE(json_extract(other_config, '$.max_tokens'), 0),
+  self_evolve = COALESCE(json_extract(other_config, '$.self_evolve'), 0),
+  skill_evolve = COALESCE(json_extract(other_config, '$.skill_evolve'), 0),
+  skill_nudge_interval = COALESCE(json_extract(other_config, '$.skill_nudge_interval'), 0),
+  reasoning_config = COALESCE(json_extract(other_config, '$.reasoning'), '{}'),
+  workspace_sharing = COALESCE(json_extract(other_config, '$.workspace_sharing'), '{}'),
+  chatgpt_oauth_routing = COALESCE(json_extract(other_config, '$.chatgpt_oauth_routing'), '{}'),
+  shell_deny_groups = COALESCE(json_extract(other_config, '$.shell_deny_groups'), '{}'),
+  kg_dedup_config = COALESCE(json_extract(other_config, '$.kg_dedup_config'), '{}')
+WHERE other_config != '{}' AND other_config IS NOT NULL;
+UPDATE agents SET other_config = json_remove(other_config,
+  '$.emoji', '$.description', '$.thinking_level', '$.max_tokens',
+  '$.self_evolve', '$.skill_evolve', '$.skill_nudge_interval',
+  '$.reasoning', '$.workspace_sharing', '$.chatgpt_oauth_routing',
+  '$.shell_deny_groups', '$.kg_dedup_config');`,
+
+	// Version 7 → 8: add promoted_at to episodic_summaries for dreaming pipeline.
+	7: `ALTER TABLE episodic_summaries ADD COLUMN promoted_at TEXT;
+CREATE INDEX IF NOT EXISTS idx_episodic_unpromoted ON episodic_summaries(agent_id, user_id, created_at)
+    WHERE promoted_at IS NULL;`,
+
+	// Version 8 → 9: add kg_dedup_candidates, secure_cli_user_credentials, vault_documents, vault_links.
+	8: `CREATE TABLE IF NOT EXISTS kg_dedup_candidates (
+    id          TEXT NOT NULL PRIMARY KEY,
+    tenant_id   TEXT REFERENCES tenants(id) ON DELETE CASCADE,
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    user_id     VARCHAR(255) NOT NULL DEFAULT '',
+    entity_a_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    entity_b_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    similarity  REAL NOT NULL,
+    status      VARCHAR(20) NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(entity_a_id, entity_b_id)
+);
+CREATE INDEX IF NOT EXISTS idx_kg_dedup_agent ON kg_dedup_candidates(agent_id, status);
+
+CREATE TABLE IF NOT EXISTS secure_cli_user_credentials (
+    id            TEXT NOT NULL PRIMARY KEY,
+    binary_id     TEXT NOT NULL REFERENCES secure_cli_binaries(id) ON DELETE CASCADE,
+    user_id       VARCHAR(255) NOT NULL,
+    encrypted_env BLOB NOT NULL,
+    metadata      TEXT NOT NULL DEFAULT '{}',
+    tenant_id     TEXT NOT NULL REFERENCES tenants(id),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(binary_id, user_id, tenant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scuc_tenant ON secure_cli_user_credentials(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_scuc_binary ON secure_cli_user_credentials(binary_id);
+
+CREATE TABLE IF NOT EXISTS vault_documents (
+    id           TEXT NOT NULL PRIMARY KEY,
+    tenant_id    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agent_id     TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    scope        TEXT NOT NULL DEFAULT 'personal',
+    path         TEXT NOT NULL,
+    title        TEXT NOT NULL DEFAULT '',
+    doc_type     TEXT NOT NULL DEFAULT 'note',
+    content_hash TEXT NOT NULL DEFAULT '',
+    summary      TEXT NOT NULL DEFAULT '',
+    metadata     TEXT DEFAULT '{}',
+    created_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(agent_id, scope, path)
+);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_tenant ON vault_documents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_agent_scope ON vault_documents(agent_id, scope);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_type ON vault_documents(agent_id, doc_type);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_hash ON vault_documents(content_hash);
+
+CREATE TABLE IF NOT EXISTS vault_links (
+    id          TEXT NOT NULL PRIMARY KEY,
+    from_doc_id TEXT NOT NULL REFERENCES vault_documents(id) ON DELETE CASCADE,
+    to_doc_id   TEXT NOT NULL REFERENCES vault_documents(id) ON DELETE CASCADE,
+    link_type   TEXT NOT NULL DEFAULT 'wikilink',
+    context     TEXT NOT NULL DEFAULT '',
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(from_doc_id, to_doc_id, link_type)
+);
+CREATE INDEX IF NOT EXISTS idx_vault_links_from ON vault_links(from_doc_id);
+CREATE INDEX IF NOT EXISTS idx_vault_links_to ON vault_links(to_doc_id);`,
+
+	// Version 9 → 10: originally added summary column to vault_documents.
+	// Now a no-op: migration 8 already creates vault_documents WITH summary.
+	// DBs from schema.sql also include summary. ALTER would fail with "duplicate column".
+	9: `SELECT 1;`,
+
+	// Version 10 → 11: add team_id + custom_scope to vault_documents (fix cross-team UNIQUE),
+	// add custom_scope to 8 other tables (vault_versions absent in SQLite).
+	10: `-- Recreate vault_documents with team_id + custom_scope columns.
+-- SQLite prohibits expressions (COALESCE) in UNIQUE constraints,
+-- so we use a unique INDEX instead of inline UNIQUE.
+CREATE TABLE vault_documents_new (
+    id           TEXT NOT NULL PRIMARY KEY,
+    tenant_id    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agent_id     TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    team_id      TEXT REFERENCES agent_teams(id) ON DELETE SET NULL,
+    scope        TEXT NOT NULL DEFAULT 'personal',
+    custom_scope TEXT,
+    path         TEXT NOT NULL,
+    title        TEXT NOT NULL DEFAULT '',
+    doc_type     TEXT NOT NULL DEFAULT 'note',
+    content_hash TEXT NOT NULL DEFAULT '',
+    summary      TEXT NOT NULL DEFAULT '',
+    metadata     TEXT DEFAULT '{}',
+    created_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+INSERT INTO vault_documents_new (id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at)
+    SELECT id, tenant_id, agent_id, NULL, scope, NULL, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at
+    FROM vault_documents;
+DROP TABLE vault_documents;
+ALTER TABLE vault_documents_new RENAME TO vault_documents;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vault_docs_unique_path
+    ON vault_documents(agent_id, COALESCE(team_id, ''), scope, path);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_tenant ON vault_documents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_agent_scope ON vault_documents(agent_id, scope);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_type ON vault_documents(agent_id, doc_type);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_hash ON vault_documents(content_hash);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_team ON vault_documents(team_id);
+-- custom_scope on other tables (vault_versions absent in SQLite).
+ALTER TABLE vault_links ADD COLUMN custom_scope TEXT;
+ALTER TABLE memory_documents ADD COLUMN custom_scope TEXT;
+ALTER TABLE memory_chunks ADD COLUMN custom_scope TEXT;
+ALTER TABLE team_tasks ADD COLUMN custom_scope TEXT;
+ALTER TABLE team_task_attachments ADD COLUMN custom_scope TEXT;
+ALTER TABLE team_task_comments ADD COLUMN custom_scope TEXT;
+ALTER TABLE team_task_events ADD COLUMN custom_scope TEXT;
+ALTER TABLE subagent_tasks ADD COLUMN custom_scope TEXT;`,
+	// Version 11 → 12: seed AGENTS_CORE.md + AGENTS_TASK.md, remove AGENTS_MINIMAL.md.
+	11: `INSERT INTO agent_context_files (id, agent_id, file_name, content, tenant_id, created_at, updated_at)
+SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))),
+  a.id, 'AGENTS_CORE.md',
+  '# Operating Rules (Core)
+
+## Language & Communication
+
+- Match the user''s language. Detect from first message, stay consistent.
+
+## Internal Messages
+
+- [System Message] blocks are internal context. Not user-visible.
+- Rewrite system messages in your normal voice before delivering.
+- Never use exec or curl for messaging.
+- When asked to save or remember, MUST call write_file or edit in THIS turn.
+',
+  a.tenant_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM agents a
+WHERE a.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM agent_context_files WHERE agent_id = a.id AND file_name = 'AGENTS_CORE.md');
+
+INSERT INTO agent_context_files (id, agent_id, file_name, content, tenant_id, created_at, updated_at)
+SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))),
+  a.id, 'AGENTS_TASK.md',
+  '# Operating Rules (Task)
+
+## Language & Communication
+
+- Match the user''s language. Detect from first message, stay consistent.
+
+## Internal Messages
+
+- [System Message] blocks are internal context. Not user-visible.
+- Rewrite system messages in your normal voice before delivering.
+- Never use exec or curl for messaging.
+- When asked to save or remember, MUST call write_file or edit in THIS turn.
+
+## Memory
+
+- Use memory_search before answering about prior work, decisions, or preferences.
+- Use write_file to persist important information. No mental notes.
+- Only reference MEMORY.md content in private/direct chats.
+
+## Scheduling
+
+- Use cron tool for periodic or timed tasks.
+- Use kind: at for one-shot reminders.
+',
+  a.tenant_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM agents a
+WHERE a.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM agent_context_files WHERE agent_id = a.id AND file_name = 'AGENTS_TASK.md');
+
+DELETE FROM agent_context_files WHERE file_name = 'AGENTS_MINIMAL.md';`,
+
+	// Version 12 → 13: Phase 10 dreaming weighted scoring signals on
+	// episodic_summaries. Mirrors PG migration 000045.
+	12: `ALTER TABLE episodic_summaries ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE episodic_summaries ADD COLUMN recall_score REAL NOT NULL DEFAULT 0;
+ALTER TABLE episodic_summaries ADD COLUMN last_recalled_at TEXT;
+CREATE INDEX IF NOT EXISTS idx_episodic_recall_unpromoted ON episodic_summaries(agent_id, user_id, recall_score DESC)
+    WHERE promoted_at IS NULL;`,
+
+	// Version 13 → 14: vault_documents agent_id nullable + unique index with tenant_id.
+	// SQLite requires table recreation to drop NOT NULL. Preserve all data.
+	13: `CREATE TABLE vault_documents_new (
+    id           TEXT NOT NULL PRIMARY KEY,
+    tenant_id    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agent_id     TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    team_id      TEXT REFERENCES agent_teams(id) ON DELETE SET NULL,
+    scope        TEXT NOT NULL DEFAULT 'personal',
+    custom_scope TEXT,
+    path         TEXT NOT NULL,
+    title        TEXT NOT NULL DEFAULT '',
+    doc_type     TEXT NOT NULL DEFAULT 'note',
+    content_hash TEXT NOT NULL DEFAULT '',
+    summary      TEXT NOT NULL DEFAULT '',
+    metadata     TEXT DEFAULT '{}',
+    created_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+INSERT INTO vault_documents_new SELECT * FROM vault_documents;
+DROP TABLE vault_documents;
+ALTER TABLE vault_documents_new RENAME TO vault_documents;
+DROP INDEX IF EXISTS idx_vault_docs_unique_path;
+CREATE UNIQUE INDEX idx_vault_docs_unique_path
+    ON vault_documents(tenant_id, COALESCE(agent_id, ''), COALESCE(team_id, ''), scope, path);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_tenant ON vault_documents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_agent_scope ON vault_documents(agent_id, scope);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_type ON vault_documents(agent_id, doc_type);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_hash ON vault_documents(content_hash);
+CREATE INDEX IF NOT EXISTS idx_vault_docs_team ON vault_documents(team_id);`,
+
+	// Version 14 → 15: cron_jobs UNIQUE constraint on (agent_id, tenant_id, name).
+	// Dedup first: keep one row per combo (SQLite has no DISTINCT ON — use GROUP BY + MIN).
+	14: `DELETE FROM cron_jobs WHERE id NOT IN (
+  SELECT MIN(id) FROM cron_jobs GROUP BY agent_id, tenant_id, name
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cron_jobs_agent_tenant_name
+  ON cron_jobs(agent_id, tenant_id, name);`,
 }
 
 // EnsureSchema creates tables if they don't exist and applies incremental migrations.
@@ -320,6 +420,7 @@ var migrations = map[int][]string{
 //  1. Fresh DB (no schema_version row) → apply full schema.sql + set version = SchemaVersion
 //  2. Existing DB with version < SchemaVersion → apply patches sequentially
 //  3. Existing DB with version == SchemaVersion → no-op
+//  4. Always: seed master tenant (idempotent)
 func EnsureSchema(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
 		version INTEGER NOT NULL PRIMARY KEY
@@ -347,7 +448,7 @@ func EnsureSchema(db *sql.DB) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit schema tx: %w", err)
 		}
-		return nil
+		return seedMasterTenant(db)
 	}
 	if err != nil {
 		return fmt.Errorf("read schema version: %w", err)
@@ -357,7 +458,7 @@ func EnsureSchema(db *sql.DB) error {
 	if current < SchemaVersion {
 		slog.Info("sqlite: migrating schema", "from", current, "to", SchemaVersion)
 		for v := current; v < SchemaVersion; v++ {
-			stmts, ok := migrations[v]
+			patch, ok := migrations[v]
 			if !ok {
 				return fmt.Errorf("sqlite: missing migration for version %d → %d", v, v+1)
 			}
@@ -365,11 +466,9 @@ func EnsureSchema(db *sql.DB) error {
 			if txErr != nil {
 				return fmt.Errorf("begin migration tx v%d: %w", v, txErr)
 			}
-			for _, stmt := range stmts {
-				if _, err := tx.Exec(stmt); err != nil {
-					tx.Rollback()
-					return fmt.Errorf("apply migration v%d stmt %q: %w", v, stmt[:min(40, len(stmt))], err)
-				}
+			if _, err := tx.Exec(patch); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("apply migration v%d: %w", v, err)
 			}
 			if _, err := tx.Exec(
 				"UPDATE schema_version SET version = ? WHERE version = ?", v+1, v,
@@ -384,5 +483,17 @@ func EnsureSchema(db *sql.DB) error {
 		}
 	}
 
+	return seedMasterTenant(db)
+}
+
+// seedMasterTenant ensures the master tenant row exists (idempotent).
+func seedMasterTenant(db *sql.DB) error {
+	_, err := db.Exec(
+		`INSERT OR IGNORE INTO tenants (id, name, slug, status) VALUES (?, 'Master', 'master', 'active')`,
+		"0193a5b0-7000-7000-8000-000000000001",
+	)
+	if err != nil {
+		slog.Warn("sqlite: seed master tenant failed", "error", err)
+	}
 	return nil
 }

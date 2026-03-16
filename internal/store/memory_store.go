@@ -1,10 +1,6 @@
 package store
 
-import (
-	"context"
-
-	"github.com/google/uuid"
-)
+import "context"
 
 // DocumentInfo describes a memory document.
 type DocumentInfo struct {
@@ -26,27 +22,14 @@ type MemorySearchResult struct {
 	Scope     string  `json:"scope,omitempty" db:"-"` // "global" or "personal"
 }
 
-// MemoryScope holds the optional 5D scope dimensions used to filter memory_chunks reads.
-// A nil field means the dimension is not active (no SQL clause added).
-// All non-nil dimensions must match for a row to be returned (AND-intersect).
-type MemoryScope struct {
-	TeamID    *uuid.UUID
-	ContactID *uuid.UUID
-	ProjectID *uuid.UUID
-}
-
 // MemorySearchOptions configures a memory search query.
 type MemorySearchOptions struct {
 	MaxResults   int
 	MinScore     float64
 	Source       string  // "memory", "sessions", ""
 	PathPrefix   string
-	VectorWeight float64      // per-agent override (0 = use store default)
-	TextWeight   float64      // per-agent override (0 = use store default)
-	// Scope restricts results to the exact 5D scope bucket.
-	// When non-nil, scope dimensions are AND-appended to the WHERE clause.
-	// A nil Scope means no additional scope filter (agent+user only).
-	Scope        *MemoryScope
+	VectorWeight float64 // per-agent override (0 = use store default)
+	TextWeight   float64 // per-agent override (0 = use store default)
 }
 
 // EmbeddingProvider generates vector embeddings for text.

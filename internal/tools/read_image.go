@@ -30,17 +30,13 @@ func MediaImagesFromCtx(ctx context.Context) []providers.ImageContent {
 // --- ReadImageTool ---
 
 // visionProviderPriority is the order in which providers are tried for vision.
-// claude-cli follows anthropic so installations with a native Anthropic API key
-// keep using the faster direct API, while claude-cli-only setups still resolve.
-var visionProviderPriority = []string{"openrouter", "gemini", "anthropic", "claude-cli", "dashscope"}
+var visionProviderPriority = []string{"openrouter", "gemini", "anthropic", "dashscope"}
 
 // visionModelDefaults maps provider names to preferred vision models.
-// Empty string lets the provider pick its own default model.
 var visionModelDefaults = map[string]string{
 	"openrouter": "google/gemini-2.5-flash-image",
 	"gemini":     "gemini-2.5-flash",
 	"anthropic":  "",
-	"claude-cli": "",
 	"dashscope":  "qwen3-vl",
 }
 
@@ -133,24 +129,12 @@ func (t *ReadImageTool) callProvider(ctx context.Context, cp credentialProvider,
 	images, _ := params["images"].([]providers.ImageContent)
 
 	// Get the full provider for Chat() access
-	p, err := t.registry.GetByName(providerName)
+	p, err := t.registry.Get(ctx, providerName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("provider %q not available: %w", providerName, err)
 	}
 
 	slog.Info("read_image: calling vision provider", "provider", providerName, "model", model, "images", len(images))
-
-	opts := map[string]any{
-		"max_tokens":  1024,
-		"temperature": 0.3,
-	}
-	// claude-cli spawns the Claude CLI binary; loading its built-in MCP
-	// toolset costs latency we don't need for a one-shot vision call. Keep
-	// this flag scoped to claude-cli so other providers don't receive
-	// options they ignore (or worse, choke on in the future).
-	if providerName == "claude-cli" {
-		opts["disable_tools"] = true
-	}
 
 	resp, err := p.Chat(ctx, providers.ChatRequest{
 		Messages: []providers.Message{
@@ -160,8 +144,11 @@ func (t *ReadImageTool) callProvider(ctx context.Context, cp credentialProvider,
 				Images:  images,
 			},
 		},
-		Model:   model,
-		Options: opts,
+		Model: model,
+		Options: map[string]any{
+			"max_tokens":  1024,
+			"temperature": 0.3,
+		},
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("vision provider error: %w", err)

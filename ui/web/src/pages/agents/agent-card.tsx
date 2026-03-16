@@ -18,7 +18,7 @@ interface AgentCardProps {
 export function AgentCard({ agent, onClick, onResummon, onDelete }: AgentCardProps) {
   const { t } = useTranslation("agents");
   const displayName = agentDisplayName(agent, t("card.unnamedAgent"));
-  const selfEvolve = Boolean(agent.self_evolve);
+  const selfEvolve = agent.agent_type === "predefined" && Boolean(agent.self_evolve);
   const emoji = agent.emoji ?? "";
   const hasOAuthRouting = hasActiveChatGPTOAuthRouting(agent.chatgpt_oauth_routing);
   const promptMode = readPromptMode(agent);
@@ -92,7 +92,7 @@ export function AgentCard({ agent, onClick, onResummon, onDelete }: AgentCardPro
             {t(`detail.prompt.mode.${promptMode}Desc`)}
           </TooltipContent>
         </Tooltip>
-        {(
+        {agent.agent_type === "predefined" && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Badge

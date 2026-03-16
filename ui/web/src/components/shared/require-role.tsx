@@ -26,14 +26,14 @@ export function RequireOperator({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-/** Renders children only if user has owner role. Single-user system: equivalent to admin. */
+/** Renders children only if user is the system owner. */
 export function RequireOwner({ children }: { children: React.ReactNode }) {
-  const role = useAuthStore((s) => s.role);
-  if (!hasMinRole(role, "owner")) {
+  const isOwner = useAuthStore((s) => s.isOwner);
+  if (!isOwner) {
     return <Navigate to={ROUTES.OVERVIEW} replace />;
   }
   return <>{children}</>;
 }
 
-/** Alias for RequireAdmin — used where cross-tenant checks previously appeared. */
-export const RequireCrossTenant = RequireAdmin;
+/** @deprecated Use RequireOwner instead. */
+export const RequireCrossTenant = RequireOwner;

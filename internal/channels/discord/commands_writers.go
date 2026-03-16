@@ -11,7 +11,6 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/google/uuid"
 
-	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -24,6 +23,7 @@ func (c *Channel) resolveAgentUUID(ctx context.Context) (uuid.UUID, error) {
 	if id, err := uuid.Parse(key); err == nil {
 		return id, nil
 	}
+	ctx = store.WithTenantID(ctx, c.TenantID())
 	agent, err := c.agentStore.GetByKey(ctx, key)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("agent %q not found: %w", key, err)
@@ -99,8 +99,7 @@ func (c *Channel) handleWriterCommand(m *discordgo.MessageCreate, action string)
 	// Fetch existing writers (cached 60s) for both permission check and remove guard.
 	// Bootstrap exception: if no writers exist yet, the first !addwriter caller
 	// is allowed to bootstrap the allowlist.
-	// /addwriter grants edit_file (broadest practical write authority); /removewriter revokes all three split gates.
-	existingWriters, _ := c.configPermStore.ListWriters(ctx, agentID, scope, store.ConfigTypeEditFile)
+	existingWriters, _ := c.configPermStore.ListFileWriters(ctx, agentID, scope)
 
 	if len(existingWriters) > 0 {
 		isWriter := false
@@ -154,7 +153,7 @@ func (c *Channel) handleWriterCommand(m *discordgo.MessageCreate, action string)
 		if err := c.configPermStore.Grant(ctx, &store.ConfigPermission{
 			AgentID:    agentID,
 			Scope:      scope,
-			ConfigType: store.ConfigTypeEditFile,
+			ConfigType: store.ConfigTypeFileWriter,
 			UserID:     targetID,
 			Permission: "allow",
 			Metadata:   meta,
@@ -172,19 +171,14 @@ func (c *Channel) handleWriterCommand(m *discordgo.MessageCreate, action string)
 			return
 		}
 		// Revoke guild-wide permission.
-		// Revoke all three split file gates (idempotent — missing rows ignored).
-		_ = c.configPermStore.Revoke(ctx, agentID, scope, store.ConfigTypeWriteFile, targetID)
-		_ = c.configPermStore.Revoke(ctx, agentID, scope, store.ConfigTypeDeleteFile, targetID)
-		if err := c.configPermStore.Revoke(ctx, agentID, scope, store.ConfigTypeEditFile, targetID); err != nil {
+		if err := c.configPermStore.Revoke(ctx, agentID, scope, store.ConfigTypeFileWriter, targetID); err != nil {
 			slog.Warn("discord remove writer failed", "error", err, "target", targetID)
 			send("Failed to remove writer. Please try again.")
 			return
 		}
-		// Also revoke per-user scoped permissions if they exist (guild:{guildID}:user:{userID}).
+		// Also revoke per-user scoped permission if it exists (guild:{guildID}:user:{userID}).
 		perUserScope := fmt.Sprintf("guild:%s:user:%s", m.GuildID, targetID)
-		_ = c.configPermStore.Revoke(ctx, agentID, perUserScope, store.ConfigTypeWriteFile, targetID)
-		_ = c.configPermStore.Revoke(ctx, agentID, perUserScope, store.ConfigTypeEditFile, targetID)
-		_ = c.configPermStore.Revoke(ctx, agentID, perUserScope, store.ConfigTypeDeleteFile, targetID)
+		_ = c.configPermStore.Revoke(ctx, agentID, perUserScope, store.ConfigTypeFileWriter, targetID)
 		send(fmt.Sprintf("Removed %s from file writers.", targetName))
 	}
 }
@@ -220,7 +214,7 @@ func (c *Channel) handleListWriters(m *discordgo.MessageCreate) {
 	// via matchWildcard in CheckPermission.
 	scope := fmt.Sprintf("guild:%s:*", m.GuildID)
 
-	writers, err := c.configPermStore.List(ctx, agentID, store.ConfigTypeEditFile, scope)
+	writers, err := c.configPermStore.List(ctx, agentID, store.ConfigTypeFileWriter, scope)
 	if err != nil {
 		slog.Warn("discord list writers failed", "error", err)
 		send("Failed to list writers. Please try again.")
@@ -232,10 +226,23 @@ func (c *Channel) handleListWriters(m *discordgo.MessageCreate) {
 		return
 	}
 
+	type fwMeta struct {
+		DisplayName string `json:"displayName"`
+		Username    string `json:"username"`
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("File writers for this server (%d):\n", len(writers)))
 	for i, w := range writers {
-		sb.WriteString(fmt.Sprintf("%d. %s (<@%s>)\n", i+1, channels.WriterLabel(w.Metadata, w.UserID), w.UserID))
+		var meta fwMeta
+		_ = json.Unmarshal(w.Metadata, &meta)
+		label := w.UserID
+		if meta.Username != "" {
+			label = meta.Username
+		} else if meta.DisplayName != "" {
+			label = meta.DisplayName
+		}
+		sb.WriteString(fmt.Sprintf("%d. %s (<@%s>)\n", i+1, label, w.UserID))
 	}
 	send(sb.String())
 }

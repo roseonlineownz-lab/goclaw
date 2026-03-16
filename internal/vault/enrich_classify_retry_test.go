@@ -52,10 +52,13 @@ func TestCallClassifyWithRetry_Success(t *testing.T) {
 		errors:    []error{nil},
 	}
 
-	worker := &EnrichWorker{}
+	worker := &enrichWorker{
+		provider: provider,
+		model:    "test",
+	}
 
 	ctx := context.Background()
-	resp, err := worker.callClassifyWithRetry(ctx, provider, "test", "system", "user")
+	resp, err := worker.callClassifyWithRetry(ctx, "system", "user")
 
 	if err != nil {
 		t.Fatalf("callClassifyWithRetry failed: %v", err)
@@ -72,7 +75,6 @@ func TestCallClassifyWithRetry_Success(t *testing.T) {
 
 // TestCallClassifyWithRetry_RetryThenSuccess fails twice, succeeds on third attempt.
 func TestCallClassifyWithRetry_RetryThenSuccess(t *testing.T) {
-	fastBackoffsForTest(t) // skip 2s+4s real backoffs
 	provider := &mockClassifyProvider{
 		responses: []string{
 			"", // attempt 0: error
@@ -86,10 +88,13 @@ func TestCallClassifyWithRetry_RetryThenSuccess(t *testing.T) {
 		},
 	}
 
-	worker := &EnrichWorker{}
+	worker := &enrichWorker{
+		provider: provider,
+		model:    "test",
+	}
 
 	ctx := context.Background()
-	resp, err := worker.callClassifyWithRetry(ctx, provider, "test", "system", "user")
+	resp, err := worker.callClassifyWithRetry(ctx, "system", "user")
 
 	if err != nil {
 		t.Fatalf("callClassifyWithRetry should succeed after retries, got error: %v", err)
@@ -106,7 +111,6 @@ func TestCallClassifyWithRetry_RetryThenSuccess(t *testing.T) {
 
 // TestCallClassifyWithRetry_AllFail exhausts retries and returns error.
 func TestCallClassifyWithRetry_AllFail(t *testing.T) {
-	fastBackoffsForTest(t) // skip 2s+4s real backoffs
 	provider := &mockClassifyProvider{
 		responses: []string{"", "", ""},
 		errors: []error{
@@ -116,10 +120,13 @@ func TestCallClassifyWithRetry_AllFail(t *testing.T) {
 		},
 	}
 
-	worker := &EnrichWorker{}
+	worker := &enrichWorker{
+		provider: provider,
+		model:    "test",
+	}
 
 	ctx := context.Background()
-	_, err := worker.callClassifyWithRetry(ctx, provider, "test", "system", "user")
+	_, err := worker.callClassifyWithRetry(ctx, "system", "user")
 
 	if err == nil {
 		t.Fatalf("callClassifyWithRetry should return error after exhausting retries")
@@ -145,12 +152,15 @@ func TestCallClassifyWithRetry_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	worker := &EnrichWorker{}
+	worker := &enrichWorker{
+		provider: provider,
+		model:    "test",
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, err := worker.callClassifyWithRetry(ctx, provider, "test", "system", "user")
+	_, err := worker.callClassifyWithRetry(ctx, "system", "user")
 
 	if err == nil {
 		t.Fatalf("callClassifyWithRetry should return error for cancelled context")

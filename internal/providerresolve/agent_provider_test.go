@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -38,10 +39,11 @@ func (p *stubProvider) DefaultModel() string { return p.model }
 func (p *stubProvider) Name() string         { return p.name }
 
 func TestResolveConfiguredProviderKeepsNonCodexBase(t *testing.T) {
-	registry := providers.NewRegistry()
+	tenantID := uuid.New()
+	registry := providers.NewRegistry(nil)
 	base := &stubProvider{name: "anthropic", model: "claude-sonnet-4"}
-	registry.Register(base)
-	registry.Register(providers.NewCodexProvider(
+	registry.RegisterForTenant(tenantID, base)
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex-backup",
 		&testTokenSource{token: "backup-token"},
 		"http://127.0.0.1",
@@ -49,6 +51,7 @@ func TestResolveConfiguredProviderKeepsNonCodexBase(t *testing.T) {
 	))
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "anthropic",
 		ChatGPTOAuthRouting: json.RawMessage(`{
 			"strategy": "round_robin",
@@ -66,14 +69,15 @@ func TestResolveConfiguredProviderKeepsNonCodexBase(t *testing.T) {
 }
 
 func TestResolveConfiguredProviderUsesRouterForCodexAgents(t *testing.T) {
-	registry := providers.NewRegistry()
-	registry.Register(providers.NewCodexProvider(
+	tenantID := uuid.New()
+	registry := providers.NewRegistry(nil)
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex",
 		&testTokenSource{token: "primary-token"},
 		"http://127.0.0.1",
 		"gpt-5.4",
 	))
-	registry.Register(providers.NewCodexProvider(
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex-backup",
 		&testTokenSource{token: "backup-token"},
 		"http://127.0.0.1",
@@ -81,6 +85,7 @@ func TestResolveConfiguredProviderUsesRouterForCodexAgents(t *testing.T) {
 	))
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "openai-codex",
 		ChatGPTOAuthRouting: json.RawMessage(`{
 			"strategy": "round_robin",
@@ -105,14 +110,15 @@ func TestResolveConfiguredProviderUsesRouterForCodexAgents(t *testing.T) {
 }
 
 func TestResolveConfiguredProviderUsesProviderDefaultsWhenAgentHasNoOverride(t *testing.T) {
-	registry := providers.NewRegistry()
-	registry.Register(providers.NewCodexProvider(
+	tenantID := uuid.New()
+	registry := providers.NewRegistry(nil)
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex",
 		&testTokenSource{token: "primary-token"},
 		"http://127.0.0.1",
 		"gpt-5.4",
 	).WithRoutingDefaults(store.ChatGPTOAuthStrategyRoundRobin, []string{"openai-codex-backup"}))
-	registry.Register(providers.NewCodexProvider(
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex-backup",
 		&testTokenSource{token: "backup-token"},
 		"http://127.0.0.1",
@@ -120,6 +126,7 @@ func TestResolveConfiguredProviderUsesProviderDefaultsWhenAgentHasNoOverride(t *
 	))
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "openai-codex",
 	}
 
@@ -137,15 +144,16 @@ func TestResolveConfiguredProviderUsesProviderDefaultsWhenAgentHasNoOverride(t *
 }
 
 func TestResolveConfiguredProviderKeepsExplicitSingleAccountOverride(t *testing.T) {
-	registry := providers.NewRegistry()
+	tenantID := uuid.New()
+	registry := providers.NewRegistry(nil)
 	baseProvider := providers.NewCodexProvider(
 		"openai-codex",
 		&testTokenSource{token: "primary-token"},
 		"http://127.0.0.1",
 		"gpt-5.4",
 	).WithRoutingDefaults(store.ChatGPTOAuthStrategyRoundRobin, []string{"openai-codex-backup"})
-	registry.Register(baseProvider)
-	registry.Register(providers.NewCodexProvider(
+	registry.RegisterForTenant(tenantID, baseProvider)
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex-backup",
 		&testTokenSource{token: "backup-token"},
 		"http://127.0.0.1",
@@ -153,6 +161,7 @@ func TestResolveConfiguredProviderKeepsExplicitSingleAccountOverride(t *testing.
 	))
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "openai-codex",
 		ChatGPTOAuthRouting: json.RawMessage(`{
 			"strategy": "manual"
@@ -163,12 +172,11 @@ func TestResolveConfiguredProviderKeepsExplicitSingleAccountOverride(t *testing.
 	if err != nil {
 		t.Fatalf("ResolveConfiguredProvider() error = %v", err)
 	}
-	router, ok := resolved.(*providers.ChatGPTOAuthRouter)
-	if !ok {
-		t.Fatalf("ResolveConfiguredProvider() returned %T, want *providers.ChatGPTOAuthRouter", resolved)
+	if _, ok := resolved.(*providers.ChatGPTOAuthRouter); ok {
+		t.Fatalf("ResolveConfiguredProvider() returned %T, want base Codex provider", resolved)
 	}
-	if router.Name() != "openai-codex" {
-		t.Fatalf("router.Name() = %q, want %q", router.Name(), "openai-codex")
+	if resolved.Name() != "openai-codex" {
+		t.Fatalf("resolved.Name() = %q, want %q", resolved.Name(), "openai-codex")
 	}
 }
 
@@ -185,14 +193,15 @@ func (s *blockedTokenSource) RouteEligibility(context.Context) providers.RouteEl
 }
 
 func TestResolveConfiguredProviderReturnsRouterEvenWhenPrimaryNeedsFailover(t *testing.T) {
-	registry := providers.NewRegistry()
-	registry.Register(providers.NewCodexProvider(
+	tenantID := uuid.New()
+	registry := providers.NewRegistry(nil)
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex",
 		&blockedTokenSource{token: "primary-token"},
 		"http://127.0.0.1",
 		"gpt-5.4",
 	))
-	registry.Register(providers.NewCodexProvider(
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"openai-codex-backup",
 		&testTokenSource{token: "backup-token"},
 		"http://127.0.0.1",
@@ -200,6 +209,7 @@ func TestResolveConfiguredProviderReturnsRouterEvenWhenPrimaryNeedsFailover(t *t
 	))
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "openai-codex",
 		ChatGPTOAuthRouting: json.RawMessage(`{
 			"strategy": "round_robin",

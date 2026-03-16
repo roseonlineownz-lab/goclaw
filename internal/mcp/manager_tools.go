@@ -8,6 +8,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
+	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
 // UserCredServers returns servers requiring per-user credentials.
@@ -52,9 +53,9 @@ func (m *Manager) ServerToolNames(serverName string) []string {
 func (m *Manager) updateMCPGroup() {
 	allNames := m.ToolNames()
 	if len(allNames) > 0 {
-		m.registry.RegisterToolGroup("mcp", allNames)
+		tools.RegisterToolGroup("mcp", allNames)
 	} else {
-		m.registry.UnregisterToolGroup("mcp")
+		tools.UnregisterToolGroup("mcp")
 	}
 }
 
@@ -87,7 +88,7 @@ func (m *Manager) unregisterAllTools() {
 				m.registry.Unregister(toolName)
 			}
 		}
-		m.registry.UnregisterToolGroup("mcp:" + name)
+		tools.UnregisterToolGroup("mcp:" + name)
 		slog.Debug("mcp.server.unregistered", "server", name)
 	}
 
@@ -104,7 +105,7 @@ func (m *Manager) unregisterAllTools() {
 	m.servers = make(map[string]*serverState)
 	m.poolServers = nil
 	m.poolToolNames = nil
-	m.registry.UnregisterToolGroup("mcp")
+	tools.UnregisterToolGroup("mcp")
 }
 
 // ToolInfo holds a tool's name and description for API responses.

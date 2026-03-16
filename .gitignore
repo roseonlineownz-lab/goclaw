@@ -88,11 +88,6 @@ compose.d/*
 /mise.*.toml
 /mise
 /.mise
-*.test
-goclaw-patched-linux-amd64
-ui/web/nginx.staging.conf
 
-# E2E test env (explicit)
-env.e2e-tests/.env
-!env.e2e-tests/.env.example
-!env.e2e-tests/README.md
+# Runtime records
+records/

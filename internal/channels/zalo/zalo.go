@@ -24,17 +24,13 @@ import (
 )
 
 const (
-	defaultPollTimeout  = 30
-	maxTextLength       = 2000
-	defaultMediaMaxMB   = 5
-	pollErrorBackoff    = 5 * time.Second
-	pairingDebounce     = 60 * time.Second
-	pollTimeoutHeadroom = 7 * time.Second
+	apiBase            = "https://bot-api.zaloplatforms.com"
+	defaultPollTimeout = 30
+	maxTextLength      = 2000
+	defaultMediaMaxMB  = 5
+	pollErrorBackoff   = 5 * time.Second
+	pairingDebounce    = 60 * time.Second
 )
-
-// apiBase is the Zalo Bot API root. Declared as a variable so tests can
-// override it with an httptest.NewServer URL.
-var apiBase = "https://bot-api.zaloplatforms.com"
 
 // Channel connects to the Zalo OA Bot API.
 type Channel struct {
@@ -45,7 +41,6 @@ type Channel struct {
 	blockReply *bool
 	stopCh     chan struct{}
 	client     *http.Client
-	pollClient *http.Client
 	// pairingService, pairingDebounce are inherited from channels.BaseChannel.
 }
 
@@ -76,7 +71,6 @@ func New(cfg config.ZaloConfig, msgBus *bus.MessageBus, pairingSvc store.Pairing
 		blockReply:  cfg.BlockReply,
 		stopCh:      make(chan struct{}),
 		client:      &http.Client{Timeout: 60 * time.Second},
-		pollClient:  &http.Client{Timeout: 0},
 	}
 	ch.SetPairingService(pairingSvc)
 	return ch, nil
@@ -192,6 +186,7 @@ func (c *Channel) processUpdate(update zaloUpdate) {
 
 func (c *Channel) handleTextMessage(msg *zaloMessage) {
 	ctx := context.Background()
+	ctx = store.WithTenantID(ctx, c.TenantID())
 	senderID := msg.From.ID
 	if senderID == "" {
 		slog.Warn("zalo: dropping text message with empty sender ID", "message_id", msg.MessageID)
@@ -228,6 +223,7 @@ func (c *Channel) handleTextMessage(msg *zaloMessage) {
 
 func (c *Channel) handleImageMessage(msg *zaloMessage) {
 	ctx := context.Background()
+	ctx = store.WithTenantID(ctx, c.TenantID())
 	senderID := msg.From.ID
 	if senderID == "" {
 		slog.Warn("zalo: dropping image message with empty sender ID", "message_id", msg.MessageID)
@@ -399,7 +395,7 @@ type zaloAPIResponse struct {
 
 type zaloBotInfo struct {
 	ID   string `json:"id"`
-	Name string `json:"display_name"`
+	Name string `json:"name"`
 }
 
 type zaloMessage struct {
@@ -415,12 +411,12 @@ type zaloMessage struct {
 
 type zaloFrom struct {
 	ID       string `json:"id"`
-	Username string `json:"display_name"`
+	Username string `json:"username"`
 }
 
 type zaloChat struct {
 	ID   string `json:"id"`
-	Type string `json:"chat_type"`
+	Type string `json:"type"`
 }
 
 type zaloUpdate struct {
@@ -429,10 +425,6 @@ type zaloUpdate struct {
 }
 
 func (c *Channel) callAPI(method string, body any) (json.RawMessage, error) {
-	return c.callAPIWith(context.Background(), c.client, method, body)
-}
-
-func (c *Channel) callAPIWith(ctx context.Context, client *http.Client, method string, body any) (json.RawMessage, error) {
 	url := fmt.Sprintf("%s/bot%s/%s", apiBase, c.token, method)
 
 	var reqBody io.Reader
@@ -444,7 +436,7 @@ func (c *Channel) callAPIWith(ctx context.Context, client *http.Client, method s
 		reqBody = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, reqBody)
+	req, err := http.NewRequest("POST", url, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -452,7 +444,7 @@ func (c *Channel) callAPIWith(ctx context.Context, client *http.Client, method s
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := client.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("api call %s: %w", method, err)
 	}
@@ -493,22 +485,16 @@ func (c *Channel) getUpdates(timeout int) ([]zaloUpdate, error) {
 		"timeout": timeout,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second+pollTimeoutHeadroom)
-	defer cancel()
-
-	result, err := c.callAPIWith(ctx, c.pollClient, "getUpdates", params)
+	result, err := c.callAPI("getUpdates", params)
 	if err != nil {
 		return nil, err
 	}
 
-	var update zaloUpdate
-	if err := json.Unmarshal(result, &update); err != nil {
+	var updates []zaloUpdate
+	if err := json.Unmarshal(result, &updates); err != nil {
 		return nil, fmt.Errorf("unmarshal updates: %w", err)
 	}
-	if update.EventName == "" {
-		return nil, nil
-	}
-	return []zaloUpdate{update}, nil
+	return updates, nil
 }
 
 func (c *Channel) sendMessage(chatID, text string) error {

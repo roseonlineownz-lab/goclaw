@@ -200,7 +200,8 @@ func validateChatGPTOAuthAgentRouting(
 		return nil
 	}
 
-	baseProvider, err := lookupProviderByName(ctx, providerStore, providerName)
+	tenantID := store.TenantIDFromContext(ctx)
+	baseProvider, err := lookupProviderByNameWithMasterFallback(ctx, providerStore, tenantID, providerName)
 	if err != nil || baseProvider == nil || baseProvider.ProviderType != store.ProviderChatGPTOAuth {
 		return nil
 	}
@@ -212,7 +213,7 @@ func validateChatGPTOAuthAgentRouting(
 	}
 
 	if len(defaultMembers) == 0 {
-		if len(routing.ExtraProviderNames) > 0 {
+		if routing.Strategy != store.ChatGPTOAuthStrategyPrimaryFirst || len(routing.ExtraProviderNames) > 0 {
 			return fmt.Errorf("configure OpenAI Codex pool members on provider %q before enabling agent-level routing", providerName)
 		}
 		return nil

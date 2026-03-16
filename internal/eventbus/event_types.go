@@ -16,9 +16,6 @@ const (
 	EventRunCompleted   EventType = "run.completed"
 	EventToolExecuted     EventType = "tool.executed"
 
-	// Context pruning observability
-	EventContextPruned EventType = "context.pruned"
-
 	// Vault events (v3 enrichment pipeline)
 	EventVaultDocUpserted EventType = "vault.doc_upserted"
 
@@ -30,53 +27,34 @@ const (
 )
 
 // DomainEvent is a typed event with metadata for the consolidation pipeline.
-//
-// Identity invariant: AgentID is a string field for wire compatibility,
-// consumers parse it as UUID before touching the DB.
-// Publishers MUST supply valid UUID strings — never agent_key.
-// The publish-time observer in validate_agent_id.go warns on drift.
-// See docs/agent-identity-conventions.md.
 type DomainEvent struct {
-	ID        string // UUID v7 for ordering
+	ID        string    // UUID v7 for ordering
 	Type      EventType
-	SourceID  string // dedup key (e.g. session key, run ID)
-	AgentID   string // MUST be a valid UUID string — never agent_key
+	SourceID  string    // dedup key (e.g. session key, run ID)
+	TenantID  string
+	AgentID   string
 	UserID    string
 	Timestamp time.Time
-	Payload   any // typed per EventType (see payload structs below)
+	Payload   any       // typed per EventType (see payload structs below)
 }
 
 // --- Typed payloads, one per EventType ---
 
 // SessionCompletedPayload is emitted after session end or compaction.
-// The 5D scope fields carry the intersected scope from the session so that
-// downstream episodic and semantic workers can tag their records correctly.
-// Empty string means the dimension is not bound (agent-broad).
 type SessionCompletedPayload struct {
 	SessionKey      string
 	MessageCount    int
 	TokensUsed      int
 	Summary         string // compaction summary if available
 	CompactionCount int    // tracks how many times compaction ran
-
-	// 5D scope — populated from session/request context at publish time.
-	TeamID    string // empty = not team-scoped
-	ContactID string // empty = not contact-scoped
-	ProjectID string // empty = not project-scoped
 }
 
 // EpisodicCreatedPayload is emitted after episodic summary is stored.
-// TeamID, ContactID, ProjectID carry the intersected 5D scope of the summary
-// so downstream workers (semantic, dreaming) can propagate scope to KG entities.
 type EpisodicCreatedPayload struct {
 	EpisodicID  string
 	SessionKey  string
 	Summary     string
 	KeyEntities []string
-	// 5D scope inherited from the summary row (empty = agent-broad)
-	TeamID    string
-	ContactID string
-	ProjectID string
 }
 
 // EntityUpsertedPayload is emitted after KG entity upsert.
@@ -127,22 +105,10 @@ type DelegateFailedPayload struct {
 	Error        string
 }
 
-// ContextPrunedPayload is emitted when pruning mutates context messages.
-// Payload intentionally excludes raw message content (counts + tokens only).
-type ContextPrunedPayload struct {
-	SessionKey     string
-	TokensBefore   int
-	TokensAfter    int
-	Budget         int
-	ResultsTrimmed int    // soft-trimmed count
-	ResultsCleared int    // hard-cleared count
-	Compacted      bool
-	Trigger        string // "soft" | "hard" | "compact"
-}
-
 // VaultDocUpsertedPayload is emitted after a vault document is registered/updated.
 type VaultDocUpsertedPayload struct {
 	DocID       string // vault_documents.id (UUID)
+	TenantID    string // tenant context (per-item for batch safety)
 	AgentID     string // agent that wrote the file
 	Path        string // workspace-relative file path
 	ContentHash string // SHA-256 of content at write time

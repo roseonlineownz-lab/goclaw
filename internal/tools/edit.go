@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -17,8 +16,7 @@ import (
 type EditTool struct {
 	workspace       string
 	restrict        bool
-	allowedPrefixes []string                    // extra allowed path prefixes (cross-drive on Windows)
-	deniedPrefixes  []string                    // path prefixes to deny access to (e.g. .goclaw)
+	deniedPrefixes  []string // path prefixes to deny access to (e.g. .goclaw)
 	sandboxMgr      sandbox.Manager
 	contextFileIntc *ContextFileInterceptor
 	memIntc         *MemoryInterceptor
@@ -27,12 +25,6 @@ type EditTool struct {
 }
 
 func (t *EditTool) SetVaultInterceptor(v *VaultInterceptor) { t.vaultIntc = v }
-
-// AllowPaths adds extra path prefixes that edit is allowed to access
-// even when restrict_to_workspace is true (e.g. cross-drive on Windows).
-func (t *EditTool) AllowPaths(prefixes ...string) {
-	t.allowedPrefixes = append(t.allowedPrefixes, prefixes...)
-}
 
 // DenyPaths adds path prefixes that edit must reject.
 func (t *EditTool) DenyPaths(prefixes ...string) {
@@ -110,7 +102,7 @@ func (t *EditTool) Execute(ctx context.Context, args map[string]any) *Result {
 
 	// Group write permission check
 	if t.permStore != nil {
-		if err := store.CheckEditFilePermission(ctx, t.permStore); err != nil {
+		if err := store.CheckFileWriterPermission(ctx, t.permStore); err != nil {
 			return ErrorResult(err.Error())
 		}
 	}
@@ -171,18 +163,12 @@ func (t *EditTool) Execute(ctx context.Context, args map[string]any) *Result {
 	if workspace == "" {
 		workspace = t.workspace
 	}
-	allowed := allowedWriteWithTeamWorkspace(ctx, t.allowedPrefixes)
+	allowed := allowedWithTeamWorkspace(ctx, nil)
 	resolved, err := resolvePathWithAllowed(path, workspace, effectiveRestrict(ctx, t.restrict), allowed)
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
 	if err := checkDeniedPath(resolved, t.workspace, t.deniedPrefixes); err != nil {
-		return ErrorResult(err.Error())
-	}
-
-	// Deny-glob layer: overrides a grant for protected paths (e.g. .env*, secrets/**).
-	relPath := workspaceRelPath(resolved, workspace)
-	if err := permissions.CheckDenyGlobs(ctx, t.permStore, relPath); err != nil {
 		return ErrorResult(err.Error())
 	}
 

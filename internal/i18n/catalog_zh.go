@@ -31,14 +31,6 @@ func init() {
 		MsgUserIDRequired:    "user_id 是必填项",
 		MsgMsgRequired:       "消息是必填项",
 
-		// Abort
-		MsgAbortStopped:         "已停止运行",
-		MsgAbortForced:          "已强制中止运行（超过 3 秒宽限期）",
-		MsgAbortAlreadyAborting: "正在中止中",
-		MsgAbortNotFound:        "运行未找到或已结束",
-		MsgAbortUnauthorized:    "无权中止此运行",
-		MsgAbortFailed:          "无法中止运行：%s",
-
 		// Channel instances
 		MsgInvalidChannelType: "Channel类型无效",
 		MsgInstanceNotFound:   "未找到实例",
@@ -73,8 +65,6 @@ func init() {
 		MsgAlreadySummoning:      "Agent正在被召唤中",
 		MsgSummoningUnavailable:  "召唤功能不可用",
 		MsgNoDescription:         "Agent没有可供重新召唤的描述",
-		MsgSummonCancelled:       "已取消召唤",
-		MsgCannotCancel:          "Agent 未处于召唤状态",
 		MsgInvalidPath:           "路径无效",
 
 		// Scheduler
@@ -91,12 +81,12 @@ func init() {
 		MsgNotImplemented: "%s 尚未实现",
 
 		// Agent links
-		MsgLinksNotConfigured: "Agent链接未配置",
-		MsgInvalidDirection:   "方向必须是 outbound、inbound 或 bidirectional",
-		MsgSourceTargetSame:   "源和目标必须是不同的Agent",
-		MsgAgentTypeRejected:  "不再接受 agent_type 字段；v4 仅支持预定义型 Agent",
-		MsgNoUpdatesProvided:  "未提供更新内容",
-		MsgInvalidLinkStatus:  "状态必须是 active 或 disabled",
+		MsgLinksNotConfigured:   "Agent链接未配置",
+		MsgInvalidDirection:     "方向必须是 outbound、inbound 或 bidirectional",
+		MsgSourceTargetSame:     "源和目标必须是不同的Agent",
+		MsgCannotDelegateOpen:   "无法委派给开放型Agent — 只有预定义Agent才能作为委派目标",
+		MsgNoUpdatesProvided:    "未提供更新内容",
+		MsgInvalidLinkStatus:    "状态必须是 active 或 disabled",
 
 		// Teams
 		MsgTeamsNotConfigured:   "团队未配置",
@@ -110,19 +100,13 @@ func init() {
 		// Skills
 		MsgSkillsUpdateNotSupported: "基于文件的Skill不支持 skills.update",
 		MsgCannotResolveSkillID:     "无法解析基于文件的Skill ID",
-		MsgInvalidSkillSource:       "无效的 skill source: 必须是 builtin, hub-verified, hub-unverified, agent-created, user-uploaded 之一",
-		MsgIsSystemDeprecated:       "is_system 字段已不再支持; 请使用 source='builtin' 替代",
-		MsgVersionAlreadyArchived:   "skill 版本已归档",
-		MsgCuratorInvalidTransition: "无效的 curator run 状态转换: %s -> %s",
 
 		// Logs
 		MsgInvalidLogAction: "action 必须是 'start' 或 'stop'",
 
 		// Config
-		MsgRawConfigRequired:     "raw 配置是必填项",
-		MsgRawPatchRequired:      "raw 补丁是必填项",
-		MsgConfigMasterScopeOnly: "config.* 方法仅适用于主作用域；使用租户工具配置端点进行租户级覆盖",
-		MsgMasterScopeRequired:   "此操作需要主租户范围",
+		MsgRawConfigRequired: "raw 配置是必填项",
+		MsgRawPatchRequired:  "raw 补丁是必填项",
 
 		// Storage / File
 		MsgCannotDeleteSkillsDir: "无法删除Skill目录",
@@ -193,67 +177,10 @@ func init() {
 
 		MsgInvalidRole: "无效角色：允许的值为 owner、admin、operator、member、viewer",
 
-		MsgContactIDsRequired:       "contact_ids 为必填项",
-		MsgMergeTargetRequired:      "target_user_id 为必填项",
-		MsgTenantUserNotFound:       "未找到租户用户",
-		MsgTenantMismatch:           "租户用户不属于此租户",
-		MsgTenantScopeRequired:      "此操作需要指定租户范围",
-		MsgMergeSourceAlreadyMerged: "源联系人已合并 — 禁止 user→user 合并",
-		MsgMergeTargetAlreadyMerged: "目标用户已合并到其他用户 — 禁止链式合并",
-		MsgMergeUserToUserForbidden: "不能在两个已认证用户之间合并",
-		MsgMergeAtomicFailed:        "合并事务失败：%s",
-		MsgMergeTargetUserNotFound:  "未找到目标用户：%s",
-
-		// TTS / 声音
-		MsgTtsUnknownModel:       "未知的 tts 模型：%s",
-		MsgVoicesListFailed:      "获取声音列表失败：%s",
-		MsgTtsGeminiInvalidVoice: "无效的 Gemini 声音：%s",
-		MsgTtsGeminiSpeakerLimit: "Gemini TTS 最多支持 2 位发言人",
-		MsgTtsGeminiInvalidModel:  "无效的 Gemini TTS 模型：%s",
-		MsgTtsGeminiTextOnly:      "Gemini 拒绝生成音频。请尝试更简单的文本，不要翻译或添加评论。",
-		MsgTtsParamOutOfRange:     "TTS 参数 %q 的值 %v 超出范围 [%v, %v]",
-		MsgTtsParamUnknownKey:     "TTS 参数 %q 不受此提供商支持",
-		MsgTtsMiniMaxVoicesFailed: "获取 MiniMax 声音列表失败：%s",
-
-		// STT
-		MsgSTTAllProvidersFailed:     "所有 STT 提供商均失败",
-		MsgSTTLegacyConfigDeprecated: "旧版 STT 配置已弃用；请迁移至 builtin_tools[stt]",
-		MsgSTTWhatsappPrivacyWarning: "为 WhatsApp 启用 STT 将破坏发送至此 Agent 的语音消息的端对端加密。",
-		MsgVoiceMessageFallback:      "[语音消息]",
-
-		// Hooks
-		MsgHookInvalidMatcher:          "无效的匹配器正则表达式: %s",
-		MsgHookCommandDisabledStandard: "命令类型钩子仅在 Lite 版本可用",
-		MsgHookPromptRequiresMatcher:   "prompt 钩子必须指定 matcher 或 if_expr(成本失控保护)",
-		MsgHookCircuitBreakerTripped:   "钩子在多次失败后已自动禁用",
-		MsgHookBudgetExceeded:          "租户钩子令牌预算已耗尽",
-		MsgHookPerTurnCapReached:       "单轮钩子调用次数已达上限",
-		MsgHookBuiltinReadOnly:         "内置钩子只读,仅允许切换启用状态",
-
-		// Message tool cross-target forward notice
-		MessageCrossTargetForwarded: "📤 已按请求转发至 %s:%q",
-
-		// Auth + Bootstrap
-		MsgBootstrapRequired:    "网关尚未初始化 — 请先调用 POST /v1/bootstrap/init",
-		MsgBootstrapAlreadyDone: "网关已完成初始化",
-		MsgInvalidEmail:         "邮箱地址无效",
-		MsgWeakPassword:         "密码至少 12 位且需包含字母、数字和特殊符号",
-		MsgInvalidCredentials:   "邮箱或密码错误",
-		MsgRefreshTokenInvalid:  "刷新令牌无效",
-		MsgRefreshTokenExpired:  "刷新令牌已过期",
-		MsgRefreshTokenRevoked:  "刷新令牌已被吊销",
-		MsgAccessTokenExpired:   "访问令牌已过期",
-		MsgAccessTokenInvalid:   "访问令牌无效",
-		MsgCurrentPasswordWrong: "当前密码不正确",
-		MsgDisplayNameInvalid:   "显示名称必须为 2 到 64 个字符",
-
-		MsgPasswordResetInvalidToken: "重置令牌无效或已过期",
-		MsgPasswordResetEmailSubject: "重置您的密码",
-		MsgPasswordResetEmailBody:    "点击链接以重置您的密码：%s\n此链接将在 1 小时后失效。",
-
-		MsgInvalidShareTarget: "共享目标必须是 user_id 或 team_id 之一",
-		MsgInvalidShareRole:   "共享角色必须是 viewer、member 或 editor",
-
-		MsgChannelDefaultProjectDenied: "您无权将此项目设为此频道的默认项目",
+		MsgContactIDsRequired:  "contact_ids 为必填项",
+		MsgMergeTargetRequired: "必须提供 tenant_user_id 或 create_user 其中之一",
+		MsgTenantUserNotFound:  "未找到租户用户",
+		MsgTenantMismatch:      "租户用户不属于此租户",
+		MsgTenantScopeRequired: "此操作需要指定租户范围",
 	})
 }

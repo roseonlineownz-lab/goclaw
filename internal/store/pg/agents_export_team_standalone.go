@@ -231,6 +231,7 @@ func ExportTeamAgentJSON(ctx context.Context, db *sql.DB, agentID uuid.UUID) (js
 		model             string
 		contextWindow     int
 		maxToolIterations int
+		agentType         string
 		status            string
 		toolsConfig       []byte
 		sandboxConfig     []byte
@@ -244,7 +245,7 @@ func ExportTeamAgentJSON(ctx context.Context, db *sql.DB, agentID uuid.UUID) (js
 	err = db.QueryRowContext(ctx,
 		"SELECT agent_key, COALESCE(display_name,''), COALESCE(frontmatter,''),"+
 			" COALESCE(provider,''), COALESCE(model,''),"+
-			" context_window, max_tool_iterations, COALESCE(status,'active'),"+
+			" context_window, max_tool_iterations, COALESCE(agent_type,'open'), COALESCE(status,'active'),"+
 			" tools_config, sandbox_config, subagents_config, memory_config, compaction_config,"+
 			" context_pruning, other_config"+
 			" FROM agents WHERE id = $1"+tc,
@@ -252,7 +253,7 @@ func ExportTeamAgentJSON(ctx context.Context, db *sql.DB, agentID uuid.UUID) (js
 	).Scan(
 		&agentKey, &displayName, &frontmatter,
 		&provider, &model,
-		&contextWindow, &maxToolIterations, &status,
+		&contextWindow, &maxToolIterations, &agentType, &status,
 		&toolsConfig, &sandboxConfig, &subagentsConfig, &memoryConfig, &compactionConfig,
 		&contextPruning, &otherConfig,
 	)
@@ -268,6 +269,7 @@ func ExportTeamAgentJSON(ctx context.Context, db *sql.DB, agentID uuid.UUID) (js
 		Model             string          `json:"model"`
 		ContextWindow     int             `json:"context_window"`
 		MaxToolIterations int             `json:"max_tool_iterations"`
+		AgentType         string          `json:"agent_type"`
 		Status            string          `json:"status"`
 		ToolsConfig       json.RawMessage `json:"tools_config,omitempty"`
 		SandboxConfig     json.RawMessage `json:"sandbox_config,omitempty"`
@@ -285,6 +287,7 @@ func ExportTeamAgentJSON(ctx context.Context, db *sql.DB, agentID uuid.UUID) (js
 		Model:             model,
 		ContextWindow:     contextWindow,
 		MaxToolIterations: maxToolIterations,
+		AgentType:         agentType,
 		Status:            status,
 		ToolsConfig:       toolsConfig,
 		SandboxConfig:     sandboxConfig,

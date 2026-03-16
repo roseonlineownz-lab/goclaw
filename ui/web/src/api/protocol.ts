@@ -70,7 +70,6 @@ export const Methods = {
   CONFIG_APPLY: "config.apply",
   CONFIG_PATCH: "config.patch",
   CONFIG_SCHEMA: "config.schema",
-  CONFIG_DEFAULTS: "config.defaults",
 
   // Sessions
   SESSIONS_LIST: "sessions.list",
@@ -171,6 +170,16 @@ export const Methods = {
   CONFIG_PERMISSIONS_GRANT: "config.permissions.grant",
   CONFIG_PERMISSIONS_REVOKE: "config.permissions.revoke",
 
+  // Tenants (multi-tenant)
+  TENANTS_MINE: "tenants.mine",
+  TENANTS_LIST: "tenants.list",
+  TENANTS_GET: "tenants.get",
+  TENANTS_CREATE: "tenants.create",
+  TENANTS_UPDATE: "tenants.update",
+  TENANTS_USERS_LIST: "tenants.users.list",
+  TENANTS_USERS_ADD: "tenants.users.add",
+  TENANTS_USERS_REMOVE: "tenants.users.remove",
+
   // Phase 3+ - NICE TO HAVE
   LOGS_TAIL: "logs.tail",
 } as const;
@@ -237,8 +246,6 @@ export const Events = {
 
   // Trace lifecycle
   TRACE_UPDATED: "trace.updated",
-  // Immediate status change (not flush-buffered; fired on every status write).
-  TRACE_STATUS: "trace.status",
 
   // Skill dependency check (realtime progress during startup/rescan)
   SKILL_DEPS_CHECKED: "skill.deps.checked",

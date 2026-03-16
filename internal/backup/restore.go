@@ -145,17 +145,6 @@ func Restore(ctx context.Context, opts RestoreOptions) (*RestoreResult, error) {
 			}
 			result.DatabaseRestored = true
 			progress("database", fmt.Sprintf("done (%d bytes)", len(dbDump)))
-
-			// Revoke any sessions the restored snapshot left active so a
-			// pre-revocation backup can't reactivate stolen refresh tokens
-			// (RFC 6749 §10.4). All users must re-auth after restore.
-			revoked, err := RevokeAllSessionsPostRestore(ctx, opts.DSN)
-			if err != nil {
-				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("post-restore session revocation failed: %v", err))
-			} else if revoked > 0 {
-				progress("database", fmt.Sprintf("revoked %d active sessions post-restore", revoked))
-			}
 		}
 	}
 

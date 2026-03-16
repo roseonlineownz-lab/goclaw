@@ -4,11 +4,7 @@
 // V3 design: Phase 1B — foundation interface.
 package workspace
 
-import (
-	"context"
-
-	"github.com/google/uuid"
-)
+import "context"
 
 // Scope defines workspace access boundary.
 type Scope string
@@ -17,7 +13,6 @@ const (
 	ScopePersonal Scope = "personal"  // single user, isolated
 	ScopeTeam     Scope = "team"      // team context, shared or isolated
 	ScopeDelegate Scope = "delegate"  // delegated task, scoped access
-	ScopeProject  Scope = "project"   // session bound to a project workspace
 )
 
 // WorkspaceContext is resolved ONCE at run start, immutable for the entire run.
@@ -51,14 +46,6 @@ type WorkspaceContext struct {
 
 	// EnforcementLabel is injected into system prompt verbatim.
 	EnforcementLabel string
-
-	// ProjectID is set when the session is bound to a project.
-	// nil means no project binding — falls through to standard 6-scenario resolution.
-	ProjectID *uuid.UUID
-
-	// ProjectSlug is the URL-safe slug used for filesystem path resolution.
-	// Empty when ProjectID is nil.
-	ProjectSlug string
 }
 
 // Resolver produces a WorkspaceContext from request parameters.
@@ -69,20 +56,17 @@ type Resolver interface {
 
 // ResolveParams captures all inputs needed to determine workspace.
 type ResolveParams struct {
-	AgentID     string
-	UserID      string
-	ChatID      string
-	PeerKind    string // "direct" | "group"
-	TeamID      *string
-	TeamConfig  *TeamWorkspaceConfig
+	AgentID    string
+	AgentType  string // "open" | "predefined"
+	UserID     string
+	ChatID     string
+	TenantID   string
+	TenantSlug string // human-readable tenant name for path composition
+	PeerKind   string // "direct" | "group"
+	TeamID     *string
+	TeamConfig *TeamWorkspaceConfig
 	DelegateCtx *DelegateContext
-	BaseDir     string
-
-	// ProjectID and ProjectSlug activate the project-workspace branch.
-	// When both are set, the session's active path is resolved under
-	// <workspaceRoot>/projects/<slug> regardless of team/personal scenario.
-	ProjectID   *uuid.UUID
-	ProjectSlug string
+	BaseDir    string
 }
 
 // TeamWorkspaceConfig maps to team.settings JSON.
@@ -115,8 +99,6 @@ func DefaultEnforcementLabel(scope Scope, shared bool) string {
 			return "You are working in a shared team workspace. Other members can see your files."
 		}
 		return "You are working in an isolated team workspace."
-	case ScopeProject:
-		return "You are working in a project workspace. Files are scoped to this project."
 	default:
 		return "You are working in the user's personal workspace."
 	}

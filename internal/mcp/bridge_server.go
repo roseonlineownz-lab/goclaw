@@ -98,15 +98,7 @@ func makeToolHandler(reg *tools.Registry, toolName string, msgBus *bus.MessageBu
 	return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		args := req.GetArguments()
 
-		// Pass routing context (channel, chatID, peerKind, sessionKey) so native
-		// tools can access local_key, session_key etc. for forum topic routing.
-		result := reg.ExecuteWithContext(ctx, toolName, args,
-			tools.ToolChannelFromCtx(ctx),
-			tools.ToolChatIDFromCtx(ctx),
-			tools.ToolPeerKindFromCtx(ctx),
-			tools.ToolSessionKeyFromCtx(ctx),
-			nil,
-		)
+		result := reg.Execute(ctx, toolName, args)
 
 		if result.IsError {
 			return mcpgo.NewToolResultError(result.ForLLM), nil

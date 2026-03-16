@@ -10,13 +10,11 @@ import (
 // EpisodicSummary represents a Tier 2 episodic memory entry.
 // Created from session summaries via the consolidation pipeline.
 type EpisodicSummary struct {
-	ID        uuid.UUID  `json:"id" db:"id"`
-	AgentID   uuid.UUID  `json:"agent_id" db:"agent_id"`
-	UserID    string     `json:"user_id" db:"user_id"`         // string: chat-based IDs
-	TeamID    *uuid.UUID `json:"team_id,omitempty" db:"team_id"`
-	ContactID *uuid.UUID `json:"contact_id,omitempty" db:"contact_id"`
-	ProjectID *uuid.UUID `json:"project_id,omitempty" db:"project_id"`
-	SessionKey string    `json:"session_key" db:"session_key"`
+	ID         uuid.UUID  `json:"id" db:"id"`
+	TenantID   uuid.UUID  `json:"tenant_id" db:"tenant_id"`
+	AgentID    uuid.UUID  `json:"agent_id" db:"agent_id"`
+	UserID     string     `json:"user_id" db:"user_id"` // string: chat-based IDs
+	SessionKey string     `json:"session_key" db:"session_key"`
 	Summary    string     `json:"summary" db:"summary"`
 	KeyTopics  []string   `json:"key_topics" db:"key_topics"`
 	L0Abstract string     `json:"l0_abstract" db:"l0_abstract"` // ~50 tokens, pre-computed
@@ -27,7 +25,7 @@ type EpisodicSummary struct {
 	CreatedAt  time.Time  `json:"created_at" db:"created_at"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty" db:"expires_at"`
 
-	// Dreaming weighted scoring signals. Populated by
+	// Phase 10 — dreaming weighted scoring signals. Populated by
 	// EpisodicStore.RecordRecall; consumed by consolidation.ComputeRecallScore.
 	RecallCount    int        `json:"recall_count" db:"recall_count"`
 	RecallScore    float64    `json:"recall_score" db:"recall_score"`         // running average of memory_search hit scores
@@ -43,28 +41,17 @@ type EpisodicSearchResult struct {
 	SessionKey string    `json:"session_key" db:"session_key"`
 }
 
-// EpisodicScope holds the optional 5D scope dimensions used to filter reads.
-// A nil field means the dimension is not active and the clause is omitted.
-// All non-nil dimensions must match for a row to be returned (AND-intersect).
-type EpisodicScope struct {
-	TeamID    *uuid.UUID
-	ContactID *uuid.UUID
-	ProjectID *uuid.UUID
-}
-
 // EpisodicSearchOptions configures episodic search behavior.
 type EpisodicSearchOptions struct {
 	MaxResults   int
 	MinScore     float64
 	VectorWeight float64
 	TextWeight   float64
-	// Scope restricts results to the exact 5D scope bucket.
-	// When non-nil the corresponding SQL clause is AND-appended.
-	// A nil Scope means no additional scope filter (agent+user only).
-	Scope *EpisodicScope
 }
 
 // EpisodicStore manages Tier 2 episodic memory.
+// Implementations MUST extract tenant_id from context via store.TenantIDFromContext(ctx)
+// and scope all queries by it. Cross-tenant retrieval is a security violation.
 type EpisodicStore interface {
 	// CRUD
 	Create(ctx context.Context, ep *EpisodicSummary) error

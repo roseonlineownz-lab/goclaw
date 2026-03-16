@@ -2,7 +2,7 @@ import { Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Input } from "@/components/ui/input";
 import { useDebounce } from "@/hooks/use-debounce";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 
 interface SearchInputProps {
   value: string;
@@ -22,12 +22,10 @@ export function SearchInput({
   const { t } = useTranslation("common");
   const [local, setLocal] = useState(value);
   const debounced = useDebounce(local, delay);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
 
   useEffect(() => {
-    onChangeRef.current(debounced);
-  }, [debounced]);
+    onChange(debounced);
+  }, [debounced, onChange]);
 
   useEffect(() => {
     setLocal(value);

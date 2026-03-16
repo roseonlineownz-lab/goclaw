@@ -22,19 +22,8 @@ func (l *Loop) emit(event AgentEvent) {
 	}
 }
 
-// ID returns the agent's identifier (agent_key, e.g. "goctech-leader").
-// Use for logs, UI, filesystem paths. NEVER for DB FK or DomainEvent.AgentID.
-// See docs/agent-identity-conventions.md.
+// ID returns the agent's identifier.
 func (l *Loop) ID() string { return l.id }
-
-// UUID returns the agent's canonical UUID (DB primary key).
-// Use for SQL WHERE/JOIN, DomainEvent.AgentID, context propagation.
-// See docs/agent-identity-conventions.md.
-func (l *Loop) UUID() uuid.UUID { return l.agentUUID }
-
-// OtherConfig returns the agent's other_config JSONB (extensibility bag).
-// Used for per-agent TTS voice override (tts_voice_id, tts_model_id).
-func (l *Loop) OtherConfig() json.RawMessage { return l.agentOtherConfig }
 
 // Model returns the model identifier for this agent loop.
 func (l *Loop) Model() string { return l.model }
@@ -102,7 +91,10 @@ func (l *Loop) emitLLMSpanStart(ctx context.Context, start time.Time, iteration 
 		span.AgentID = &l.agentUUID
 	}
 	span.TeamID = tracing.TraceTeamIDPtrFromContext(ctx)
-	span.ContactID = tracing.TraceContactIDPtrFromContext(ctx)
+	span.TenantID = store.TenantIDFromContext(ctx)
+	if span.TenantID == uuid.Nil {
+		span.TenantID = store.MasterTenantID
+	}
 
 	// Include input messages preview as truncated JSON.
 	if len(messages) > 0 {
@@ -244,7 +236,10 @@ func (l *Loop) emitToolSpanStart(ctx context.Context, start time.Time, toolName,
 		span.AgentID = &l.agentUUID
 	}
 	span.TeamID = tracing.TraceTeamIDPtrFromContext(ctx)
-	span.ContactID = tracing.TraceContactIDPtrFromContext(ctx)
+	span.TenantID = store.TenantIDFromContext(ctx)
+	if span.TenantID == uuid.Nil {
+		span.TenantID = store.MasterTenantID
+	}
 
 	collector.EmitSpan(span)
 	return spanID
@@ -347,7 +342,10 @@ func (l *Loop) emitAgentSpanStart(ctx context.Context, agentSpanID uuid.UUID, st
 		span.AgentID = &l.agentUUID
 	}
 	span.TeamID = tracing.TraceTeamIDPtrFromContext(ctx)
-	span.ContactID = tracing.TraceContactIDPtrFromContext(ctx)
+	span.TenantID = store.TenantIDFromContext(ctx)
+	if span.TenantID == uuid.Nil {
+		span.TenantID = store.MasterTenantID
+	}
 
 	collector.EmitSpan(span)
 }

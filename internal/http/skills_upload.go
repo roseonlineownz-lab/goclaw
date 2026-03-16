@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -52,27 +51,19 @@ func (h *SkillsHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to create temp file")})
 		return
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
 
-	size, err := io.Copy(tmp, file)
+	hasher := sha256.New()
+	size, err := io.Copy(io.MultiWriter(tmp, hasher), file)
 	if err != nil {
-		tmp.Close()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to save upload")})
 		return
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to finalize upload")})
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to finalize upload")})
-		return
-	}
+	fileHash := fmt.Sprintf("%x", hasher.Sum(nil))
 
 	// Open as zip
-	zr, err := zip.OpenReader(tmpName)
+	zr, err := zip.OpenReader(tmp.Name())
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidRequest, "invalid ZIP file")})
 		return
@@ -114,20 +105,6 @@ func (h *SkillsHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security guard: scan for malicious content BEFORE any disk/DB write
-	violations, safe := skills.GuardSkillContent(skillContent)
-	if !safe {
-		slog.Warn("security.skills.upload_rejected",
-			"user_id", userID,
-			"violations", len(violations),
-			"first_rule", violations[0].Reason)
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":      i18n.T(locale, i18n.MsgInvalidRequest, "skill content failed security scan"),
-			"violations": skills.FormatGuardViolations(violations),
-		})
-		return
-	}
-
 	name, description, slug, frontmatter := skills.ParseSkillFrontmatter(skillContent)
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgRequired, "name in SKILL.md frontmatter")})
@@ -147,29 +124,10 @@ func (h *SkillsHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute content hash of SKILL.md for idempotency check.
-	// Using SKILL.md content (not ZIP hash) so content-identical uploads are deduplicated
-	// even when packaged into different ZIP files (e.g. multi-skill split upload).
-	skillHash := fmt.Sprintf("%x", sha256.Sum256([]byte(skillContent)))
-
 	tenantSkillsBase := h.tenantSkillsDir(r)
 	uploadLock := h.skillUploadLock(filepath.Join(tenantSkillsBase, slug))
 	uploadLock.Lock()
 	defer uploadLock.Unlock()
-
-	// Check whether content is unchanged from the current stored version.
-	// Performed under lock to avoid TOCTOU race where concurrent uploads
-	// could both pass the hash check before either creates a new version.
-	existingHash, existingVer, skillExists := h.skills.GetSkillHashBySlug(r.Context(), slug)
-	if skillExists && existingHash != "" && existingHash == skillHash {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"slug":    slug,
-			"version": existingVer,
-			"name":    name,
-			"status":  "unchanged",
-		})
-		return
-	}
 
 	// Determine version (always increment — includes archived skills so re-upload gets v2+)
 	version := h.skills.GetNextVersion(r.Context(), slug)
@@ -231,14 +189,12 @@ func (h *SkillsHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Version:     version,
 		FilePath:    destDir,
 		FileSize:    size,
-		FileHash:    &skillHash, // SKILL.md content hash for idempotency (not ZIP hash)
+		FileHash:    &fileHash,
 		Frontmatter: frontmatter,
 	}
 
 	// Scan and check dependencies
-	// is_new is true only when no previous version of this skill existed (first upload).
-	isNew := !skillExists
-	response := map[string]any{"slug": slug, "version": version, "name": name, "status": "active", "is_new": isNew}
+	response := map[string]any{"slug": slug, "version": version, "name": name, "status": "active"}
 	depState := uploadSkillDepState{}
 	depsCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), uploadDepsInstallTimeout)
 	defer cancel()
@@ -255,7 +211,9 @@ func (h *SkillsHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 			)
 			skill.Status = depState.status
 			skill.MissingDeps = depState.missing
-			maps.Copy(response, depState.response)
+			for key, value := range depState.response {
+				response[key] = value
+			}
 		}
 	}
 
@@ -269,7 +227,6 @@ func (h *SkillsHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 	response["id"] = id
 
 	h.skills.BumpVersion()
-	h.emitCacheInvalidate(bus.CacheKindSkills, id.String())
 	emitAudit(h.msgBus, r, "skill.uploaded", "skill", slug)
 	slog.Info("skill uploaded", "id", id, "slug", slug, "version", version, "size", header.Size, "status", skill.Status)
 	depState.emit(h, slug)
@@ -278,7 +235,7 @@ func (h *SkillsHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func canAutoInstallUploadedSkillDeps(ctx context.Context) bool {
-	return store.IsRootRole(ctx) || store.IsMasterScope(ctx)
+	return store.IsOwnerRole(ctx) || store.TenantIDFromContext(ctx) == store.MasterTenantID
 }
 
 func uploadDepErrors(result *skills.InstallResult, installErr error) []string {

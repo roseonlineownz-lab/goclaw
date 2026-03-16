@@ -61,6 +61,7 @@ func (m *AgentsMethods) handleDelete(ctx context.Context, client *gateway.Client
 				Payload: bus.AgentDeletedPayload{
 					AgentKey: params.AgentID,
 					Provider: ag.Provider,
+					TenantID: store.TenantIDFromContext(ctx),
 				},
 			})
 		}

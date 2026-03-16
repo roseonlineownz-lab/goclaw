@@ -55,7 +55,7 @@ func (h *ProvidersHandler) handleVerifyEmbedding(w http.ResponseWriter, r *http.
 		model = es.Model
 	}
 	if model == "" {
-		model = "text-embedding-3-large" // 3072 dims, matches halfvec(3072) schema
+		model = "text-embedding-3-small"
 	}
 
 	// Resolve API base: settings.embedding.api_base → provider api_base → resolved base
@@ -99,7 +99,7 @@ func (h *ProvidersHandler) handleVerifyEmbedding(w http.ResponseWriter, r *http.
 // handleEmbeddingStatus returns the current embedding system configuration.
 //
 //	GET /v1/embedding/status
-//	Response: {"configured": true, "provider": "openai", "model": "text-embedding-3-large"}
+//	Response: {"configured": true, "provider": "openai", "model": "text-embedding-3-small"}
 //	     or: {"configured": false}
 func (h *ProvidersHandler) handleEmbeddingStatus(w http.ResponseWriter, r *http.Request) {
 	// Primary: check system_configs for embedding.provider/model
@@ -108,7 +108,7 @@ func (h *ProvidersHandler) handleEmbeddingStatus(w http.ResponseWriter, r *http.
 		model, _ := h.sysConfigStore.Get(r.Context(), "embedding.model")
 		if provName != "" {
 			if model == "" {
-				model = "text-embedding-3-large" // 3072 dims, matches halfvec(3072) schema
+				model = "text-embedding-3-small"
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"configured":    true,
@@ -134,7 +134,7 @@ func (h *ProvidersHandler) handleEmbeddingStatus(w http.ResponseWriter, r *http.
 		if es != nil && es.Enabled {
 			model := es.Model
 			if model == "" {
-				model = "text-embedding-3-large" // 3072 dims, matches halfvec(3072) schema
+				model = "text-embedding-3-small"
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"configured":    true,

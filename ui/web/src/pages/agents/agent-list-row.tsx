@@ -19,7 +19,7 @@ interface AgentListRowProps {
 export function AgentListRow({ agent, ownerName, onClick, onResummon, onDelete }: AgentListRowProps) {
   const { t } = useTranslation("agents");
   const displayName = agentDisplayName(agent, t("card.unnamedAgent"));
-  const selfEvolve = Boolean(agent.self_evolve);
+  const selfEvolve = agent.agent_type === "predefined" && Boolean(agent.self_evolve);
   const emoji = agent.emoji ?? "";
   const hasOAuthRouting = hasActiveChatGPTOAuthRouting(agent.chatgpt_oauth_routing);
   const promptMode = readPromptMode(agent);

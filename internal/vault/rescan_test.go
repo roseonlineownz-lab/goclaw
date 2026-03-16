@@ -2,9 +2,7 @@ package vault
 
 import "testing"
 
-// TestInferOwnerFromPath covers the tenant-wide path parser.
-// All patterns now return the FULL relPath (no prefix stripping) so
-// enrichment workers can locate files via filepath.Join(workspace, path).
+// TestInferOwnerFromPath covers the new tenant-wide path parser.
 func TestInferOwnerFromPath(t *testing.T) {
 	agentMap := map[string]string{
 		"my-bot":    "uuid-1",
@@ -16,95 +14,83 @@ func TestInferOwnerFromPath(t *testing.T) {
 	}
 
 	tests := []struct {
-		path             string
-		wantAgentID      *string
-		wantTeamID       *string
-		wantScope        string
+		path            string
+		wantAgentID     *string
+		wantTeamID      *string
+		wantScope       string
 		wantStrippedPath string
 	}{
-		// Legacy agents/{key}/... → personal scope, full path preserved
+		// agents/{key}/... → personal scope, strip prefix
 		{
-			path:             "agents/my-bot/notes/todo.md",
-			wantAgentID:      new("uuid-1"),
-			wantScope:        "personal",
-			wantStrippedPath: "agents/my-bot/notes/todo.md",
+			path:            "agents/my-bot/notes/todo.md",
+			wantAgentID:     strPtr("uuid-1"),
+			wantScope:       "personal",
+			wantStrippedPath: "notes/todo.md",
 		},
+		// agents/{key} with no trailing path → personal, empty stripped path
 		{
-			path:             "agents/my-bot/file.md",
-			wantAgentID:      new("uuid-1"),
-			wantScope:        "personal",
-			wantStrippedPath: "agents/my-bot/file.md",
+			path:            "agents/my-bot/file.md",
+			wantAgentID:     strPtr("uuid-1"),
+			wantScope:       "personal",
+			wantStrippedPath: "file.md",
 		},
-		// Root-level {agent_key}/... → personal scope (workspace layout)
+		// teams/{uuid}/... → team scope, strip prefix
 		{
-			path:             "my-bot/telegram/123/report.md",
-			wantAgentID:      new("uuid-1"),
-			wantScope:        "personal",
-			wantStrippedPath: "my-bot/telegram/123/report.md",
+			path:            "teams/" + validUUID + "/doc.md",
+			wantTeamID:      strPtr(validUUID),
+			wantScope:       "team",
+			wantStrippedPath: "doc.md",
 		},
+		// teams/{uuid}/deep/nested → team scope
 		{
-			path:             "other-bot/docs/guide.md",
-			wantAgentID:      new("uuid-2"),
-			wantScope:        "personal",
-			wantStrippedPath: "other-bot/docs/guide.md",
+			path:            "teams/" + validUUID + "/deep/nested.md",
+			wantTeamID:      strPtr(validUUID),
+			wantScope:       "team",
+			wantStrippedPath: "deep/nested.md",
 		},
-		// teams/{uuid}/... → team scope, full path preserved
+		// root-level file → shared scope, path unchanged
 		{
-			path:             "teams/" + validUUID + "/doc.md",
-			wantTeamID:       new(validUUID),
-			wantScope:        "team",
-			wantStrippedPath: "teams/" + validUUID + "/doc.md",
-		},
-		{
-			path:             "teams/" + validUUID + "/deep/nested.md",
-			wantTeamID:       new(validUUID),
-			wantScope:        "team",
-			wantStrippedPath: "teams/" + validUUID + "/deep/nested.md",
-		},
-		// Root-level file (no slash) → shared
-		{
-			path:             "README.md",
-			wantScope:        "shared",
+			path:            "README.md",
+			wantScope:       "shared",
 			wantStrippedPath: "README.md",
 		},
-		// Nested file not matching any agent key → shared
+		// nested file not under agents/ or teams/ → shared
 		{
-			path:             "docs/guide.md",
-			wantScope:        "shared",
+			path:            "docs/guide.md",
+			wantScope:       "shared",
 			wantStrippedPath: "docs/guide.md",
 		},
-		// Unknown agent under agents/ prefix → skip
+		// unknown agent → skip (scope="")
 		{
 			path:      "agents/unknown-bot/file.md",
 			wantScope: "",
 		},
-		// Invalid team UUID → skip
+		// invalid team UUID → skip
 		{
 			path:      "teams/not-a-uuid/file.md",
 			wantScope: "",
 		},
-		// Valid UUID but not in teamSet → skip
+		// valid UUID but not in teamSet → skip
 		{
 			path:      "teams/11111111-2222-3333-4444-555555555555/file.md",
 			wantScope: "",
 		},
-		// Unknown root folder (not an agent key) → shared
+		// malformed agents path (no trailing file) is still an unknown agent key check
 		{
-			path:             "telegram/group/file.md",
-			wantScope:        "shared",
-			wantStrippedPath: "telegram/group/file.md",
+			path:      "agents/unknown/",
+			wantScope: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			gotAgentID, gotTeamID, _, gotScope, gotPath := inferOwnerFromPath(tt.path, agentMap, teamSet)
+			gotAgentID, gotTeamID, gotScope, gotPath := inferOwnerFromPath(tt.path, agentMap, teamSet)
 
 			if gotScope != tt.wantScope {
 				t.Errorf("scope = %q, want %q", gotScope, tt.wantScope)
 			}
 			if tt.wantScope == "" {
-				return
+				return // skip is signaled; remaining fields don't matter
 			}
 			if tt.wantStrippedPath != "" && gotPath != tt.wantStrippedPath {
 				t.Errorf("strippedPath = %q, want %q", gotPath, tt.wantStrippedPath)
@@ -141,10 +127,6 @@ func TestInferVaultDocType(t *testing.T) {
 		{"web-fetch/page.html", "note"},
 		{"skills/my-skill/SKILL.md", "skill"},
 		{"deep/soul.md", "context"},
-		{"docs/spec.pdf", "document"},
-		{"docs/sheet.xlsx", "document"},
-		{"docs/slide.pptx", "document"},
-		{"docs/memo.docx", "document"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -153,34 +135,6 @@ func TestInferVaultDocType(t *testing.T) {
 				t.Errorf("InferDocType(%q) = %q, want %q", tt.path, got, tt.docType)
 			}
 		})
-	}
-}
-
-func TestInferDocType_PathPrefixWinsOverExt(t *testing.T) {
-	cases := []struct {
-		path string
-		want string
-	}{
-		{"memory/foo.md", "memory"},
-		{"memory/snapshots/day.md", "memory"},
-		{"skills/my-skill/README.md", "skill"},
-		{"skills/foo/skill.md", "skill"},
-		{"episodic/2024-01-01.json", "episodic"},
-		{"path/to/SOUL.md", "context"},
-		{"path/to/IDENTITY.md", "context"},
-		{"path/to/AGENTS.md", "context"},
-		{"notes/daily.md", "note"},
-		{"photos/cat.png", "media"},
-		{"videos/clip.mp4", "media"},
-		{"audio/voice.mp3", "media"},
-		{"docs/spec.pdf", "document"},
-		{"data/file", "note"},
-		{"binaries/tool.exe", "note"},
-	}
-	for _, c := range cases {
-		if got := InferDocType(c.path); got != c.want {
-			t.Errorf("InferDocType(%q) = %q; want %q", c.path, got, c.want)
-		}
 	}
 }
 
@@ -203,5 +157,4 @@ func TestInferTitle(t *testing.T) {
 	}
 }
 
-//go:fix inline
-func strPtr(s string) *string { return new(s) }
+func strPtr(s string) *string { return &s }

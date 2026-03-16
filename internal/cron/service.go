@@ -84,12 +84,7 @@ func (cs *Service) Start() error {
 	cs.stopChan = make(chan struct{})
 	cs.running = true
 
-	// Snapshot the tick interval before spawning so the goroutine doesn't
-	// race with tests that mutate the package-level `runLoopTickInterval`
-	// after a previous Stop() returned but the runLoop goroutine hasn't yet
-	// executed its ticker construction.
-	tick := runLoopTickInterval
-	go cs.runLoop(cs.stopChan, tick)
+	go cs.runLoop(cs.stopChan)
 
 	slog.Info("cron service started", "jobs", len(cs.store.Jobs))
 	return nil

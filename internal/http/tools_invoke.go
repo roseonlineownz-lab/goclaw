@@ -56,7 +56,7 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": i18n.T(locale, i18n.MsgUnauthorized)})
 		return
 	}
-	if !permissions.HasMinRole(auth.Role, permissions.RoleMember) {
+	if !permissions.HasMinRole(auth.Role, permissions.RoleOperator) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": i18n.T(locale, i18n.MsgPermissionDenied, r.URL.Path)})
 		return
 	}
@@ -116,7 +116,7 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Inject agentID into context for interceptors (bootstrap, memory).
-	// Note: userID, role, locale already injected by enrichContext above.
+	// Note: userID, tenantID, role, locale already injected by enrichContext above.
 	ctx := r.Context()
 
 	agentIDStr := req.AgentID

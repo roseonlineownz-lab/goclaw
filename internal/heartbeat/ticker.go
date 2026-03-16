@@ -17,7 +17,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/scheduler"
-	sessions "github.com/nextlevelbuilder/goclaw/internal/agentsessions"
+	"github.com/nextlevelbuilder/goclaw/internal/sessions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -169,6 +169,14 @@ func (t *Ticker) runOne(ctx context.Context, hb store.AgentHeartbeat) {
 	}
 	agentKey = ag.AgentKey
 
+	// Inject agent's tenant into context so all store operations
+	// (context files, sessions, etc.) are tenant-scoped.
+	if ag.TenantID != uuid.Nil {
+		ctx = store.WithTenantID(ctx, ag.TenantID)
+	} else {
+		ctx = store.WithTenantID(ctx, store.MasterTenantID)
+	}
+
 	// [1] Active hours filter.
 	if !isWithinActiveHours(hb) {
 		t.logSkipped(ctx, hb, "active_hours", agentKey)
@@ -245,7 +253,7 @@ func (t *Ticker) runOne(ctx context.Context, hb store.AgentHeartbeat) {
 	var providerOverride providers.Provider
 	if hb.ProviderID != nil && t.providerStore != nil && t.providerReg != nil {
 		if provData, err := t.providerStore.GetProvider(ctx, *hb.ProviderID); err == nil {
-			if prov, err := t.providerReg.GetByName(provData.Name); err == nil {
+			if prov, err := t.providerReg.GetForTenant(ag.TenantID, provData.Name); err == nil {
 				providerOverride = prov
 				slog.Info("heartbeat.provider_override",
 					"agent", agentKey, "provider", provData.Name)

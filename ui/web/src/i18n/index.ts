@@ -6,7 +6,6 @@ import enCommon from "./locales/en/common.json";
 import enSidebar from "./locales/en/sidebar.json";
 import enTopbar from "./locales/en/topbar.json";
 import enLogin from "./locales/en/login.json";
-import enAuth from "./locales/en/auth.json";
 import enOverview from "./locales/en/overview.json";
 import enChat from "./locales/en/chat.json";
 import enAgents from "./locales/en/agents.json";
@@ -36,18 +35,17 @@ import enActivity from "./locales/en/activity.json";
 import enApiKeys from "./locales/en/api-keys.json";
 import enCliCredentials from "./locales/en/cli-credentials.json";
 import enPackages from "./locales/en/packages.json";
+import enTenants from "./locales/en/tenants.json";
 import enSystemSettings from "./locales/en/system-settings.json";
 import enImportExport from "./locales/en/import-export.json";
 import enV3Capabilities from "./locales/en/v3-capabilities.json";
 import enBackup from "./locales/en/backup.json";
-import enHooks from "./locales/en/hooks.json";
 
 // --- VI namespaces ---
 import viCommon from "./locales/vi/common.json";
 import viSidebar from "./locales/vi/sidebar.json";
 import viTopbar from "./locales/vi/topbar.json";
 import viLogin from "./locales/vi/login.json";
-import viAuth from "./locales/vi/auth.json";
 import viOverview from "./locales/vi/overview.json";
 import viChat from "./locales/vi/chat.json";
 import viAgents from "./locales/vi/agents.json";
@@ -77,18 +75,17 @@ import viActivity from "./locales/vi/activity.json";
 import viApiKeys from "./locales/vi/api-keys.json";
 import viCliCredentials from "./locales/vi/cli-credentials.json";
 import viPackages from "./locales/vi/packages.json";
+import viTenants from "./locales/vi/tenants.json";
 import viSystemSettings from "./locales/vi/system-settings.json";
 import viImportExport from "./locales/vi/import-export.json";
 import viV3Capabilities from "./locales/vi/v3-capabilities.json";
 import viBackup from "./locales/vi/backup.json";
-import viHooks from "./locales/vi/hooks.json";
 
 // --- ZH namespaces ---
 import zhCommon from "./locales/zh/common.json";
 import zhSidebar from "./locales/zh/sidebar.json";
 import zhTopbar from "./locales/zh/topbar.json";
 import zhLogin from "./locales/zh/login.json";
-import zhAuth from "./locales/zh/auth.json";
 import zhOverview from "./locales/zh/overview.json";
 import zhChat from "./locales/zh/chat.json";
 import zhAgents from "./locales/zh/agents.json";
@@ -118,11 +115,11 @@ import zhActivity from "./locales/zh/activity.json";
 import zhApiKeys from "./locales/zh/api-keys.json";
 import zhCliCredentials from "./locales/zh/cli-credentials.json";
 import zhPackages from "./locales/zh/packages.json";
+import zhTenants from "./locales/zh/tenants.json";
 import zhSystemSettings from "./locales/zh/system-settings.json";
 import zhImportExport from "./locales/zh/import-export.json";
 import zhV3Capabilities from "./locales/zh/v3-capabilities.json";
 import zhBackup from "./locales/zh/backup.json";
-import zhHooks from "./locales/zh/hooks.json";
 
 const STORAGE_KEY = "goclaw:language";
 
@@ -136,21 +133,20 @@ function getInitialLanguage(): string {
 }
 
 const ns = [
-  "common", "sidebar", "topbar", "login", "auth", "overview", "chat",
+  "common", "sidebar", "topbar", "login", "overview", "chat",
   "agents", "teams", "sessions", "skills", "cron", "config",
   "channels", "providers", "traces", "events",
   "usage", "approvals", "nodes", "logs", "tools", "mcp", "tts",
   "setup", "memory", "vault", "storage", "pending-messages", "contacts", "activity", "api-keys",
-  "cli-credentials", "packages", "system-settings", "import-export",
+  "cli-credentials", "packages", "tenants", "system-settings", "import-export",
   "v3-capabilities",
   "backup",
-  "hooks",
 ] as const;
 
 i18n.use(initReactI18next).init({
   resources: {
     en: {
-      common: enCommon, sidebar: enSidebar, topbar: enTopbar, login: enLogin, auth: enAuth,
+      common: enCommon, sidebar: enSidebar, topbar: enTopbar, login: enLogin,
       overview: enOverview, chat: enChat, agents: enAgents, teams: enTeams,
       sessions: enSessions, skills: enSkills, cron: enCron, config: enConfig,
       channels: enChannels, providers: enProviders, traces: enTraces,
@@ -161,14 +157,14 @@ i18n.use(initReactI18next).init({
       contacts: enContacts, activity: enActivity, "api-keys": enApiKeys,
       "cli-credentials": enCliCredentials,
       packages: enPackages,
+      tenants: enTenants,
       "system-settings": enSystemSettings,
       "import-export": enImportExport,
       "v3-capabilities": enV3Capabilities,
       backup: enBackup,
-      hooks: enHooks,
     },
     vi: {
-      common: viCommon, sidebar: viSidebar, topbar: viTopbar, login: viLogin, auth: viAuth,
+      common: viCommon, sidebar: viSidebar, topbar: viTopbar, login: viLogin,
       overview: viOverview, chat: viChat, agents: viAgents, teams: viTeams,
       sessions: viSessions, skills: viSkills, cron: viCron, config: viConfig,
       channels: viChannels, providers: viProviders, traces: viTraces,
@@ -179,14 +175,14 @@ i18n.use(initReactI18next).init({
       contacts: viContacts, activity: viActivity, "api-keys": viApiKeys,
       "cli-credentials": viCliCredentials,
       packages: viPackages,
+      tenants: viTenants,
       "system-settings": viSystemSettings,
       "import-export": viImportExport,
       "v3-capabilities": viV3Capabilities,
       backup: viBackup,
-      hooks: viHooks,
     },
     zh: {
-      common: zhCommon, sidebar: zhSidebar, topbar: zhTopbar, login: zhLogin, auth: zhAuth,
+      common: zhCommon, sidebar: zhSidebar, topbar: zhTopbar, login: zhLogin,
       overview: zhOverview, chat: zhChat, agents: zhAgents, teams: zhTeams,
       sessions: zhSessions, skills: zhSkills, cron: zhCron, config: zhConfig,
       channels: zhChannels, providers: zhProviders, traces: zhTraces,
@@ -197,11 +193,11 @@ i18n.use(initReactI18next).init({
       contacts: zhContacts, activity: zhActivity, "api-keys": zhApiKeys,
       "cli-credentials": zhCliCredentials,
       packages: zhPackages,
+      tenants: zhTenants,
       "system-settings": zhSystemSettings,
       "import-export": zhImportExport,
       "v3-capabilities": zhV3Capabilities,
       backup: zhBackup,
-      hooks: zhHooks,
     },
   },
   ns: [...ns],

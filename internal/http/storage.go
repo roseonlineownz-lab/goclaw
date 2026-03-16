@@ -14,9 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/skills"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
@@ -56,9 +58,12 @@ func (h *StorageHandler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return requireAuth("", next)
 }
 
-// tenantBaseDir returns the global baseDir. v4 single-tenant: no per-tenant scoping.
-func (h *StorageHandler) tenantBaseDir(_ *http.Request) string {
-	return h.baseDir
+// tenantBaseDir resolves the data directory scoped to the requesting tenant.
+// Master tenant returns the global baseDir (backward compat).
+func (h *StorageHandler) tenantBaseDir(r *http.Request) string {
+	tid := store.TenantIDFromContext(r.Context())
+	slug := store.TenantSlugFromContext(r.Context())
+	return config.TenantDataDir(h.baseDir, tid, slug)
 }
 
 // protectedDirs are top-level directories where upload, move, and deletion are blocked.
@@ -85,9 +90,13 @@ func isProtectedPath(rel string) bool {
 }
 
 // isHiddenPath reports paths that should not be surfaced in the Storage UI/API.
-// v4 single-tenant: hide the tenants/ isolation root that may have been created in v3.
-func (h *StorageHandler) isHiddenPath(_ *http.Request, rel string) bool {
+// Master tenant keeps its legacy base dir for backward compatibility, but must
+// not expose the cross-tenant isolation root.
+func (h *StorageHandler) isHiddenPath(r *http.Request, rel string) bool {
 	if rel == "" {
+		return false
+	}
+	if store.TenantIDFromContext(r.Context()) != store.MasterTenantID {
 		return false
 	}
 	return strings.EqualFold(topLevelPath(rel), "tenants")

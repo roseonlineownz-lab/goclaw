@@ -23,7 +23,7 @@ interface ProviderCodexPoolActivityResponse {
 }
 
 const EMPTY: ProviderCodexPoolActivityResponse = {
-  strategy: "priority_order",
+  strategy: "primary_first",
   pool_providers: [],
   stats_sample_size: 0,
   provider_counts: [],

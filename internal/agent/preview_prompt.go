@@ -177,7 +177,7 @@ func BuildPreviewPrompt(ctx context.Context, ag *store.AgentData, mode PromptMod
 	// --- Provider contribution ---
 	var providerContrib *providers.PromptContribution
 	if deps.ProviderReg != nil && ag.Provider != "" {
-		if p, err := deps.ProviderReg.GetByName(ag.Provider); err == nil {
+		if p, err := deps.ProviderReg.Get(ctx, ag.Provider); err == nil {
 			if pc, ok := p.(providers.PromptContributor); ok {
 				providerContrib = pc.PromptContribution()
 			}
@@ -232,7 +232,7 @@ func BuildPreviewPrompt(ctx context.Context, ag *store.AgentData, mode PromptMod
 			if tool, ok := deps.ToolLister.Get(canonical); ok {
 				toolDefs = append(toolDefs, providers.ToolDefinition{
 					Type: "function",
-					Function: &providers.ToolFunctionSchema{
+					Function: providers.ToolFunctionSchema{
 						Name:        alias,
 						Description: tool.Description(),
 						Parameters:  tool.Parameters(),
@@ -251,6 +251,7 @@ func BuildPreviewPrompt(ctx context.Context, ag *store.AgentData, mode PromptMod
 		Mode:                 mode,
 		ToolNames:            toolNames,
 		ContextFiles:         contextFiles,
+		AgentType:            ag.AgentType,
 		Workspace:            ag.Workspace,
 		HasMemory:            true,
 		HasSpawn:             slices.Contains(toolNames, "spawn"),

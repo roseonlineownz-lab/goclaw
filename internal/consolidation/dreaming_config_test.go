@@ -12,8 +12,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
-//go:fix inline
-func boolPtr(b bool) *bool { return new(b) }
+func boolPtr(b bool) *bool { return &b }
 
 func TestMergeDreamingConfigNilOverrideReturnsBase(t *testing.T) {
 	base := defaultDreamingConfig()
@@ -45,7 +44,7 @@ func TestMergeDreamingConfigPartialOverride(t *testing.T) {
 
 func TestMergeDreamingConfigDisable(t *testing.T) {
 	base := defaultDreamingConfig()
-	override := &config.DreamingConfig{Enabled: new(false)}
+	override := &config.DreamingConfig{Enabled: boolPtr(false)}
 	got := mergeDreamingConfig(base, override)
 	if got.Enabled {
 		t.Errorf("Enabled = true, want false (override)")
@@ -68,7 +67,7 @@ func TestMergeDreamingConfigVerboseLogNilPreservesDefault(t *testing.T) {
 func TestMergeDreamingConfigVerboseLogExplicitFalse(t *testing.T) {
 	base := defaultDreamingConfig()
 	base.VerboseLog = true
-	override := &config.DreamingConfig{VerboseLog: new(false)}
+	override := &config.DreamingConfig{VerboseLog: boolPtr(false)}
 	got := mergeDreamingConfig(base, override)
 	if got.VerboseLog {
 		t.Errorf("VerboseLog = true, want false (explicit override must apply)")
@@ -110,7 +109,8 @@ func TestDreamingWorkerHandleHonoursCustomThreshold(t *testing.T) {
 	worker := &dreamingWorker{
 		episodicStore: mockEpisodic,
 		memoryStore:   mockMemory,
-		registry:      testRegistry(mockProvider),
+		provider:      mockProvider,
+		model:         "test",
 		threshold:     5, // global default says skip at count=2
 		debounce:      1 * time.Second,
 		resolveConfig: func(_ context.Context, _ string) *config.DreamingConfig {
@@ -120,6 +120,7 @@ func TestDreamingWorkerHandleHonoursCustomThreshold(t *testing.T) {
 
 	err := worker.Handle(context.Background(), eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
+		TenantID: uuid.New().String(),
 		AgentID:  "agent-123",
 		UserID:   "user-123",
 		Payload:  &eventbus.EpisodicCreatedPayload{},
@@ -145,12 +146,13 @@ func TestDreamingWorkerHandleDisabledSkips(t *testing.T) {
 		threshold:     5,
 		debounce:      1 * time.Second,
 		resolveConfig: func(_ context.Context, _ string) *config.DreamingConfig {
-			return &config.DreamingConfig{Enabled: new(false)}
+			return &config.DreamingConfig{Enabled: boolPtr(false)}
 		},
 	}
 
 	err := worker.Handle(context.Background(), eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
+		TenantID: uuid.New().String(),
 		AgentID:  "agent-disabled",
 		UserID:   "user-123",
 		Payload:  &eventbus.EpisodicCreatedPayload{},
@@ -180,6 +182,7 @@ func TestDreamingWorkerHandleNilResolverUsesDefaults(t *testing.T) {
 	}
 	err := worker.Handle(context.Background(), eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
+		TenantID: uuid.New().String(),
 		AgentID:  "agent-123",
 		UserID:   "user-123",
 		Payload:  &eventbus.EpisodicCreatedPayload{},

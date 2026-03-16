@@ -12,14 +12,11 @@ import type { SkillInfo, SkillFile, SkillVersions } from "@/types/skill";
 export type { SkillInfo, SkillFile, SkillVersions };
 
 export type SkillUploadResponse = {
-  /** Absent when status is "unchanged" */
-  id?: string;
+  id: string;
   slug: string;
   version: number;
   name: string;
-  /** "active" | "unchanged" | "archived" */
   status?: string;
-  is_new?: boolean;
   deps_warning?: string;
   deps_errors?: string[];
   missing_deps?: string[];
@@ -51,7 +48,7 @@ export function useSkills() {
   // even if the SKILL_DEPS_* events were emitted before the client connected.
   useEffect(() => {
     if (connected) invalidate();
-  }, [connected]);  
+  }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getSkill = useCallback(
     async (name: string) => {
@@ -189,9 +186,38 @@ export function useSkills() {
     [http, invalidate],
   );
 
+  const setTenantConfig = useCallback(
+    async (id: string, enabled: boolean) => {
+      try {
+        await http.put(`/v1/skills/${id}/tenant-config`, { enabled });
+        await invalidate();
+        toast.success(i18next.t("skills:toast.updated"));
+      } catch (err) {
+        toast.error(i18next.t("skills:toast.updateFailed"), userFriendlyError(err));
+        throw err;
+      }
+    },
+    [http, invalidate],
+  );
+
+  const deleteTenantConfig = useCallback(
+    async (id: string) => {
+      try {
+        await http.delete(`/v1/skills/${id}/tenant-config`);
+        await invalidate();
+        toast.success(i18next.t("skills:toast.updated"));
+      } catch (err) {
+        toast.error(i18next.t("skills:toast.updateFailed"), userFriendlyError(err));
+        throw err;
+      }
+    },
+    [http, invalidate],
+  );
+
   return {
     skills, loading, refresh: invalidate, getSkill,
     uploadSkill, updateSkill, deleteSkill,
     getSkillVersions, getSkillFiles, getSkillFileContent, rescanDeps, installDeps, installSingleDep, toggleSkill,
+    setTenantConfig, deleteTenantConfig,
   };
 }

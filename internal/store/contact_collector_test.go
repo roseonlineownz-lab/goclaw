@@ -17,6 +17,7 @@ type mockContactStore struct {
 }
 
 type mockUpsertCall struct {
+	tenantID        uuid.UUID
 	channelType     string
 	channelInstance string
 	senderID        string
@@ -33,6 +34,7 @@ func (m *mockContactStore) UpsertContact(ctx context.Context, channelType, chann
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.upserts = append(m.upserts, mockUpsertCall{
+		tenantID:        TenantIDFromContext(ctx),
 		channelType:     channelType,
 		channelInstance: channelInstance,
 		senderID:        senderID,
@@ -67,11 +69,12 @@ func (m *mockContactStore) GetContactByID(_ context.Context, _ uuid.UUID) (*Chan
 func (m *mockContactStore) GetSenderIDsByContactIDs(_ context.Context, _ []uuid.UUID) ([]string, error) {
 	return nil, nil
 }
-func (m *mockContactStore) MergeUserAggregate(_ context.Context, _ MergeUserAggregateRequest) error {
+func (m *mockContactStore) MergeContacts(_ context.Context, _ []uuid.UUID, _ uuid.UUID) error {
 	return nil
 }
-func (m *mockContactStore) UpdateDefaultProject(_ context.Context, _ uuid.UUID, _ *uuid.UUID) error {
-	return nil
+func (m *mockContactStore) UnmergeContacts(_ context.Context, _ []uuid.UUID) error { return nil }
+func (m *mockContactStore) GetContactsByMergedID(_ context.Context, _ uuid.UUID) ([]ChannelContact, error) {
+	return nil, nil
 }
 
 func (m *mockContactStore) upsertCount() int {
@@ -80,44 +83,64 @@ func (m *mockContactStore) upsertCount() int {
 	return len(m.upserts)
 }
 
-// TestContactCollector_SameSenderDedup verifies that repeated calls for the
-// same (channel, sender, thread) only hit the store once.
-func TestContactCollector_SameSenderDedup(t *testing.T) {
+// TestContactCollector_SameTenantDedup verifies that repeated calls for the
+// same (tenant, channel, sender, thread) only hit the store once.
+func TestContactCollector_SameTenantDedup(t *testing.T) {
 	mock := &mockContactStore{}
 	c := NewContactCollector(mock, cache.NewInMemoryCache[bool]())
 
-	ctx := context.Background()
+	tenant := uuid.New()
+	ctx := WithTenantID(context.Background(), tenant)
 
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		c.EnsureContact(ctx, "telegram", "tg-main", "user-123", "uid-1", "Alice", "alice", "user", "user", "", "")
 	}
 
 	if got := mock.upsertCount(); got != 1 {
-		t.Errorf("same-sender dedup broken: got %d upserts, want 1", got)
+		t.Errorf("same-tenant dedup broken: got %d upserts, want 1", got)
 	}
 }
 
-// TestContactCollector_DifferentInstances verifies same sender in different
-// channel instances (different bots) produces separate upserts.
-func TestContactCollector_DifferentInstances(t *testing.T) {
+// TestContactCollector_CrossTenantIsolation verifies the core bug fix: same
+// (channel, sender, thread) in DIFFERENT tenants must produce separate upserts.
+// Before the fix, the cache key was missing tenantID so the second tenant's
+// upsert was silently skipped, causing a cross-tenant contact leak.
+func TestContactCollector_CrossTenantIsolation(t *testing.T) {
 	mock := &mockContactStore{}
 	c := NewContactCollector(mock, cache.NewInMemoryCache[bool]())
 
-	ctx := context.Background()
+	tenantA := uuid.New()
+	tenantB := uuid.New()
+	ctxA := WithTenantID(context.Background(), tenantA)
+	ctxB := WithTenantID(context.Background(), tenantB)
 
-	c.EnsureContact(ctx, "telegram", "bot-A", "user-123", "uid-1", "Alice", "alice", "user", "user", "", "")
-	c.EnsureContact(ctx, "telegram", "bot-B", "user-123", "uid-1", "Alice", "alice", "user", "user", "", "")
+	// Same sender ID "user-123" in both tenants
+	c.EnsureContact(ctxA, "telegram", "tg-main", "user-123", "uid-1", "Alice", "alice", "user", "user", "", "")
+	c.EnsureContact(ctxB, "telegram", "tg-main", "user-123", "uid-1", "Alice", "alice", "user", "user", "", "")
 
 	if got := mock.upsertCount(); got != 2 {
-		t.Errorf("different-instance isolation broken: got %d upserts, want 2", got)
+		t.Errorf("cross-tenant isolation broken: got %d upserts, want 2", got)
+	}
+
+	// Verify each tenant got its own upsert
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	seen := map[uuid.UUID]bool{}
+	for _, u := range mock.upserts {
+		seen[u.tenantID] = true
+	}
+	if !seen[tenantA] || !seen[tenantB] {
+		t.Errorf("expected upserts for both tenants, got %+v", seen)
 	}
 }
 
-// TestContactCollector_SingleTenant verifies dedup works in single-user (desktop) mode.
-func TestContactCollector_SingleTenant(t *testing.T) {
+// TestContactCollector_ZeroTenantID verifies Desktop edition (no tenant) still
+// works with a zero/nil UUID — single-tenant semantics preserved.
+func TestContactCollector_ZeroTenantID(t *testing.T) {
 	mock := &mockContactStore{}
 	c := NewContactCollector(mock, cache.NewInMemoryCache[bool]())
 
+	// No tenant in context — Desktop / single-tenant mode
 	ctx := context.Background()
 
 	c.EnsureContact(ctx, "telegram", "tg", "user-1", "uid", "", "", "user", "user", "", "")
@@ -129,12 +152,13 @@ func TestContactCollector_SingleTenant(t *testing.T) {
 }
 
 // TestContactCollector_DifferentThreads verifies same sender in different
-// threads produces separate upserts.
+// threads (same tenant) produces separate upserts.
 func TestContactCollector_DifferentThreads(t *testing.T) {
 	mock := &mockContactStore{}
 	c := NewContactCollector(mock, cache.NewInMemoryCache[bool]())
 
-	ctx := context.Background()
+	tenant := uuid.New()
+	ctx := WithTenantID(context.Background(), tenant)
 
 	c.EnsureContact(ctx, "slack", "ws-1", "user-1", "uid", "", "", "user", "user", "thread-A", "channel")
 	c.EnsureContact(ctx, "slack", "ws-1", "user-1", "uid", "", "", "user", "user", "thread-B", "channel")

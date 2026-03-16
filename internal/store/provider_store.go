@@ -24,6 +24,7 @@ const (
 	ProviderBailian         = "bailian"
 	ProviderChatGPTOAuth    = "chatgpt_oauth"
 	ProviderClaudeCLI       = "claude_cli"
+	ProviderSuno            = "suno"
 	ProviderYesScale        = "yescale"
 	ProviderZai             = "zai"
 	ProviderZaiCoding       = "zai_coding"
@@ -61,6 +62,7 @@ var ValidProviderTypes = map[string]bool{
 	ProviderBailian:         true,
 	ProviderChatGPTOAuth:    true,
 	ProviderClaudeCLI:       true,
+	ProviderSuno:            true,
 	ProviderYesScale:        true,
 	ProviderZai:             true,
 	ProviderZaiCoding:       true,
@@ -75,6 +77,7 @@ var ValidProviderTypes = map[string]bool{
 // LLMProviderData represents an LLM provider configuration.
 type LLMProviderData struct {
 	BaseModel
+	TenantID     uuid.UUID       `json:"tenant_id,omitempty" db:"tenant_id"`
 	Name         string          `json:"name" db:"name"`
 	DisplayName  string          `json:"display_name,omitempty" db:"display_name"`
 	ProviderType string          `json:"provider_type" db:"provider_type"`
@@ -82,19 +85,18 @@ type LLMProviderData struct {
 	APIKey       string          `json:"api_key,omitempty" db:"api_key"`
 	Enabled      bool            `json:"enabled" db:"enabled"`
 	Settings     json.RawMessage `json:"settings,omitempty" db:"settings"`
-	Metadata     json.RawMessage `json:"metadata,omitempty" db:"metadata"`
 }
 
-// RequiredMemoryEmbeddingDimensions is the halfvec(3072) dimension used by the memory schema.
-// All memory embeddings must match this dimensionality. Uses OpenAI text-embedding-3-large.
-const RequiredMemoryEmbeddingDimensions = 3072
+// RequiredMemoryEmbeddingDimensions is the fixed vector size used by the pgvector memory schema.
+// All memory embeddings must match this dimensionality until the schema supports variable sizes.
+const RequiredMemoryEmbeddingDimensions = 1536
 
 // EmbeddingSettings holds embedding-specific configuration stored in provider settings JSONB.
 type EmbeddingSettings struct {
 	Enabled    bool   `json:"enabled" db:"-"`
-	Model      string `json:"model,omitempty" db:"-"`      // e.g. "text-embedding-3-large" (3072 dims)
+	Model      string `json:"model,omitempty" db:"-"`      // e.g. "text-embedding-3-small"
 	APIBase    string `json:"api_base,omitempty" db:"-"`   // override if embedding endpoint differs from chat
-	Dimensions int    `json:"dimensions,omitempty" db:"-"` // truncate output to N dims (e.g. 3072); 0 = model default
+	Dimensions int    `json:"dimensions,omitempty" db:"-"` // truncate output to N dims (e.g. 1536); 0 = model default
 }
 
 // ProviderReasoningConfig holds provider-owned default reasoning settings.
@@ -179,6 +181,7 @@ var NoEmbeddingTypes = map[string]bool{
 	ProviderACP:             true,
 	ProviderClaudeCLI:       true,
 	ProviderChatGPTOAuth:    true,
+	ProviderSuno:            true,
 }
 
 // ProviderStore manages LLM providers.

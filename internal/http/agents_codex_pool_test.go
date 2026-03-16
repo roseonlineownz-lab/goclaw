@@ -25,8 +25,10 @@ func (s *testTokenSource) RouteEligibility(context.Context) providers.RouteEligi
 
 func TestResolveCodexPoolRoutingUsesProviderDefaults(t *testing.T) {
 	providers := newMockProviderStore()
+	tenantID := uuid.New()
 	if err := providers.CreateProvider(context.Background(), &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
+		TenantID:     tenantID,
 		Name:         "openai-codex",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
@@ -41,6 +43,7 @@ func TestResolveCodexPoolRoutingUsesProviderDefaults(t *testing.T) {
 	}
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "openai-codex",
 	}
 
@@ -64,8 +67,10 @@ func TestResolveCodexPoolRoutingUsesProviderDefaults(t *testing.T) {
 
 func TestResolveCodexPoolRoutingHonorsInheritOverride(t *testing.T) {
 	providers := newMockProviderStore()
+	tenantID := uuid.New()
 	if err := providers.CreateProvider(context.Background(), &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
+		TenantID:     tenantID,
 		Name:         "openai-codex",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
@@ -80,6 +85,7 @@ func TestResolveCodexPoolRoutingHonorsInheritOverride(t *testing.T) {
 	}
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "openai-codex",
 		ChatGPTOAuthRouting: json.RawMessage(`{
 			"override_mode": "inherit",
@@ -105,8 +111,10 @@ func TestResolveCodexPoolRoutingHonorsInheritOverride(t *testing.T) {
 
 func TestResolveCodexPoolRoutingIgnoresNonCodexBaseProvider(t *testing.T) {
 	providers := newMockProviderStore()
+	tenantID := uuid.New()
 	if err := providers.CreateProvider(context.Background(), &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
+		TenantID:     tenantID,
 		Name:         "anthropic",
 		ProviderType: store.ProviderAnthropicNative,
 		Enabled:      true,
@@ -115,6 +123,7 @@ func TestResolveCodexPoolRoutingIgnoresNonCodexBaseProvider(t *testing.T) {
 	}
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "anthropic",
 		ChatGPTOAuthRouting: json.RawMessage(`{
 			"strategy": "round_robin",
@@ -135,14 +144,15 @@ func TestResolveCodexPoolRoutingIgnoresNonCodexBaseProvider(t *testing.T) {
 }
 
 func TestResolveCodexPoolRoutingUsesRegistryMasterFallback(t *testing.T) {
-	registry := providers.NewRegistry()
-	registry.Register(providers.NewCodexProvider(
+	tenantID := uuid.New()
+	registry := providers.NewRegistry(nil)
+	registry.RegisterForTenant(providers.MasterTenantID, providers.NewCodexProvider(
 		"openai-codex",
 		&testTokenSource{token: "primary-token"},
 		"http://127.0.0.1",
 		"gpt-5.4",
 	).WithRoutingDefaults(store.ChatGPTOAuthStrategyRoundRobin, []string{"codex-work"}))
-	registry.Register(providers.NewCodexProvider(
+	registry.RegisterForTenant(tenantID, providers.NewCodexProvider(
 		"codex-work",
 		&testTokenSource{token: "backup-token"},
 		"http://127.0.0.1",
@@ -150,6 +160,7 @@ func TestResolveCodexPoolRoutingUsesRegistryMasterFallback(t *testing.T) {
 	))
 
 	agent := &store.AgentData{
+		TenantID: tenantID,
 		Provider: "openai-codex",
 	}
 

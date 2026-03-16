@@ -1,7 +1,8 @@
 import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useHttp } from "@/hooks/use-ws";
+import { useWs } from "@/hooks/use-ws";
 import { useAuthStore } from "@/stores/use-auth-store";
+import { Methods } from "@/api/protocol";
 import { queryKeys } from "@/lib/query-keys";
 import { toast } from "@/stores/use-toast-store";
 import i18next from "i18next";
@@ -18,12 +19,6 @@ export interface TtsProviderConfig {
   enabled?: boolean;
   rate?: string;
   group_id?: string;
-  /**
-   * Generic params blob (Phase C dual-write).
-   * Mirrors the tts.{provider}.params JSON stored in system_configs.
-   * Backend reads this with precedence over legacy flat keys.
-   */
-  params?: Record<string, unknown>;
 }
 
 export interface TtsConfig {
@@ -36,7 +31,6 @@ export interface TtsConfig {
   elevenlabs: TtsProviderConfig;
   edge: TtsProviderConfig;
   minimax: TtsProviderConfig;
-  gemini: TtsProviderConfig;
 }
 
 const DEFAULT_TTS: TtsConfig = {
@@ -49,34 +43,10 @@ const DEFAULT_TTS: TtsConfig = {
   elevenlabs: {},
   edge: {},
   minimax: {},
-  gemini: {},
 };
 
-export interface SynthesizeParams {
-  text: string;
-  provider?: string;
-  voice_id?: string;
-  model_id?: string;
-}
-
-export interface TestConnectionParams {
-  provider: string;
-  api_key?: string;
-  api_base?: string;
-  voice_id?: string;
-  model_id?: string;
-  group_id?: string;
-}
-
-export interface TestConnectionResult {
-  success: boolean;
-  provider?: string;
-  latency_ms?: number;
-  error?: string;
-}
-
 export function useTtsConfig() {
-  const http = useHttp();
+  const ws = useWs();
   const connected = useAuthStore((s) => s.connected);
   const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
@@ -85,15 +55,9 @@ export function useTtsConfig() {
   const { data: tts = DEFAULT_TTS, isPending: loading } = useQuery({
     queryKey: queryKeys.tts.all,
     queryFn: async () => {
-      // Use dedicated TTS config endpoint
-      const res = await fetch("/v1/tts/config", {
-        headers: http.getAuthHeaders(),
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to load TTS config (${res.status})`);
-      }
-      const data = await res.json();
-      return { ...DEFAULT_TTS, ...data } as TtsConfig;
+      const res = await ws.call<{ config: Record<string, unknown> }>(Methods.CONFIG_GET);
+      const ttsConfig = (res.config?.tts as TtsConfig) ?? DEFAULT_TTS;
+      return { ...DEFAULT_TTS, ...ttsConfig };
     },
     staleTime: 60_000,
     enabled: connected,
@@ -109,16 +73,7 @@ export function useTtsConfig() {
       setSaving(true);
       setError(null);
       try {
-        // Use dedicated TTS config endpoint
-        const res = await fetch("/v1/tts/config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...http.getAuthHeaders() },
-          body: JSON.stringify(updates),
-        });
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          throw new Error(text || `Failed to save TTS config (${res.status})`);
-        }
+        await ws.call(Methods.CONFIG_PATCH, { raw: JSON.stringify({ tts: updates }) });
         await invalidate();
         toast.success(i18next.t("config:toast.saved"));
       } catch (err) {
@@ -130,43 +85,8 @@ export function useTtsConfig() {
         setSaving(false);
       }
     },
-    [http, invalidate],
+    [ws, invalidate],
   );
 
-  // POST→Blob not in HttpClient; use fetch + getAuthHeaders() for auth header parity.
-  // See: http-client.ts:107-109 — getAuthHeaders() returns Authorization + X-GoClaw-* headers.
-  const synthesize = useCallback(
-    async (params: SynthesizeParams): Promise<Blob> => {
-      const res = await fetch("/v1/tts/synthesize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...http.getAuthHeaders() },
-        body: JSON.stringify(params),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || `Synthesis failed (${res.status})`);
-      }
-      return res.blob();
-    },
-    [http],
-  );
-
-  // Test connection with unsaved credentials — uses ephemeral provider.
-  const testConnection = useCallback(
-    async (params: TestConnectionParams): Promise<TestConnectionResult> => {
-      const res = await fetch("/v1/tts/test-connection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...http.getAuthHeaders() },
-        body: JSON.stringify(params),
-      });
-      const data = (await res.json()) as TestConnectionResult;
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || `Test failed (${res.status})`);
-      }
-      return data;
-    },
-    [http],
-  );
-
-  return { tts, loading, saving, error, refresh: invalidate, save, synthesize, testConnection };
+  return { tts, loading, saving, error, refresh: invalidate, save };
 }

@@ -280,8 +280,11 @@ func (m *CronMethods) handleRun(ctx context.Context, client *gateway.Client, req
 	}))
 	emitAudit(m.eventBus, client, "cron.run", "cron", jobID)
 
+	// Preserve tenant scope for async execution.
+	tenantID := store.TenantIDFromContext(ctx)
 	go func() {
-		if _, _, err := m.service.RunJob(context.Background(), jobID, force); err != nil {
+		bgCtx := store.WithTenantID(context.Background(), tenantID)
+		if _, _, err := m.service.RunJob(bgCtx, jobID, force); err != nil {
 			slog.Warn("cron.run background error", "jobId", jobID, "error", err)
 		}
 	}()

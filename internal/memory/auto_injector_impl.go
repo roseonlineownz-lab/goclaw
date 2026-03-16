@@ -48,28 +48,6 @@ func (a *pgAutoInjector) Inject(ctx context.Context, params InjectParams) (*Inje
 	// follow-up semantics and returns materially better matches.
 	searchQuery := buildRecallQuery(params.UserMessage, params.RecentContext)
 
-	// Build 5D scope filter so auto-inject only returns memories tagged with the
-	// same scope as the current session (prevents cross-team/cross-project leaks).
-	var scope *store.EpisodicScope
-	if params.TeamID != "" || params.ContactID != "" || params.ProjectID != "" {
-		scope = &store.EpisodicScope{}
-		if params.TeamID != "" {
-			if tid, err := uuid.Parse(params.TeamID); err == nil {
-				scope.TeamID = &tid
-			}
-		}
-		if params.ContactID != "" {
-			if cid, err := uuid.Parse(params.ContactID); err == nil {
-				scope.ContactID = &cid
-			}
-		}
-		if params.ProjectID != "" {
-			if pid, err := uuid.Parse(params.ProjectID); err == nil {
-				scope.ProjectID = &pid
-			}
-		}
-	}
-
 	// Search with FTS bias (faster than vector for auto-inject)
 	results, err := a.episodicStore.Search(ctx, searchQuery, params.AgentID, params.UserID,
 		store.EpisodicSearchOptions{
@@ -77,7 +55,6 @@ func (a *pgAutoInjector) Inject(ctx context.Context, params InjectParams) (*Inje
 			MinScore:     threshold,
 			VectorWeight: 0.3,
 			TextWeight:   0.7,
-			Scope:        scope,
 		})
 	if err != nil {
 		return nil, fmt.Errorf("auto-inject search: %w", err)
@@ -127,7 +104,11 @@ func (a *pgAutoInjector) Inject(ctx context.Context, params InjectParams) (*Inje
 
 // recordRetrievalMetric records an auto-inject retrieval metric in a background goroutine.
 func (a *pgAutoInjector) recordRetrievalMetric(params InjectParams, result *InjectResult) {
-	if a.metricsStore == nil || params.AgentID == "" {
+	if a.metricsStore == nil || params.TenantID == "" {
+		return
+	}
+	tenantID, err := uuid.Parse(params.TenantID)
+	if err != nil {
 		return
 	}
 	agentID, err := uuid.Parse(params.AgentID)
@@ -135,7 +116,7 @@ func (a *pgAutoInjector) recordRetrievalMetric(params InjectParams, result *Inje
 		return
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bgCtx, cancel := context.WithTimeout(store.WithTenantID(context.Background(), tenantID), 5*time.Second)
 		defer cancel()
 		value, _ := json.Marshal(map[string]any{
 			"result_count":  result.MatchCount,
@@ -145,6 +126,7 @@ func (a *pgAutoInjector) recordRetrievalMetric(params InjectParams, result *Inje
 		})
 		if err := a.metricsStore.RecordMetric(bgCtx, store.EvolutionMetric{
 			ID:         uuid.New(),
+			TenantID:   tenantID,
 			AgentID:    agentID,
 			MetricType: store.MetricRetrieval,
 			MetricKey:  "auto_inject",

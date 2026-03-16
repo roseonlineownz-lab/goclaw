@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
@@ -135,6 +136,11 @@ func (t *BrowserTool) Execute(ctx context.Context, args map[string]any) *tools.R
 	action, _ := args["action"].(string)
 	if action == "" {
 		return tools.ErrorResult("action is required")
+	}
+
+	// Propagate tenant ID from store context to browser context for page isolation.
+	if tid := store.TenantIDFromContext(ctx); tid.String() != "00000000-0000-0000-0000-000000000000" {
+		ctx = WithTenantID(ctx, tid.String())
 	}
 
 	// Auto-start browser for actions that need it

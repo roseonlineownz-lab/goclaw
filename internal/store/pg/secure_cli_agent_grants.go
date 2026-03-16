@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,21 +31,35 @@ func (s *PGSecureCLIAgentGrantStore) Create(ctx context.Context, g *store.Secure
 	g.CreatedAt = now
 	g.UpdatedAt = now
 
+	tenantID := store.TenantIDFromContext(ctx)
+	if tenantID == uuid.Nil {
+		tenantID = store.MasterTenantID
+	}
+
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO secure_cli_agent_grants
-		 (id, binary_id, agent_id, deny_args, deny_verbose, timeout_seconds, tips, enabled, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		 (id, binary_id, agent_id, deny_args, deny_verbose, timeout_seconds, tips, enabled, tenant_id, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		g.ID, g.BinaryID, g.AgentID,
 		nullableJSON(g.DenyArgs), nullableJSON(g.DenyVerbose),
 		g.TimeoutSeconds, g.Tips,
-		g.Enabled, now, now,
+		g.Enabled, tenantID, now, now,
 	)
 	return err
 }
 
 func (s *PGSecureCLIAgentGrantStore) Get(ctx context.Context, id uuid.UUID) (*store.SecureCLIAgentGrant, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+grantSelectCols+` FROM secure_cli_agent_grants WHERE id = $1`, id)
+	query := `SELECT ` + grantSelectCols + ` FROM secure_cli_agent_grants WHERE id = $1`
+	args := []any{id}
+	if !store.IsCrossTenant(ctx) {
+		tid := store.TenantIDFromContext(ctx)
+		if tid == uuid.Nil {
+			return nil, sql.ErrNoRows
+		}
+		query += ` AND tenant_id = $2`
+		args = append(args, tid)
+	}
+	row := s.db.QueryRowContext(ctx, query, args...)
 	return s.scanRow(row)
 }
 
@@ -60,18 +75,43 @@ func (s *PGSecureCLIAgentGrantStore) Update(ctx context.Context, id uuid.UUID, u
 		}
 	}
 	updates["updated_at"] = time.Now()
-	return execMapUpdate(ctx, s.db, "secure_cli_agent_grants", id, updates)
+
+	if store.IsCrossTenant(ctx) {
+		return execMapUpdate(ctx, s.db, "secure_cli_agent_grants", id, updates)
+	}
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		return fmt.Errorf("tenant_id required")
+	}
+	return execMapUpdateWhereTenant(ctx, s.db, "secure_cli_agent_grants", updates, id, tid)
 }
 
 func (s *PGSecureCLIAgentGrantStore) Delete(ctx context.Context, id uuid.UUID) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_agent_grants WHERE id = $1", id)
+	if store.IsCrossTenant(ctx) {
+		_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_agent_grants WHERE id = $1", id)
+		return err
+	}
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		return fmt.Errorf("tenant_id required")
+	}
+	_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_agent_grants WHERE id = $1 AND tenant_id = $2", id, tid)
 	return err
 }
 
 func (s *PGSecureCLIAgentGrantStore) ListByBinary(ctx context.Context, binaryID uuid.UUID) ([]store.SecureCLIAgentGrant, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+grantSelectCols+` FROM secure_cli_agent_grants WHERE binary_id = $1 ORDER BY created_at`,
-		binaryID)
+	query := `SELECT ` + grantSelectCols + ` FROM secure_cli_agent_grants WHERE binary_id = $1`
+	args := []any{binaryID}
+	if !store.IsCrossTenant(ctx) {
+		tid := store.TenantIDFromContext(ctx)
+		if tid == uuid.Nil {
+			return nil, nil
+		}
+		query += ` AND tenant_id = $2`
+		args = append(args, tid)
+	}
+	query += ` ORDER BY created_at`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -79,9 +119,18 @@ func (s *PGSecureCLIAgentGrantStore) ListByBinary(ctx context.Context, binaryID 
 }
 
 func (s *PGSecureCLIAgentGrantStore) ListByAgent(ctx context.Context, agentID uuid.UUID) ([]store.SecureCLIAgentGrant, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+grantSelectCols+` FROM secure_cli_agent_grants WHERE agent_id = $1 ORDER BY created_at`,
-		agentID)
+	query := `SELECT ` + grantSelectCols + ` FROM secure_cli_agent_grants WHERE agent_id = $1`
+	args := []any{agentID}
+	if !store.IsCrossTenant(ctx) {
+		tid := store.TenantIDFromContext(ctx)
+		if tid == uuid.Nil {
+			return nil, nil
+		}
+		query += ` AND tenant_id = $2`
+		args = append(args, tid)
+	}
+	query += ` ORDER BY created_at`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

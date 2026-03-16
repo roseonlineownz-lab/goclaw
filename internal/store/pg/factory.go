@@ -23,12 +23,6 @@ func NewPGStores(cfg store.StoreConfig) (*store.Stores, error) {
 		skillsDir = config.ResolvedDataDirFromEnv() + "/skills-store"
 	}
 
-	users := NewPGUsersStore(db)
-	userSessions := NewPGUserSessionsStore(db)
-	resetTokens := NewPGPasswordResetStore(db)
-	users.UseSessions(userSessions)
-	users.UseResetTokens(resetTokens)
-
 	return &store.Stores{
 		DB:        db,
 		Sessions:  NewPGSessionStore(db),
@@ -55,22 +49,14 @@ func NewPGStores(cfg store.StoreConfig) (*store.Stores, error) {
 		APIKeys:             NewPGAPIKeyStore(db),
 		Heartbeats:        NewPGHeartbeatStore(db),
 		ConfigPermissions:     NewPGConfigPermissionStore(db),
+		Tenants:               NewPGTenantStore(db),
+		BuiltinToolTenantCfgs: NewPGBuiltinToolTenantConfigStore(db),
+		SkillTenantCfgs:       NewPGSkillTenantConfigStore(db),
 		SystemConfigs:         NewPGSystemConfigStore(db),
 		SubagentTasks:         NewPGSubagentTaskStore(db),
 		Vault:                 NewPGVaultStore(db),
 		Episodic:              NewPGEpisodicStore(db),
 		EvolutionMetrics:      NewPGEvolutionMetricsStore(db),
 		EvolutionSuggestions:  NewPGEvolutionSuggestionStore(db),
-		Projects:        NewPGProjectStore(db),
-		ProjectGrants:   NewPGProjectGrantStore(db),
-		TeamUserMembers: NewPGTeamUserMemberStore(db),
-		Users:          users,
-		UserSessions:   userSessions,
-		PasswordReset:  resetTokens,
-		SkillVersions:  NewPGSkillVersionsStore(db),
-		CuratorRuns:    NewPGCuratorRunsStore(db),
-		CuratorEvents:  NewPGCuratorEventsStore(db),
-		UserHookBudget: NewPGUserHookBudgetStore(db),
-		Hooks:          NewPGHookStore(db),
 	}, nil
 }

@@ -4,38 +4,15 @@ package sqlitestore
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
-// appendSQLiteScopeFilter appends 5D scope WHERE clauses for SQLite queries using
-// positional '?' parameters. Returns the modified query and args slice.
-func appendSQLiteScopeFilter(q string, args []any, scope *store.EpisodicScope) (string, []any) {
-	if scope == nil {
-		return q, args
-	}
-	if scope.TeamID != nil {
-		q += fmt.Sprintf(" AND team_id = ?")
-		args = append(args, scope.TeamID.String())
-	}
-	if scope.ContactID != nil {
-		q += fmt.Sprintf(" AND contact_id = ?")
-		args = append(args, scope.ContactID.String())
-	}
-	if scope.ProjectID != nil {
-		q += fmt.Sprintf(" AND project_id = ?")
-		args = append(args, scope.ProjectID.String())
-	}
-	return q, args
-}
-
 // Search performs LIKE-based text search over episodic summaries.
 // Vector search is not available in the SQLite edition.
 // Scoring: 1.0 base, +0.2 if l0_abstract matches, +0.1 if key_topics matches.
-// opts.Scope restricts results to the 5D scope bucket when non-nil.
 func (s *SQLiteEpisodicStore) Search(ctx context.Context, query string, agentID, userID string, opts store.EpisodicSearchOptions) ([]store.EpisodicSearchResult, error) {
 	// F10: cap query to prevent degenerate LIKE patterns
 	if len(query) > 500 {
@@ -47,18 +24,17 @@ func (s *SQLiteEpisodicStore) Search(ctx context.Context, query string, agentID,
 		maxResults = 10
 	}
 
+	tenantID := tenantIDForInsert(ctx)
 	pattern := "%" + escapeLike(query) + "%"
 
-	q := `SELECT id, l0_abstract, key_topics, created_at, session_key
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, l0_abstract, key_topics, created_at, session_key
 		FROM episodic_summaries
-		WHERE agent_id = ? AND user_id = ?
-		  AND (summary LIKE ? ESCAPE '\' OR key_topics LIKE ? ESCAPE '\')`
-	args := []any{agentID, userID, pattern, pattern}
-	q, args = appendSQLiteScopeFilter(q, args, opts.Scope)
-	q += " ORDER BY created_at DESC LIMIT ?"
-	args = append(args, maxResults*3)
-
-	rows, err := s.db.QueryContext(ctx, q, args...)
+		WHERE agent_id = ? AND user_id = ? AND tenant_id = ?
+		  AND (summary LIKE ? ESCAPE '\' OR key_topics LIKE ? ESCAPE '\')
+		ORDER BY created_at DESC
+		LIMIT ?`,
+		agentID, userID, tenantID.String(), pattern, pattern, maxResults*3)
 	if err != nil {
 		return nil, err
 	}

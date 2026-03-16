@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,14 +21,14 @@ func appendTeamFilter(q string, args []any, p int, teamID *string, teamIDs []str
 		ph := make([]string, len(teamIDs))
 		for i, id := range teamIDs {
 			ph[i] = fmt.Sprintf("$%d", p)
-			args = append(args, parseUUIDOrNil(id))
+			args = append(args, mustParseUUID(id))
 			p++
 		}
 		q += " AND (team_id IS NULL OR team_id IN (" + strings.Join(ph, ",") + "))"
 	} else if teamID != nil {
 		if *teamID != "" {
-			q += fmt.Sprintf(" AND (team_id = $%d OR team_id IS NULL)", p)
-			args = append(args, parseUUIDOrNil(*teamID))
+			q += fmt.Sprintf(" AND team_id = $%d", p)
+			args = append(args, mustParseUUID(*teamID))
 			p++
 		} else {
 			q += " AND team_id IS NULL"
@@ -55,38 +55,18 @@ func (s *PGVaultStore) SetEmbeddingProvider(provider store.EmbeddingProvider) {
 func (s *PGVaultStore) Close() error { return nil }
 
 // optAgentUUID converts a nullable *string agent_id to *uuid.UUID for SQL.
-// Returns (nil, nil) when the input is nil or empty — a legitimate SQL NULL.
-// Returns (nil, error) on a non-empty, non-UUID input — propagating the error
-// prevents silent-nil writes that would otherwise corrupt data.
-// See docs/agent-identity-conventions.md.
-func optAgentUUID(agentID *string) (*uuid.UUID, error) {
+func optAgentUUID(agentID *string) *uuid.UUID {
 	if agentID == nil || *agentID == "" {
-		return nil, nil
+		return nil
 	}
-	u, err := parseUUID(*agentID)
-	if err != nil {
-		return nil, err
-	}
-	return &u, nil
-}
-
-// vaultDocSelectCols is the shared column list for vault_documents SELECT queries.
-const vaultDocSelectCols = `id, agent_id, owner_user_id, team_id, chat_id, scope, custom_scope, path, path_basename, title, doc_type, content_hash, summary, metadata, created_at, updated_at`
-
-// scanVaultDocRow scans a single row into vaultDocRow using QueryRowContext result.
-func scanVaultDocRow(row *sql.Row, r *vaultDocRow) error {
-	return row.Scan(
-		&r.ID, &r.AgentID, &r.OwnerUserID, &r.TeamID, &r.ChatID, &r.Scope, &r.CustomScope,
-		&r.Path, &r.PathBasename, &r.Title, &r.DocType, &r.ContentHash, &r.Summary,
-		&r.MetaJSON, &r.CreatedAt, &r.UpdatedAt)
+	u := mustParseUUID(*agentID)
+	return &u
 }
 
 // UpsertDocument inserts or updates a vault document.
 func (s *PGVaultStore) UpsertDocument(ctx context.Context, doc *store.VaultDocument) error {
-	aid, err := optAgentUUID(doc.AgentID)
-	if err != nil {
-		return fmt.Errorf("vault upsert: agent: %w", err)
-	}
+	tid := mustParseUUID(doc.TenantID)
+	aid := optAgentUUID(doc.AgentID)
 	now := time.Now().UTC()
 
 	meta, err := json.Marshal(doc.Metadata)
@@ -111,45 +91,26 @@ func (s *PGVaultStore) UpsertDocument(ctx context.Context, doc *store.VaultDocum
 
 	var teamID *uuid.UUID
 	if doc.TeamID != nil && *doc.TeamID != "" {
-		t, err := parseUUID(*doc.TeamID)
-		if err != nil {
-			return fmt.Errorf("vault upsert: team: %w", err)
-		}
+		t := mustParseUUID(*doc.TeamID)
 		teamID = &t
 	}
 
-	var ownerUserID *uuid.UUID
-	if doc.OwnerUserID != nil && *doc.OwnerUserID != "" {
-		u, err := parseUUID(*doc.OwnerUserID)
-		if err != nil {
-			return fmt.Errorf("vault upsert: owner_user_id: %w", err)
-		}
-		ownerUserID = &u
-	}
-
 	var actualID uuid.UUID
-	// Normalize chat_id: empty string → NULL.
-	var chatID *string
-	if doc.ChatID != nil && *doc.ChatID != "" {
-		c := *doc.ChatID
-		chatID = &c
-	}
-
 	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO vault_documents
-			(id, agent_id, owner_user_id, team_id, chat_id, scope, custom_scope, path, title, doc_type, content_hash, summary, embedding, metadata, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
-		ON CONFLICT (scope, COALESCE(custom_scope,''), path, COALESCE(owner_user_id::text,'')) DO UPDATE SET
+			(id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, embedding, metadata, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+		ON CONFLICT (tenant_id, COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(team_id, '00000000-0000-0000-0000-000000000000'::uuid), scope, path) DO UPDATE SET
 			title        = EXCLUDED.title,
 			doc_type     = EXCLUDED.doc_type,
 			content_hash = EXCLUDED.content_hash,
 			summary      = EXCLUDED.summary,
 			embedding    = COALESCE(EXCLUDED.embedding, vault_documents.embedding),
 			metadata     = EXCLUDED.metadata,
-			chat_id      = COALESCE(EXCLUDED.chat_id, vault_documents.chat_id),
+			tenant_id    = EXCLUDED.tenant_id,
 			updated_at   = EXCLUDED.updated_at
 		RETURNING id`,
-		id, aid, ownerUserID, teamID, chatID, doc.Scope, doc.CustomScope, doc.Path, doc.Title, doc.DocType,
+		id, tid, aid, teamID, doc.Scope, doc.CustomScope, doc.Path, doc.Title, doc.DocType,
 		doc.ContentHash, doc.Summary, embStr, meta, now,
 	).Scan(&actualID)
 	if err != nil {
@@ -159,32 +120,27 @@ func (s *PGVaultStore) UpsertDocument(ctx context.Context, doc *store.VaultDocum
 	return nil
 }
 
-// GetDocument retrieves a vault document by agent and path.
+// GetDocument retrieves a vault document by tenant, agent, and path.
 // Empty agentID means no agent filter (match any agent).
 // Team scoping via RunContext: present+TeamID → filter; present+empty → personal; nil → any match.
-func (s *PGVaultStore) GetDocument(ctx context.Context, agentID, path string) (*store.VaultDocument, error) {
-	q := `SELECT ` + vaultDocSelectCols + ` FROM vault_documents WHERE path = $1`
-	args := []any{path}
-	p := 2
+func (s *PGVaultStore) GetDocument(ctx context.Context, tenantID, agentID, path string) (*store.VaultDocument, error) {
+	tid := mustParseUUID(tenantID)
+
+	q := `SELECT id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at
+		FROM vault_documents WHERE tenant_id = $1 AND path = $2`
+	args := []any{tid, path}
+	p := 3
 
 	if agentID != "" {
-		aid, err := parseUUID(agentID)
-		if err != nil {
-			return nil, fmt.Errorf("vault get document: agent: %w", err)
-		}
 		q += fmt.Sprintf(" AND agent_id = $%d", p)
-		args = append(args, aid)
+		args = append(args, mustParseUUID(agentID))
 		p++
 	}
 
 	if rc := store.RunContextFromCtx(ctx); rc != nil {
 		if rc.TeamID != "" {
-			tmid, err := parseUUID(rc.TeamID)
-			if err != nil {
-				return nil, fmt.Errorf("vault get document: team: %w", err)
-			}
 			q += fmt.Sprintf(" AND team_id = $%d", p)
-			args = append(args, tmid)
+			args = append(args, mustParseUUID(rc.TeamID))
 		} else {
 			q += " AND team_id IS NULL"
 		}
@@ -192,8 +148,8 @@ func (s *PGVaultStore) GetDocument(ctx context.Context, agentID, path string) (*
 
 	var row vaultDocRow
 	err := s.db.QueryRowContext(ctx, q, args...).Scan(
-		&row.ID, &row.AgentID, &row.OwnerUserID, &row.TeamID, &row.ChatID, &row.Scope, &row.CustomScope,
-		&row.Path, &row.PathBasename, &row.Title, &row.DocType, &row.ContentHash, &row.Summary,
+		&row.ID, &row.TenantID, &row.AgentID, &row.TeamID, &row.Scope, &row.CustomScope,
+		&row.Path, &row.Title, &row.DocType, &row.ContentHash, &row.Summary,
 		&row.MetaJSON, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -202,17 +158,16 @@ func (s *PGVaultStore) GetDocument(ctx context.Context, agentID, path string) (*
 	return &doc, nil
 }
 
-// GetDocumentByID retrieves a vault document by ID.
-func (s *PGVaultStore) GetDocumentByID(ctx context.Context, id string) (*store.VaultDocument, error) {
-	uid, err := parseUUID(id)
-	if err != nil {
-		return nil, fmt.Errorf("vault get document by id: id: %w", err)
-	}
+// GetDocumentByID retrieves a vault document by ID with tenant isolation.
+func (s *PGVaultStore) GetDocumentByID(ctx context.Context, tenantID, id string) (*store.VaultDocument, error) {
+	uid := mustParseUUID(id)
+	tid := mustParseUUID(tenantID)
 	var row vaultDocRow
-	err = s.db.QueryRowContext(ctx,
-		`SELECT `+vaultDocSelectCols+` FROM vault_documents WHERE id = $1`, uid,
-	).Scan(&row.ID, &row.AgentID, &row.OwnerUserID, &row.TeamID, &row.ChatID, &row.Scope, &row.CustomScope,
-		&row.Path, &row.PathBasename, &row.Title, &row.DocType, &row.ContentHash, &row.Summary,
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at
+		FROM vault_documents WHERE id = $1 AND tenant_id = $2`, uid, tid,
+	).Scan(&row.ID, &row.TenantID, &row.AgentID, &row.TeamID, &row.Scope, &row.CustomScope,
+		&row.Path, &row.Title, &row.DocType, &row.ContentHash, &row.Summary,
 		&row.MetaJSON, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -221,20 +176,22 @@ func (s *PGVaultStore) GetDocumentByID(ctx context.Context, id string) (*store.V
 	return &doc, nil
 }
 
-// GetDocumentsByIDs returns documents matching the given IDs.
+// GetDocumentsByIDs returns documents matching the given IDs with tenant isolation.
 // Chunks by 500 to stay within PG param limits.
-func (s *PGVaultStore) GetDocumentsByIDs(ctx context.Context, docIDs []string) ([]store.VaultDocument, error) {
+func (s *PGVaultStore) GetDocumentsByIDs(ctx context.Context, tenantID string, docIDs []string) ([]store.VaultDocument, error) {
 	if len(docIDs) == 0 {
 		return nil, nil
 	}
+	tid := mustParseUUID(tenantID)
 	const chunkSize = 500
 	var all []store.VaultDocument
 	for start := 0; start < len(docIDs); start += chunkSize {
 		end := min(start+chunkSize, len(docIDs))
 		var scanned []vaultDocRow
 		if err := pkgSqlxDB.SelectContext(ctx, &scanned,
-			`SELECT `+vaultDocSelectCols+` FROM vault_documents WHERE id = ANY($1)`,
-			pqStringArray(docIDs[start:end])); err != nil {
+			`SELECT id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at
+			 FROM vault_documents WHERE id = ANY($1) AND tenant_id = $2`,
+			pqStringArray(docIDs[start:end]), tid); err != nil {
 			return nil, err
 		}
 		for i := range scanned {
@@ -246,25 +203,22 @@ func (s *PGVaultStore) GetDocumentsByIDs(ctx context.Context, docIDs []string) (
 
 // GetDocumentByBasename finds a document by path basename (case-insensitive).
 // Uses the stored generated column path_basename + index for fast lookup.
-func (s *PGVaultStore) GetDocumentByBasename(ctx context.Context, agentID, basename string) (*store.VaultDocument, error) {
-	q := `SELECT ` + vaultDocSelectCols + `
+func (s *PGVaultStore) GetDocumentByBasename(ctx context.Context, tenantID, agentID, basename string) (*store.VaultDocument, error) {
+	tid := mustParseUUID(tenantID)
+	q := `SELECT id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at
 		FROM vault_documents
-		WHERE path_basename = lower($1)`
-	args := []any{basename}
-	p := 2
+		WHERE tenant_id = $1 AND path_basename = lower($2)`
+	args := []any{tid, basename}
+	p := 3
 	if agentID != "" {
-		aid, err := parseUUID(agentID)
-		if err != nil {
-			return nil, fmt.Errorf("vault get by basename: agent: %w", err)
-		}
 		q += fmt.Sprintf(" AND agent_id = $%d", p)
-		args = append(args, aid)
+		args = append(args, mustParseUUID(agentID))
 	}
 	q += " LIMIT 1"
 	var row vaultDocRow
 	err := s.db.QueryRowContext(ctx, q, args...).Scan(
-		&row.ID, &row.AgentID, &row.OwnerUserID, &row.TeamID, &row.ChatID, &row.Scope, &row.CustomScope,
-		&row.Path, &row.PathBasename, &row.Title, &row.DocType, &row.ContentHash, &row.Summary,
+		&row.ID, &row.TenantID, &row.AgentID, &row.TeamID, &row.Scope, &row.CustomScope,
+		&row.Path, &row.Title, &row.DocType, &row.ContentHash, &row.Summary,
 		&row.MetaJSON, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -273,32 +227,26 @@ func (s *PGVaultStore) GetDocumentByBasename(ctx context.Context, agentID, basen
 	return &doc, nil
 }
 
-// DeleteDocument removes a vault document by agent and path.
+// DeleteDocument removes a vault document by tenant, agent, and path.
 // Empty agentID means no agent filter.
 // Team scoping via RunContext (same rules as GetDocument).
-func (s *PGVaultStore) DeleteDocument(ctx context.Context, agentID, path string) error {
-	q := `DELETE FROM vault_documents WHERE path = $1`
-	args := []any{path}
-	p := 2
+func (s *PGVaultStore) DeleteDocument(ctx context.Context, tenantID, agentID, path string) error {
+	tid := mustParseUUID(tenantID)
+
+	q := `DELETE FROM vault_documents WHERE tenant_id = $1 AND path = $2`
+	args := []any{tid, path}
+	p := 3
 
 	if agentID != "" {
-		aid, err := parseUUID(agentID)
-		if err != nil {
-			return fmt.Errorf("vault delete document: agent: %w", err)
-		}
 		q += fmt.Sprintf(" AND agent_id = $%d", p)
-		args = append(args, aid)
+		args = append(args, mustParseUUID(agentID))
 		p++
 	}
 
 	if rc := store.RunContextFromCtx(ctx); rc != nil {
 		if rc.TeamID != "" {
-			tmid, err := parseUUID(rc.TeamID)
-			if err != nil {
-				return fmt.Errorf("vault delete document: team: %w", err)
-			}
 			q += fmt.Sprintf(" AND team_id = $%d", p)
-			args = append(args, tmid)
+			args = append(args, mustParseUUID(rc.TeamID))
 		} else {
 			q += " AND team_id IS NULL"
 		}
@@ -308,19 +256,19 @@ func (s *PGVaultStore) DeleteDocument(ctx context.Context, agentID, path string)
 	return err
 }
 
-// ListDocuments returns vault documents for an agent with optional filters.
-func (s *PGVaultStore) ListDocuments(ctx context.Context, agentID string, opts store.VaultListOptions) ([]store.VaultDocument, error) {
-	q := `SELECT ` + vaultDocSelectCols + ` FROM vault_documents WHERE true`
-	var args []any
-	p := 1
+// ListDocuments returns vault documents for a tenant+agent with optional filters.
+func (s *PGVaultStore) ListDocuments(ctx context.Context, tenantID, agentID string, opts store.VaultListOptions) ([]store.VaultDocument, error) {
+	tid := mustParseUUID(tenantID)
+
+	q := `SELECT id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at
+		FROM vault_documents WHERE tenant_id = $1`
+	args := []any{tid}
+	p := 2
 
 	// Agent filter is optional — omit for cross-agent listing.
 	if agentID != "" {
-		aid, err := parseUUID(agentID)
-		if err != nil {
-			return nil, fmt.Errorf("vault list documents: agent: %w", err)
-		}
-		q += fmt.Sprintf(" AND (agent_id = $%d OR agent_id IS NULL)", p)
+		aid := mustParseUUID(agentID)
+		q += fmt.Sprintf(" AND agent_id = $%d", p)
 		args = append(args, aid)
 		p++
 	}
@@ -364,17 +312,16 @@ func (s *PGVaultStore) ListDocuments(ctx context.Context, agentID string, opts s
 }
 
 // CountDocuments returns the total number of vault documents matching the given filters.
-func (s *PGVaultStore) CountDocuments(ctx context.Context, agentID string, opts store.VaultListOptions) (int, error) {
-	q := `SELECT COUNT(*) FROM vault_documents WHERE true`
-	var args []any
-	p := 1
+func (s *PGVaultStore) CountDocuments(ctx context.Context, tenantID, agentID string, opts store.VaultListOptions) (int, error) {
+	tid := mustParseUUID(tenantID)
+
+	q := `SELECT COUNT(*) FROM vault_documents WHERE tenant_id = $1`
+	args := []any{tid}
+	p := 2
 
 	if agentID != "" {
-		aid, err := parseUUID(agentID)
-		if err != nil {
-			return 0, fmt.Errorf("vault count documents: agent: %w", err)
-		}
-		q += fmt.Sprintf(" AND (agent_id = $%d OR agent_id IS NULL)", p)
+		aid := mustParseUUID(agentID)
+		q += fmt.Sprintf(" AND agent_id = $%d", p)
 		args = append(args, aid)
 		p++
 	}
@@ -396,31 +343,26 @@ func (s *PGVaultStore) CountDocuments(ctx context.Context, agentID string, opts 
 	return count, nil
 }
 
-// UpdateHash updates the content hash for a vault document.
-func (s *PGVaultStore) UpdateHash(ctx context.Context, id, newHash string) error {
-	uid, err := parseUUID(id)
-	if err != nil {
-		return fmt.Errorf("vault update hash: id: %w", err)
-	}
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE vault_documents SET content_hash = $1, updated_at = $2 WHERE id = $3`,
-		newHash, time.Now().UTC(), uid)
+// UpdateHash updates the content hash for a vault document with tenant isolation.
+func (s *PGVaultStore) UpdateHash(ctx context.Context, tenantID, id, newHash string) error {
+	uid := mustParseUUID(id)
+	tid := mustParseUUID(tenantID)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE vault_documents SET content_hash = $1, updated_at = $2 WHERE id = $3 AND tenant_id = $4`,
+		newHash, time.Now().UTC(), uid, tid)
 	return err
 }
 
+// UpdateSummaryAndReembed updates summary and re-generates embedding from title+path+summary.
 // UpdateSummaryAndReembed and FindSimilarDocs moved to vault_documents_enrichment.go.
 
 // Search performs hybrid FTS + vector search on vault_documents.
 func (s *PGVaultStore) Search(ctx context.Context, opts store.VaultSearchOptions) ([]store.VaultSearchResult, error) {
-	aid, err := optAgentUUID(&opts.AgentID) // empty string → nil → no agent filter
-	if err != nil {
-		return nil, fmt.Errorf("vault search: agent: %w", err)
-	}
+	tid := mustParseUUID(opts.TenantID)
+	aid := optAgentUUID(&opts.AgentID) // empty string → nil → no agent filter
 
 	// Build team filter for search sub-queries.
 	tf := buildSearchTeamFilter(opts.TeamID, opts.TeamIDs)
-	// Chat-scope filter (applies only when team is isolated + chat_id non-nil/non-empty).
-	cf := buildSearchChatFilter(opts.ChatID, opts.TeamIsolated)
 
 	maxResults := opts.MaxResults
 	if maxResults <= 0 {
@@ -428,7 +370,7 @@ func (s *PGVaultStore) Search(ctx context.Context, opts store.VaultSearchOptions
 	}
 
 	// FTS search
-	ftsResults, err := s.ftsSearch(ctx, opts.Query, aid, tf, cf, opts.Scope, opts.DocTypes, maxResults*2)
+	ftsResults, err := s.ftsSearch(ctx, opts.Query, tid, aid, tf, opts.Scope, opts.DocTypes, maxResults*2)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +381,7 @@ func (s *PGVaultStore) Search(ctx context.Context, opts store.VaultSearchOptions
 		vecs, embErr := s.embProvider.Embed(ctx, []string{opts.Query})
 		if embErr == nil && len(vecs) > 0 {
 			var vecErr error
-			vecResults, vecErr = s.vectorSearch(ctx, vecs[0], aid, tf, cf, opts.Scope, opts.DocTypes, maxResults*2)
+			vecResults, vecErr = s.vectorSearch(ctx, vecs[0], tid, aid, tf, opts.Scope, opts.DocTypes, maxResults*2)
 			if vecErr != nil {
 				slog.Debug("vault.vector_search_fallback", "err", vecErr)
 				vecResults = nil
@@ -474,13 +416,13 @@ func buildSearchTeamFilter(teamID *string, teamIDs []string) searchTeamFilter {
 	if len(teamIDs) > 0 {
 		uuids := make([]uuid.UUID, len(teamIDs))
 		for i, id := range teamIDs {
-			uuids[i] = parseUUIDOrNil(id)
+			uuids[i] = mustParseUUID(id)
 		}
 		return searchTeamFilter{teamIDs: uuids, active: true}
 	}
 	if teamID != nil {
 		if *teamID != "" {
-			t := parseUUIDOrNil(*teamID)
+			t := mustParseUUID(*teamID)
 			return searchTeamFilter{teamID: &t, active: true}
 		}
 		return searchTeamFilter{active: true} // personal-only
@@ -502,7 +444,7 @@ func (tf searchTeamFilter) append(q string, args []any, p int) (string, []any, i
 		}
 		q += " AND (team_id IS NULL OR team_id IN (" + strings.Join(ph, ",") + "))"
 	} else if tf.teamID != nil {
-		q += fmt.Sprintf(" AND (team_id = $%d OR team_id IS NULL)", p)
+		q += fmt.Sprintf(" AND team_id = $%d", p)
 		args = append(args, *tf.teamID)
 		p++
 	} else {
@@ -511,46 +453,21 @@ func (tf searchTeamFilter) append(q string, args []any, p int) (string, []any, i
 	return q, args, p
 }
 
-// searchChatFilter isolates vault search by chat_id when the calling team uses isolated workspace.
-// Predicate: (chat_id = $N OR chat_id IS NULL). NULL = team-wide doc (legacy or shared-mode write).
-type searchChatFilter struct {
-	chatID string
-	active bool
-}
-
-func buildSearchChatFilter(chatID *string, teamIsolated bool) searchChatFilter {
-	if !teamIsolated || chatID == nil || *chatID == "" {
-		return searchChatFilter{}
-	}
-	return searchChatFilter{chatID: *chatID, active: true}
-}
-
-func (cf searchChatFilter) append(q string, args []any, p int) (string, []any, int) {
-	if !cf.active {
-		return q, args, p
-	}
-	q += fmt.Sprintf(" AND (chat_id = $%d OR chat_id IS NULL)", p)
-	args = append(args, cf.chatID)
-	p++
-	return q, args, p
-}
-
-func (s *PGVaultStore) ftsSearch(ctx context.Context, query string, agentID *uuid.UUID, tf searchTeamFilter, cf searchChatFilter, scope string, docTypes []string, limit int) ([]store.VaultSearchResult, error) {
-	q := `SELECT ` + vaultDocSelectCols + `,
+func (s *PGVaultStore) ftsSearch(ctx context.Context, query string, tenantID uuid.UUID, agentID *uuid.UUID, tf searchTeamFilter, scope string, docTypes []string, limit int) ([]store.VaultSearchResult, error) {
+	q := `SELECT id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at,
 			ts_rank(tsv, plainto_tsquery('simple', $1)) AS score
 		FROM vault_documents
-		WHERE tsv @@ plainto_tsquery('simple', $1)`
-	args := []any{query}
-	p := 2
+		WHERE tenant_id = $2 AND tsv @@ plainto_tsquery('simple', $1)`
+	args := []any{query, tenantID}
+	p := 3
 
 	if agentID != nil {
-		q += fmt.Sprintf(" AND (agent_id = $%d OR agent_id IS NULL)", p)
+		q += fmt.Sprintf(" AND agent_id = $%d", p)
 		args = append(args, *agentID)
 		p++
 	}
 
 	q, args, p = tf.append(q, args, p)
-	q, args, p = cf.append(q, args, p)
 
 	if scope != "" {
 		q += fmt.Sprintf(" AND scope = $%d", p)
@@ -573,23 +490,22 @@ func (s *PGVaultStore) ftsSearch(ctx context.Context, query string, agentID *uui
 	return vaultSearchRowsToResults(scanned, "vault"), nil
 }
 
-func (s *PGVaultStore) vectorSearch(ctx context.Context, embedding []float32, agentID *uuid.UUID, tf searchTeamFilter, cf searchChatFilter, scope string, docTypes []string, limit int) ([]store.VaultSearchResult, error) {
+func (s *PGVaultStore) vectorSearch(ctx context.Context, embedding []float32, tenantID uuid.UUID, agentID *uuid.UUID, tf searchTeamFilter, scope string, docTypes []string, limit int) ([]store.VaultSearchResult, error) {
 	vecStr := vectorToString(embedding)
-	q := `SELECT ` + vaultDocSelectCols + `,
+	q := `SELECT id, tenant_id, agent_id, team_id, scope, custom_scope, path, title, doc_type, content_hash, summary, metadata, created_at, updated_at,
 			1 - (embedding <=> $1) AS score
 		FROM vault_documents
-		WHERE embedding IS NOT NULL`
-	args := []any{vecStr}
-	p := 2
+		WHERE tenant_id = $2 AND embedding IS NOT NULL`
+	args := []any{vecStr, tenantID}
+	p := 3
 
 	if agentID != nil {
-		q += fmt.Sprintf(" AND (agent_id = $%d OR agent_id IS NULL)", p)
+		q += fmt.Sprintf(" AND agent_id = $%d", p)
 		args = append(args, *agentID)
 		p++
 	}
 
 	q, args, p = tf.append(q, args, p)
-	q, args, p = cf.append(q, args, p)
 
 	if scope != "" {
 		q += fmt.Sprintf(" AND scope = $%d", p)
@@ -674,133 +590,4 @@ func (s *PGVaultStore) mergeResults(fts, vec []store.VaultSearchResult, ftsW, ve
 		results = results[:maxResults]
 	}
 	return results
-}
-
-// ListTreeEntries returns immediate children (files + virtual folders) under the given path prefix.
-func (s *PGVaultStore) ListTreeEntries(ctx context.Context, opts store.VaultTreeOptions) ([]store.VaultTreeEntry, error) {
-	prefix := opts.Path
-	if prefix != "" && !strings.HasSuffix(prefix, "/") {
-		prefix += "/"
-	}
-
-	fileQ := `SELECT id, path, title, doc_type, scope, updated_at FROM vault_documents WHERE true`
-	var fileArgs []any
-	fp := 1
-	if prefix == "" {
-		fileQ += " AND path NOT LIKE '%/%'"
-	} else {
-		fileQ += fmt.Sprintf(" AND path LIKE $%d AND path NOT LIKE $%d", fp, fp+1)
-		fileArgs = append(fileArgs, prefix+"%", prefix+"%/%")
-		fp += 2
-	}
-	fileQ, fileArgs, fp = appendTreeFilters(fileQ, fileArgs, fp, opts)
-	fileQ += " ORDER BY path"
-
-	deepQ := `SELECT DISTINCT path FROM vault_documents WHERE true`
-	var deepArgs []any
-	dp := 1
-	if prefix == "" {
-		deepQ += " AND path LIKE '%/%'"
-	} else {
-		deepQ += fmt.Sprintf(" AND path LIKE $%d", dp)
-		deepArgs = append(deepArgs, prefix+"%/%")
-		dp++
-	}
-	deepQ, deepArgs, _ = appendTreeFilters(deepQ, deepArgs, dp, opts)
-	deepQ += " LIMIT 50000"
-
-	fileRows, err := s.db.QueryContext(ctx, fileQ, fileArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("vault tree files: %w", err)
-	}
-	defer fileRows.Close()
-	var entries []store.VaultTreeEntry
-	for fileRows.Next() {
-		var id, path, title, docType, scope string
-		var updatedAt time.Time
-		if err := fileRows.Scan(&id, &path, &title, &docType, &scope, &updatedAt); err != nil {
-			return nil, fmt.Errorf("vault tree scan: %w", err)
-		}
-		name := path
-		if idx := strings.LastIndex(path, "/"); idx >= 0 {
-			name = path[idx+1:]
-		}
-		ua := updatedAt
-		entries = append(entries, store.VaultTreeEntry{
-			Name: name, Path: path, DocID: id, DocType: docType, Scope: scope, Title: title, UpdatedAt: &ua,
-		})
-	}
-	if err := fileRows.Err(); err != nil {
-		return nil, fmt.Errorf("vault tree files: %w", err)
-	}
-
-	deepRows, err := s.db.QueryContext(ctx, deepQ, deepArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("vault tree deep: %w", err)
-	}
-	defer deepRows.Close()
-	var deepPaths []string
-	for deepRows.Next() {
-		var p string
-		if err := deepRows.Scan(&p); err != nil {
-			return nil, fmt.Errorf("vault tree deep scan: %w", err)
-		}
-		deepPaths = append(deepPaths, p)
-	}
-	if err := deepRows.Err(); err != nil {
-		return nil, fmt.Errorf("vault tree deep: %w", err)
-	}
-
-	for _, fname := range extractFolderNames(prefix, deepPaths) {
-		entries = append(entries, store.VaultTreeEntry{
-			Name: fname, Path: prefix + fname, IsDir: true, HasChildren: true,
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].IsDir != entries[j].IsDir {
-			return entries[i].IsDir
-		}
-		return entries[i].Name < entries[j].Name
-	})
-	return entries, nil
-}
-
-func appendTreeFilters(q string, args []any, p int, opts store.VaultTreeOptions) (string, []any, int) {
-	if opts.AgentID != "" {
-		aid, err := parseUUID(opts.AgentID)
-		if err == nil {
-			q += fmt.Sprintf(" AND (agent_id = $%d OR agent_id IS NULL)", p)
-			args = append(args, aid)
-			p++
-		}
-	}
-	q, args, p = appendTeamFilter(q, args, p, opts.TeamID, opts.TeamIDs)
-	if opts.Scope != "" {
-		q += fmt.Sprintf(" AND scope = $%d", p)
-		args = append(args, opts.Scope)
-		p++
-	}
-	if len(opts.DocTypes) > 0 {
-		q += fmt.Sprintf(" AND doc_type = ANY($%d)", p)
-		args = append(args, pqStringArray(opts.DocTypes))
-		p++
-	}
-	return q, args, p
-}
-
-func extractFolderNames(prefix string, deepPaths []string) []string {
-	seen := make(map[string]bool)
-	var folders []string
-	for _, p := range deepPaths {
-		rest := strings.TrimPrefix(p, prefix)
-		if idx := strings.Index(rest, "/"); idx > 0 {
-			seg := rest[:idx]
-			if !seen[seg] {
-				seen[seg] = true
-				folders = append(folders, seg)
-			}
-		}
-	}
-	sort.Strings(folders)
-	return folders
 }

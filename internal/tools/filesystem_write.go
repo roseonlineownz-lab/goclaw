@@ -2,14 +2,11 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
-	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -18,20 +15,13 @@ import (
 type WriteFileTool struct {
 	workspace       string
 	restrict        bool
-	allowedPrefixes []string                    // extra allowed path prefixes (cross-drive on Windows)
-	deniedPrefixes  []string                    // path prefixes to deny access to (e.g. .goclaw)
+	deniedPrefixes  []string // path prefixes to deny access to (e.g. .goclaw)
 	sandboxMgr      sandbox.Manager
 	contextFileIntc *ContextFileInterceptor     // nil = no virtual FS routing
 	memIntc         *MemoryInterceptor          // nil = no memory routing
 	permStore       store.ConfigPermissionStore // nil = no group write restriction
 	workspaceIntc   *WorkspaceInterceptor       // nil = no team workspace validation
 	vaultIntc       *VaultInterceptor           // nil = no vault registration
-}
-
-// AllowPaths adds extra path prefixes that write_file is allowed to access
-// even when restrict_to_workspace is true (e.g. cross-drive on Windows).
-func (t *WriteFileTool) AllowPaths(prefixes ...string) {
-	t.allowedPrefixes = append(t.allowedPrefixes, prefixes...)
 }
 
 // DenyPaths adds path prefixes that write_file must reject.
@@ -118,42 +108,10 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) *Resul
 		return ErrorResult("path is required")
 	}
 
-	// Deny-glob layer — applied first, before any interceptor or disk write.
-	// Uses the base filename for paths without workspace context (e.g. absolute
-	// paths or interceptor-handled virtual paths). For workspace-relative paths
-	// the raw value is used directly, which covers the common case of
-	// ".env", "secrets/key.pem", etc. that an agent might supply.
-	{
-		rawRel := filepath.ToSlash(filepath.Base(path))
-		if !filepath.IsAbs(path) {
-			rawRel = filepath.ToSlash(path)
-		}
-		if err := permissions.CheckDenyGlobs(ctx, t.permStore, rawRel); err != nil {
-			return ErrorResult(err.Error())
-		}
-	}
-
-	// Group write permission check: new files require write_file grant; existing files require edit_file.
-	// Stat the workspace-resolved path so that relative paths hit the correct directory.
-	// TOCTOU accepted: gate is advisory; OS perms still apply.
+	// Group write permission check
 	if t.permStore != nil {
-		ws := ToolWorkspaceFromCtx(ctx)
-		if ws == "" {
-			ws = t.workspace
-		}
-		statPath := path
-		if !filepath.IsAbs(path) {
-			statPath = filepath.Join(ws, path)
-		}
-		_, statErr := os.Stat(statPath)
-		if errors.Is(statErr, fs.ErrNotExist) {
-			if err := store.CheckWriteFilePermission(ctx, t.permStore); err != nil {
-				return ErrorResult(err.Error())
-			}
-		} else {
-			if err := store.CheckEditFilePermission(ctx, t.permStore); err != nil {
-				return ErrorResult(err.Error())
-			}
+		if err := store.CheckFileWriterPermission(ctx, t.permStore); err != nil {
+			return ErrorResult(err.Error())
 		}
 	}
 
@@ -204,18 +162,12 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) *Resul
 	if workspace == "" {
 		workspace = t.workspace
 	}
-	allowed := allowedWriteWithTeamWorkspace(ctx, t.allowedPrefixes)
+	allowed := allowedWithTeamWorkspace(ctx, nil)
 	resolved, err := resolvePathWithAllowed(path, workspace, effectiveRestrict(ctx, t.restrict), allowed)
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
 	if err := checkDeniedPath(resolved, t.workspace, t.deniedPrefixes); err != nil {
-		return ErrorResult(err.Error())
-	}
-
-	// Deny-glob layer: overrides a grant for protected paths (e.g. .env*, secrets/**).
-	relPath := workspaceRelPath(resolved, workspace)
-	if err := permissions.CheckDenyGlobs(ctx, t.permStore, relPath); err != nil {
 		return ErrorResult(err.Error())
 	}
 
@@ -271,7 +223,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) *Resul
 	result := SilentResult(msg)
 	result.Deliverable = content
 	if deliver {
-		result.Media = []bus.MediaFile{{Path: resolved, Filename: filepath.Base(resolved)}}
+		result.Media = []bus.MediaFile{{Path: resolved}}
 		// Track delivered path so message tool's self-send guard can detect duplicates.
 		if dm := DeliveredMediaFromCtx(ctx); dm != nil {
 			dm.Mark(resolved)
@@ -317,7 +269,7 @@ func (t *WriteFileTool) executeInSandbox(ctx context.Context, path, content, san
 			workspace = t.workspace
 		}
 		hostPath := filepath.Join(workspace, path)
-		result.Media = []bus.MediaFile{{Path: hostPath, Filename: filepath.Base(hostPath)}}
+		result.Media = []bus.MediaFile{{Path: hostPath}}
 		if dm := DeliveredMediaFromCtx(ctx); dm != nil {
 			dm.Mark(hostPath)
 		}

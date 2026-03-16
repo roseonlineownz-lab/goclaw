@@ -65,7 +65,7 @@ export const BoardContainer = memo(function BoardContainer({
   // Re-fetch when filters change
   useEffect(() => {
     if (initialized) load();
-  }, [statusFilter, selectedScope]);  
+  }, [statusFilter, selectedScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Callbacks for children ──
 

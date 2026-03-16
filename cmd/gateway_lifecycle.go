@@ -84,10 +84,6 @@ func (d *gatewayDeps) runLifecycle(
 		deps.webFetchTool.UpdatePolicy(updatedCfg.Tools.WebFetch.Policy, updatedCfg.Tools.WebFetch.AllowedDomains, updatedCfg.Tools.WebFetch.BlockedDomains)
 	})
 
-	// Reload global shell deny-group toggles on config changes via pub/sub
-	// so /config edits apply without a process restart.
-	subscribeShellDenyGroupsReload(d.msgBus, d.toolsReg)
-
 	// Reload TTS providers on config changes via pub/sub.
 	d.msgBus.Subscribe("tts-config-reload", func(evt bus.Event) {
 		if evt.Name != bus.TopicConfigChanged {
@@ -98,8 +94,7 @@ func (d *gatewayDeps) runLifecycle(
 			return
 		}
 		if d.pgStores.ConfigSecrets != nil {
-			masterCtx := context.Background()
-			if secrets, err := d.pgStores.ConfigSecrets.GetAll(masterCtx); err == nil && len(secrets) > 0 {
+			if secrets, err := d.pgStores.ConfigSecrets.GetAll(context.Background()); err == nil && len(secrets) > 0 {
 				updatedCfg.ApplyDBSecrets(secrets)
 			}
 		}
@@ -108,14 +103,8 @@ func (d *gatewayDeps) runLifecycle(
 			return
 		}
 		deps.ttsTool.UpdateManager(newMgr)
-		if d.ttsHandler != nil {
-			d.ttsHandler.UpdateManager(newMgr)
-		}
 		slog.Info("tts config reloaded", "provider", newMgr.PrimaryProvider(), "auto", string(newMgr.AutoMode()))
 	})
-
-	// Note: vault enrichment provider is resolved per-tenant at runtime,
-	// no hot-reload handler needed here
 
 	// Log orphaned providers on agent deletion. Auto-delete is unsafe because
 	// providers can be referenced by heartbeats (FK), OAuth tokens, media chains.
@@ -169,6 +158,11 @@ func (d *gatewayDeps) runLifecycle(
 
 		// Close provider resources (e.g. Claude CLI temp files)
 		d.providerRegistry.Close()
+
+		// Stop permission cache sweep goroutines so they don't leak past shutdown.
+		if d.permCache != nil {
+			d.permCache.Close()
+		}
 
 		// Stop sandbox pruning + release containers
 		if deps.sandboxMgr != nil {

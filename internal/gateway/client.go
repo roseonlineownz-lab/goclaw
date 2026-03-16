@@ -39,8 +39,9 @@ type Client struct {
 	// Team access cache for event filtering (lazily populated).
 	teamIDs map[string]bool
 
-	tenantName string // resolved tenant display name (set during connect)
-	tenantSlug string // resolved tenant URL slug (set during connect)
+	tenantID   uuid.UUID // resolved tenant; always concrete after connect
+	tenantName string    // resolved tenant display name (set during connect)
+	tenantSlug string    // resolved tenant URL slug (set during connect)
 }
 
 func NewClient(conn *websocket.Conn, server *Server, remoteIP string) *Client {
@@ -209,11 +210,14 @@ func (c *Client) ConnectedAt() time.Time { return c.connectedAt }
 // RemoteAddr returns the peer IP:port.
 func (c *Client) RemoteAddr() string { return c.remoteAddr }
 
+// TenantID returns the resolved tenant UUID (uuid.Nil means cross-tenant).
+func (c *Client) TenantID() uuid.UUID { return c.tenantID }
+
 // TenantSlug returns the resolved tenant URL slug (set during connect).
 func (c *Client) TenantSlug() string { return c.tenantSlug }
 
 // IsOwner returns true if the client has the owner role (tenant management + full access).
-func (c *Client) IsOwner() bool { return c.role == permissions.RoleRoot }
+func (c *Client) IsOwner() bool { return c.role == permissions.RoleOwner }
 
 // HasScope reports whether the client has the given scope.
 func (c *Client) HasScope(scope permissions.Scope) bool {

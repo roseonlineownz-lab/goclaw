@@ -11,7 +11,6 @@ interface UiState {
   timezone: string; // IANA timezone or "auto"
   sidebarCollapsed: boolean;
   mobileSidebarOpen: boolean;
-  pageSize: number; // global pagination page size preference
 
   setTheme: (theme: Theme) => void;
   setLanguage: (language: Language) => void;
@@ -19,7 +18,6 @@ interface UiState {
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setMobileSidebarOpen: (open: boolean) => void;
-  setPageSize: (size: number) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -30,7 +28,6 @@ export const useUiStore = create<UiState>()(
       timezone: "auto",
       sidebarCollapsed: false,
       mobileSidebarOpen: false,
-      pageSize: 20,
 
       setTheme: (theme) => {
         set({ theme });
@@ -54,8 +51,6 @@ export const useUiStore = create<UiState>()(
       },
 
       setMobileSidebarOpen: (open) => set({ mobileSidebarOpen: open }),
-
-      setPageSize: (size) => set({ pageSize: size }),
     }),
     {
       name: "goclaw:ui", // localStorage key
@@ -65,7 +60,6 @@ export const useUiStore = create<UiState>()(
         language: state.language,
         timezone: state.timezone,
         sidebarCollapsed: state.sidebarCollapsed,
-        pageSize: state.pageSize,
       }),
     }
   )

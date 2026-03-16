@@ -21,14 +21,16 @@ export class WsClient {
   private reconnectAttempts = 0;
   private authenticated = false;
   private intentionalClose = false;
-  private pairingInProgress = false;
   private connectGeneration = 0;
 
   /** Server-assigned role from connect response. */
   role: "owner" | "admin" | "operator" | "viewer" | "" = "";
 
-  /** Server edition, drives UI feature gating. */
-  edition: "standard" | "lite" = "standard";
+  /** Tenant fields from connect response. */
+  tenantId = "";
+  tenantName = "";
+  tenantSlug = "";
+  isOwner = false;
   serverVersion = "";
 
   private readonly maxReconnectDelay = 30_000;
@@ -88,7 +90,6 @@ export class WsClient {
 
   disconnect(): void {
     this.intentionalClose = true;
-    this.pairingInProgress = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -202,27 +203,28 @@ export class WsClient {
         status?: string;
         pairing_code?: string;
         sender_id?: string;
-        edition?: "standard" | "lite";
+        tenant_id?: string;
+        tenant_name?: string;
+        tenant_slug?: string;
+        is_owner?: boolean;
         server?: { name?: string; version?: string };
       }>("connect", {
         token: this.getToken(),
         user_id: this.getUserId(),
         sender_id: this.getSenderID(),
         locale: localStorage.getItem("goclaw:language") || "en",
+        tenant_hint: localStorage.getItem("goclaw:tenant_hint") || "",
+        tenant_id: localStorage.getItem("goclaw:tenant_id") || "",
         protocolVersion: PROTOCOL_VERSION,
       });
       if (this.connectGeneration !== generation) return;
 
       // Browser pairing: server requires approval
       if (res?.status === "pending_pairing" && res.pairing_code && res.sender_id) {
-        if (!this.pairingInProgress) {
-          this.pairingInProgress = true;
-          this.onPairingRequired?.(res.pairing_code, res.sender_id);
-        }
+        this.onPairingRequired?.(res.pairing_code, res.sender_id);
         // Keep connection alive for polling browser.pairing.status
         return;
       }
-      this.pairingInProgress = false;
 
       // Server accepted connection but assigned viewer role → token is invalid
       if (this.getToken() && res?.role === "viewer") {
@@ -234,12 +236,21 @@ export class WsClient {
 
       this.authenticated = true;
       this.role = (res?.role as "owner" | "admin" | "operator" | "viewer") ?? "";
-      this.edition = res?.edition ?? "standard";
+      this.tenantId = res?.tenant_id ?? "";
+      this.tenantName = res?.tenant_name ?? "";
+      this.tenantSlug = res?.tenant_slug ?? "";
+      this.isOwner = res?.is_owner ?? false;
       this.serverVersion = res?.server?.version ?? "";
       this.onStateChange("connected");
-    } catch {
+    } catch (e) {
       if (this.connectGeneration === generation) {
-        this.intentionalClose = true;
+        // Tenant access revoked → force logout instead of reconnect
+        if (e instanceof ApiError && e.code === "TENANT_ACCESS_REVOKED") {
+          this.intentionalClose = true;
+          this.ws?.close();
+          this.onAuthFailure?.();
+          return;
+        }
         this.ws?.close();
       }
     }
@@ -271,8 +282,12 @@ export class WsClient {
       pending.resolve(frame.payload);
     } else {
       const err = frame.error as ErrorShape;
+      // Only force logout on tenant revocation (session-level invalidation).
       // UNAUTHORIZED from a method call means "insufficient permission for this action",
       // not "session expired" — let the caller handle it via the rejected promise.
+      if (err.code === "TENANT_ACCESS_REVOKED") {
+        this.onAuthFailure?.();
+      }
       pending.reject(
         new ApiError(err.code, err.message, err.details, err.retryable),
       );
@@ -314,11 +329,11 @@ export class WsClient {
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
 
-    this.reconnectAttempts++;
     const delay = Math.min(
       this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts),
       this.maxReconnectDelay,
     );
+    this.reconnectAttempts++;
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

@@ -7,6 +7,7 @@ import (
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 )
@@ -81,7 +82,7 @@ func (c *Channel) sendPairingReply(ctx context.Context, senderID, chatID string)
 	}
 
 	waMsg := &waE2E.Message{
-		Conversation: new(replyText),
+		Conversation: proto.String(replyText),
 	}
 	if _, sendErr := c.client.SendMessage(c.ctx, chatJID, waMsg); sendErr != nil {
 		slog.Warn("failed to send whatsapp pairing reply", "error", sendErr)

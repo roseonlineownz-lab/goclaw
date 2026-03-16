@@ -27,7 +27,6 @@ export interface NormalizedChatGPTOAuthRouting {
   overrideMode: ChatGPTOAuthRoutingOverrideMode;
   strategy: EffectiveChatGPTOAuthRoutingStrategy;
   extraProviderNames: string[];
-  hasExplicitExtraProviderNames: boolean;
 }
 
 export interface EffectiveChatGPTOAuthRouting {
@@ -74,9 +73,8 @@ export function normalizeChatGPTOAuthRouting(
     return {
       isExplicit: false,
       overrideMode: "custom",
-      strategy: "priority_order",
+      strategy: "primary_first",
       extraProviderNames: [],
-      hasExplicitExtraProviderNames: false,
     };
   }
   const routing = raw as Record<string, unknown>;
@@ -98,14 +96,13 @@ export function normalizeChatGPTOAuthRouting(
     routing.override_mode === "custom" ||
     hasStrategyField ||
     hasExtraProviderField ||
-    strategy !== "priority_order" ||
+    strategy !== "primary_first" ||
     extraProviderNames.length > 0;
   return {
     isExplicit,
     overrideMode,
     strategy,
     extraProviderNames,
-    hasExplicitExtraProviderNames: hasExtraProviderField,
   };
 }
 
@@ -114,10 +111,7 @@ export function hasActiveChatGPTOAuthRouting(
   routing?: ChatGPTOAuthRoutingConfig | Record<string, unknown> | null,
 ): boolean {
   const normalized = normalizeChatGPTOAuthRouting(routing);
-  return normalized.isExplicit && (
-    normalized.strategy === "round_robin" ||
-    normalized.extraProviderNames.length > 0
-  );
+  return normalized.isExplicit && (normalized.strategy !== "primary_first" || normalized.extraProviderNames.length > 0);
 }
 
 export function normalizeChatGPTOAuthRoutingInput(
@@ -127,9 +121,8 @@ export function normalizeChatGPTOAuthRoutingInput(
     return {
       isExplicit: false,
       overrideMode: "custom",
-      strategy: "priority_order",
+      strategy: "primary_first",
       extraProviderNames: [],
-      hasExplicitExtraProviderNames: false,
     };
   }
   return normalizeChatGPTOAuthRouting(routing);
@@ -146,9 +139,8 @@ export function resolveEffectiveChatGPTOAuthRouting(
     ({
       isExplicit: false,
       overrideMode: "custom",
-      strategy: "priority_order",
+      strategy: "primary_first",
       extraProviderNames: [],
-      hasExplicitExtraProviderNames: false,
     } satisfies NormalizedChatGPTOAuthRouting);
 
   let source: EffectiveChatGPTOAuthRouting["source"] = "single";
@@ -158,7 +150,7 @@ export function resolveEffectiveChatGPTOAuthRouting(
 
   if (normalizedAgent.overrideMode === "inherit") {
     source = providerDefaults ? "provider_default" : "single";
-    strategy = providerDefaults?.strategy ?? "priority_order";
+    strategy = providerDefaults?.strategy ?? "primary_first";
     extraProviderNames = providerDefaults?.extraProviderNames ?? [];
     overrideMode = "inherit";
   } else if (normalizedAgent.isExplicit) {
@@ -175,7 +167,7 @@ export function resolveEffectiveChatGPTOAuthRouting(
     providerDefaults?.extraProviderNames.length &&
     source === "agent_custom"
   ) {
-    if (normalizedAgent.hasExplicitExtraProviderNames && extraProviderNames.length === 0) {
+    if (strategy === "primary_first" && extraProviderNames.length === 0) {
       extraProviderNames = [];
     } else {
       extraProviderNames = providerDefaults.extraProviderNames;
@@ -198,7 +190,8 @@ export function strategyLabelKey(
   strategy: EffectiveChatGPTOAuthRoutingStrategy,
 ): string {
   if (strategy === "round_robin") return "chatgptOAuthRouting.strategy.roundRobin";
-  return "chatgptOAuthRouting.strategy.priorityOrder";
+  if (strategy === "priority_order") return "chatgptOAuthRouting.strategy.priorityOrder";
+  return "chatgptOAuthRouting.strategy.primaryFirst";
 }
 
 /** Maps route readiness state to badge variant. */
@@ -259,13 +252,18 @@ export function buildAgentOtherConfigWithChatGPTOAuthRouting(
   if (
     providerDefaults ||
     normalized.isExplicit ||
+    normalized.strategy !== "primary_first" ||
     normalized.extraProviderNames.length > 0
   ) {
     const customRouting: Record<string, unknown> = {
       override_mode: "custom",
       strategy: normalized.strategy,
     };
-    if (normalized.hasExplicitExtraProviderNames || normalized.extraProviderNames.length > 0) {
+    if (
+      !providerDefaults ||
+      (normalized.strategy === "primary_first" &&
+        normalized.extraProviderNames.length === 0)
+    ) {
       customRouting.extra_provider_names = normalized.extraProviderNames;
     }
     result.chatgpt_oauth_routing = customRouting;

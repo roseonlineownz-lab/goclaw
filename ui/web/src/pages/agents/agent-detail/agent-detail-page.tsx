@@ -11,7 +11,6 @@ import { AgentFilesTab } from "./agent-files-tab";
 import { AgentInstancesTab } from "./agent-instances-tab";
 import { AgentPermissionsTab } from "./agent-permissions-tab";
 import { AgentEvolutionTab } from "./evolution-tab/agent-evolution-tab";
-import { AgentHooksTab } from "./agent-hooks-tab";
 import { SummoningModal } from "../summoning-modal";
 import { ConfirmDeleteDialog } from "@/components/shared/confirm-delete-dialog";
 import { DetailPageSkeleton } from "@/components/shared/loading-skeleton";
@@ -35,7 +34,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
   const navigate = useNavigate();
   const { agent, files, loading, updateAgent, getFile, setFile, regenerateAgent, resummonAgent, refresh } =
     useAgentDetail(agentId);
-  const { deleteAgent: deleteAgentById, cancelSummonAgent } = useAgents();
+  const { deleteAgent: deleteAgentById } = useAgents();
   const hb = useAgentHeartbeat(agentId);
   const [summoningOpen, setSummoningOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("agent");
@@ -43,7 +42,6 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [heartbeatOpen, setHeartbeatOpen] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
-  const [hooksCreateOpen, setHooksCreateOpen] = useState(false);
 
   const handleResummon = async () => {
     await resummonAgent();
@@ -81,8 +79,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
               <TabsTrigger value="files">{t("detail.tabs.files")}</TabsTrigger>
               <TabsTrigger value="permissions">{t("detail.tabs.permissions")}</TabsTrigger>
               <TabsTrigger value="evolution">{t("detail.tabs.evolution")}</TabsTrigger>
-              <TabsTrigger value="hooks">{t("detail.tabs.hooks")}</TabsTrigger>
-              {(
+              {agent.agent_type === "predefined" && (
                 <TabsTrigger value="instances">{t("detail.tabs.instances")}</TabsTrigger>
               )}
             </TabsList>
@@ -94,11 +91,6 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
                 onUpdate={updateAgent}
                 heartbeat={hb}
                 onManageCodexPool={() => navigate(`/agents/${agent.id}/codex-pool`)}
-                onViewHooks={() => setActiveTab("hooks")}
-                onAddHook={() => {
-                  setActiveTab("hooks");
-                  setHooksCreateOpen(true);
-                }}
               />
             </TabsContent>
 
@@ -125,15 +117,7 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
               />
             </TabsContent>
 
-            <TabsContent value="hooks" className="mt-4">
-              <AgentHooksTab
-                agentId={agentId}
-                initialCreateOpen={hooksCreateOpen}
-                onCreateOpenChange={setHooksCreateOpen}
-              />
-            </TabsContent>
-
-            {(
+            {agent.agent_type === "predefined" && (
               <TabsContent value="instances" className="mt-4">
                 <AgentInstancesTab agentId={agentId} />
               </TabsContent>
@@ -161,7 +145,6 @@ export function AgentDetailPage({ agentId, onBack }: AgentDetailPageProps) {
         agentName={title}
         onCompleted={() => {}}
         onResummon={async () => { await resummonAgent(); }}
-        onCancel={cancelSummonAgent}
       />
 
       {heartbeatOpen && (

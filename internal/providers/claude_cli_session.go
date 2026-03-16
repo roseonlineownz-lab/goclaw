@@ -29,23 +29,13 @@ func validateCLIModel(model string) error {
 
 // buildArgs constructs CLI arguments.
 // mcpConfigPath is the resolved per-session MCP config file (may differ per call).
-// effort is the reasoning effort level (low/medium/high); empty or "off" omits the flag.
-func (p *ClaudeCLIProvider) buildArgs(model, workDir, mcpConfigPath string, cliSessionID uuid.UUID, outputFormat string, hasImages, disableTools bool, effort string) []string {
+func (p *ClaudeCLIProvider) buildArgs(model, workDir, mcpConfigPath string, cliSessionID uuid.UUID, outputFormat string, hasImages, disableTools bool) []string {
 	args := []string{
 		"-p",
 		"--output-format", outputFormat,
 		"--model", model,
 		"--permission-mode", p.permMode,
 		"--verbose",
-	}
-
-	if effort != "" && effort != "off" {
-		effort = strings.ToLower(strings.TrimSpace(effort))
-		if isAlphaOnly(effort) {
-			args = append(args, "--effort", effort)
-		} else {
-			slog.Warn("claude-cli: invalid effort value, skipping --effort flag", "effort", effort)
-		}
 	}
 
 	if mcpConfigPath != "" {
@@ -176,7 +166,7 @@ func bridgeContextFromOpts(opts map[string]any) BridgeContext {
 		ChatID:    extractStringOpt(opts, OptChatID),
 		PeerKind:  extractStringOpt(opts, OptPeerKind),
 		Workspace: extractStringOpt(opts, OptWorkspace),
-		LocalKey: extractStringOpt(opts, OptLocalKey),
+		TenantID:  extractStringOpt(opts, OptTenantID),
 	}
 }
 
@@ -216,24 +206,13 @@ func sessionFileExists(workDir string, sessionID uuid.UUID) bool {
 	return err == nil
 }
 
-// buildStreamJSONInput creates stream-json stdin for multimodal input
-// (images/documents + text). The content block type is chosen from MIME:
-//   - application/pdf → "document" (Anthropic PDF support, Claude 3.5+)
-//   - image/*         → "image"
-//
-// MIME types that fit neither are emitted as "image" for backwards
-// compatibility; the upstream Anthropic API will reject them explicitly
-// rather than silently misroute.
+// buildStreamJSONInput creates stream-json stdin for vision (images + text).
 func buildStreamJSONInput(text string, images []ImageContent) *bytes.Reader {
 	var contentBlocks []map[string]any
 
 	for _, img := range images {
-		blockType := "image"
-		if img.MimeType == "application/pdf" {
-			blockType = "document"
-		}
 		contentBlocks = append(contentBlocks, map[string]any{
-			"type": blockType,
+			"type": "image",
 			"source": map[string]any{
 				"type":       "base64",
 				"media_type": img.MimeType,
@@ -293,49 +272,21 @@ func ResetCLISession(baseWorkDir, sessionKey string) {
 	}
 }
 
-// filterCLIEnv removes CLAUDE* env vars to prevent nested session conflicts.
-// Behavioral tuning vars are whitelisted so they can be set system-wide
-// and picked up by claude-cli subprocesses.
+// filterCLIEnv removes CLAUDE* env vars to prevent nested session conflicts,
+// but preserves CLAUDE_CODE_OAUTH_TOKEN for authentication.
 func filterCLIEnv(environ []string) []string {
-	allowed := map[string]bool{
-		"CLAUDE_CODE_OAUTH_TOKEN":               true, // auth
-		"CLAUDE_CODE_EFFORT_LEVEL":              true, // behavioral tuning
-		"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": true, // behavioral tuning
-	}
 	var filtered []string
 	for _, e := range environ {
 		key := e
 		if before, _, ok := strings.Cut(e, "="); ok {
 			key = before
 		}
-		if strings.HasPrefix(key, "CLAUDE") && !allowed[key] {
+		// Filter out variables that could cause nested CLI conflicts,
+		// but preserve auth token needed by the subprocess.
+		if strings.HasPrefix(key, "CLAUDE") && key != "CLAUDE_CODE_OAUTH_TOKEN" {
 			continue
 		}
 		filtered = append(filtered, e)
 	}
 	return filtered
-}
-
-// isAlphaOnly returns true if s is non-empty and contains only a-z characters.
-func isAlphaOnly(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	for _, c := range s {
-		if c < 'a' || c > 'z' {
-			return false
-		}
-	}
-	return true
-}
-
-// removeEnvKey returns a copy of environ with all entries for the given key removed.
-func removeEnvKey(environ []string, key string) []string {
-	result := make([]string, 0, len(environ))
-	for _, e := range environ {
-		if k, _, _ := strings.Cut(e, "="); k != key {
-			result = append(result, e)
-		}
-	}
-	return result
 }

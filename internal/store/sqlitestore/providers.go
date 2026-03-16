@@ -15,7 +15,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
-const providerSelectCols = `id, name, display_name, provider_type, api_base, api_key, enabled, settings, metadata, created_at, updated_at`
+const providerSelectCols = `id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at, tenant_id`
 
 // SQLiteProviderStore implements store.ProviderStore backed by SQLite.
 type SQLiteProviderStore struct {
@@ -50,26 +50,24 @@ func (s *SQLiteProviderStore) CreateProvider(ctx context.Context, p *store.LLMPr
 	if len(settings) == 0 {
 		settings = []byte("{}")
 	}
-	meta := p.Metadata
-	if len(meta) == 0 {
-		meta = []byte("{}")
-	}
 
 	now := time.Now()
 	p.CreatedAt = now
 	p.UpdatedAt = now
-	// UPSERT: if provider with same name exists, update it and return its ID.
-	// This handles orphaned providers left after agent deletion.
+	tid := tenantIDForInsert(ctx)
+	p.TenantID = tid
+	// UPSERT: if provider with same (tenant_id, name) exists, update it and return its ID.
+	// This handles orphaned providers left after agent deletion (#295).
 	var actualID string
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO llm_providers (id, name, display_name, provider_type, api_base, api_key, enabled, settings, metadata, created_at, updated_at)
+		`INSERT INTO llm_providers (id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at, tenant_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET
+		 ON CONFLICT(tenant_id, name) DO UPDATE SET
 			display_name = excluded.display_name, provider_type = excluded.provider_type,
 			api_base = excluded.api_base, api_key = excluded.api_key,
 			enabled = excluded.enabled, settings = excluded.settings, updated_at = excluded.updated_at
 		 RETURNING id`,
-		p.ID, p.Name, p.DisplayName, p.ProviderType, p.APIBase, apiKey, p.Enabled, settings, meta, now, now,
+		p.ID, p.Name, p.DisplayName, p.ProviderType, p.APIBase, apiKey, p.Enabled, settings, now, now, tid,
 	).Scan(&actualID)
 	if err == nil {
 		if parsed, parseErr := uuid.Parse(actualID); parseErr == nil {
@@ -80,9 +78,15 @@ func (s *SQLiteProviderStore) CreateProvider(ctx context.Context, p *store.LLMPr
 }
 
 func (s *SQLiteProviderStore) GetProvider(ctx context.Context, id uuid.UUID) (*store.LLMProviderData, error) {
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var row providerRow
-	err := pkgSqlxDB.GetContext(ctx, &row,
-		`SELECT `+providerSelectCols+` FROM llm_providers WHERE id = ?`, id,
+	args := append([]any{id}, tArgs...)
+	err = pkgSqlxDB.GetContext(ctx, &row,
+		`SELECT `+providerSelectCols+` FROM llm_providers WHERE id = ?`+tClause,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("provider not found: %s", id)
@@ -93,9 +97,15 @@ func (s *SQLiteProviderStore) GetProvider(ctx context.Context, id uuid.UUID) (*s
 }
 
 func (s *SQLiteProviderStore) GetProviderByName(ctx context.Context, name string) (*store.LLMProviderData, error) {
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var row providerRow
-	err := pkgSqlxDB.GetContext(ctx, &row,
-		`SELECT `+providerSelectCols+` FROM llm_providers WHERE name = ?`, name,
+	args := append([]any{name}, tArgs...)
+	err = pkgSqlxDB.GetContext(ctx, &row,
+		`SELECT `+providerSelectCols+` FROM llm_providers WHERE name = ?`+tClause,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("provider not found: %s", name)
@@ -106,9 +116,14 @@ func (s *SQLiteProviderStore) GetProviderByName(ctx context.Context, name string
 }
 
 func (s *SQLiteProviderStore) ListProviders(ctx context.Context) ([]store.LLMProviderData, error) {
+	tClause, tArgs, err := scopeClause(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var rows []providerRow
-	err := pkgSqlxDB.SelectContext(ctx, &rows,
-		`SELECT `+providerSelectCols+` FROM llm_providers ORDER BY name`,
+	err = pkgSqlxDB.SelectContext(ctx, &rows,
+		`SELECT `+providerSelectCols+` FROM llm_providers WHERE true`+tClause+` ORDER BY name`,
+		tArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -138,34 +153,27 @@ func (s *SQLiteProviderStore) UpdateProvider(ctx context.Context, id uuid.UUID, 
 			updates["api_key"] = encrypted
 		}
 	}
-	return execMapUpdate(ctx, s.db, "llm_providers", id, updates)
+	if store.IsCrossTenant(ctx) {
+		return execMapUpdate(ctx, s.db, "llm_providers", id, updates)
+	}
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		return fmt.Errorf("tenant_id required")
+	}
+	return execMapUpdateWhereTenant(ctx, s.db, "llm_providers", updates, id, tid)
 }
 
 func (s *SQLiteProviderStore) DeleteProvider(ctx context.Context, id uuid.UUID) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tClause, tArgs, err := scopeClause(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-
-	// Defensive: disable heartbeats so the next scheduler tick after delete
-	// cannot fire stale config. FK ON DELETE SET NULL clears provider_id auto.
-	res, err := tx.ExecContext(ctx,
-		"UPDATE agent_heartbeats SET enabled = 0 WHERE provider_id = ?", id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		slog.Warn("heartbeat.provider_cleared",
-			"provider_id", id, "heartbeats_disabled", n)
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		"DELETE FROM llm_providers WHERE id = ?", id,
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
+	args := append([]any{id}, tArgs...)
+	_, err = s.db.ExecContext(ctx,
+		"DELETE FROM llm_providers WHERE id = ?"+tClause,
+		args...,
+	)
+	return err
 }
 
 func (s *SQLiteProviderStore) decryptKey(apiKey, providerName string) string {

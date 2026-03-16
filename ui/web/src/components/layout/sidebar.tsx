@@ -25,10 +25,10 @@ import {
   Network,
   Contact,
   KeyRound,
+  Building2,
   ArrowLeftRight,
   FileArchive,
   DatabaseBackup,
-  Webhook,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SidebarGroup } from "./sidebar-group";
@@ -38,6 +38,7 @@ import { ROUTES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { usePendingPairingsCount } from "@/hooks/use-pending-pairings-count";
 import { useAuthStore } from "@/stores/use-auth-store";
+import { useTenants } from "@/hooks/use-tenants";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -48,8 +49,8 @@ export function Sidebar({ collapsed, onNavItemClick }: SidebarProps) {
   const { t } = useTranslation("sidebar");
   const { pendingCount } = usePendingPairingsCount();
   const role = useAuthStore((s) => s.role);
+  const { isOwner } = useTenants();
   const isAdmin = role === "admin" || role === "owner";
-  const isOwner = role === "owner";
 
   return (
     <aside
@@ -83,7 +84,7 @@ export function Sidebar({ collapsed, onNavItemClick }: SidebarProps) {
       <nav className="flex-1 space-y-4 overflow-y-auto px-2 py-4">
         <SidebarGroup label={t("groups.core")} collapsed={collapsed}>
           <SidebarItem to={ROUTES.OVERVIEW} icon={LayoutDashboard} label={t("nav.overview")} collapsed={collapsed} />
-          <SidebarItem to={ROUTES.CHAT} icon={MessageSquare} label={t("nav.chat")} collapsed={collapsed} />
+          <SidebarItem to="/chat" icon={MessageSquare} label={t("nav.chat")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.AGENTS} icon={Bot} label={t("nav.agents")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.TEAMS} icon={Users} label={t("nav.agentTeams")} collapsed={collapsed} />
         </SidebarGroup>
@@ -107,7 +108,6 @@ export function Sidebar({ collapsed, onNavItemClick }: SidebarProps) {
             <SidebarItem to={ROUTES.TTS} icon={Volume2} label={t("nav.tts")} collapsed={collapsed} />
           )}
           <SidebarItem to={ROUTES.CRON} icon={Clock} label={t("nav.cron")} collapsed={collapsed} />
-          <SidebarItem to={ROUTES.HOOKS} icon={Webhook} label={t("nav.hooks")} collapsed={collapsed} />
         </SidebarGroup>
 
         <SidebarGroup label={t("groups.data")} collapsed={collapsed}>
@@ -126,6 +126,9 @@ export function Sidebar({ collapsed, onNavItemClick }: SidebarProps) {
 
         {isAdmin && (
         <SidebarGroup label={t("groups.system")} collapsed={collapsed}>
+          {isOwner && (
+            <SidebarItem to={ROUTES.TENANTS} icon={Building2} label={t("nav.tenants")} collapsed={collapsed} />
+          )}
           <SidebarItem to={ROUTES.PROVIDERS} icon={Cpu} label={t("nav.providers")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.CLI_CREDENTIALS} icon={KeyRound} label={t("nav.cliCredentials")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.API_KEYS} icon={KeyRound} label={t("nav.apiKeys")} collapsed={collapsed} />

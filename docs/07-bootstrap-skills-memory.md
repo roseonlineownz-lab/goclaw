@@ -29,6 +29,7 @@ Markdown files with embedded templates in `internal/bootstrap/templates/`. These
 | 6 | BOOTSTRAP.md | First-run ritual (deleted after completion) | Yes | No | — | both |
 
 **Additional per-agent file:**
+- USER_PREDEFINED.md (agent-level only): Baseline user-handling rules for predefined agents, shared across all users
 
 Subagent and cron sessions load only AGENTS.md + TOOLS.md (the `minimalAllowlist`).
 
@@ -93,8 +94,9 @@ Templates are embedded in the binary via Go `embed` (directory: `internal/bootst
 flowchart TD
     subgraph "Agent Level (SeedToStore)"
         SB["New agent created"] --> SB1{"Agent type = open?"}
-                SB1 -->|No| SB2["predefined agent"]
-        SB2 --> SB3["Seed to agent_context_files:<br/>AGENTS.md, SOUL.md, IDENTITY.md,<br/>USER.md"]
+        SB1 -->|Yes| SKIP_AGENT["Skip agent-level files<br/>(open agents use per-user only)"]
+        SB1 -->|No| SB2["predefined agent"]
+        SB2 --> SB3["Seed to agent_context_files:<br/>AGENTS.md, SOUL.md, IDENTITY.md,<br/>USER_PREDEFINED.md"]
         SB3 --> SB4["(skip USER.md, TOOLS.md,<br/>BOOTSTRAP.md)"]
         SB4 --> SB5{"File already has content?"}
         SB5 -->|Yes| SKIP2["Skip"]
@@ -127,11 +129,11 @@ Two agent types determine which context files live at the agent level versus the
 | Agent Type | Agent-Level Files | Per-User Files |
 |------------|-------------------|----------------|
 | `open` | None (all per-user) | AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, BOOTSTRAP.md |
-| agents | AGENTS.md, SOUL.md, IDENTITY.md, USER.md (shared agent-level) | USER.md (overridden per-user), BOOTSTRAP.md (per-user, deleted after onboarding) |
+| `predefined` | AGENTS.md, SOUL.md, IDENTITY.md, USER_PREDEFINED.md (shared) | USER.md, BOOTSTRAP.md (personalized per-user) |
 
 **Open agents:** Each user gets their own full set of context files with personal preferences and identity. Reading checks per-user copy first.
 
-All users share the same agent-level persona, identity, and tools. Each user has their own USER.md (profile) and BOOTSTRAP.md (first-run ritual). The agent-level USER.md provides baseline user-handling rules, allowing the model to adjust behavior per-user while maintaining consistency.
+**Predefined agents:** All users share the same agent-level persona, identity, and tools. Each user has their own USER.md (profile) and BOOTSTRAP.md (first-run ritual). USER_PREDEFINED.md provides baseline user-handling rules at the agent level, allowing the model to adjust behavior per-user while maintaining consistency.
 
 | Storage | Location |
 |---------|----------|
@@ -209,7 +211,7 @@ When the model attempts `read_file` on a virtual file, `filesystem.go` returns a
 
 ## 6. Context File Merging
 
-v4 collapses the open/predefined split to a single agent kind. USER.md and BOOTSTRAP.md route to `user_context_files` (per-user); all other context files (SOUL.md, IDENTITY.md, AGENTS.md, …) live in `agent_context_files` (agent-level shared).
+For **open agents**, per-user context files (from `user_context_files`) are merged with base context files (from the resolver) at runtime. Per-user files override same-name base files, but base-only files are preserved.
 
 ```
 Base files (resolver):     AGENTS.md, DELEGATION.md, TEAM.md
@@ -655,14 +657,59 @@ WHERE agent_id = $1
 
 ## File Reference
 
-| Module | Path | Purpose |
-|---|---|---|
-| Bootstrap & seeding | `internal/bootstrap/` | File constants, truncation pipeline, workspace seeding, store seeding, embedded template files |
-| System prompt & agent resolver | `internal/agent/` | `BuildSystemPrompt`, section renderers, virtual file injection, context file merging, memory flush |
-| Skills | `internal/skills/` | 5-tier loader, BM25 search, fsnotify hot-reload; grant management in `internal/store/pg/skills*.go` |
-| Memory & consolidation | `internal/memory/`, `internal/consolidation/` | Auto-injector (L0), unified search (L1), consolidation workers (episodic, semantic, dedup, dreaming) |
+### Bootstrap Files & Constants
+| File | Description |
+|------|-------------|
+| `internal/bootstrap/files.go` | File constants (AgentsFile, SoulFile, UserPredefinedFile, DelegationFile, TeamFile, AvailabilityFile, MemoryFile, etc.), loading, session filtering |
+| `internal/bootstrap/seed.go` | Workspace bootstrap seeding (EnsureWorkspaceFiles, embedded template FS) |
+| `internal/bootstrap/seed_store.go` | Store seeding (SeedToStore for agent-level, SeedUserFiles for per-user) |
+| `internal/bootstrap/load_store.go` | Load context files from DB (LoadFromStore) |
+| `internal/bootstrap/truncate.go` | Truncation pipeline (head/tail split, budget clamping) |
+| `internal/bootstrap/templates/*.md` | Embedded template files: AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, USER_PREDEFINED.md, BOOTSTRAP.md, BOOTSTRAP_PREDEFINED.md |
 
-Use `grep` or your editor's symbol search for specific files.
+### System Prompt & Context Injection
+| File | Description |
+|------|-------------|
+| `internal/agent/systemprompt.go` | System prompt builder (BuildSystemPrompt, PromptFull/PromptMinimal modes) |
+| `internal/agent/systemprompt_sections.go` | Section renderers (17+ sections), virtual file handling (DELEGATION.md, TEAM.md, AVAILABILITY.md) |
+| `internal/agent/resolver.go` | Agent resolution, virtual file injection, negative context blocks |
+| `internal/agent/loop_history.go` | Context file merging (base + per-user, base-only preserved) |
+| `internal/agent/memoryflush.go` | Memory flush logic (shouldRunMemoryFlush, runMemoryFlush) |
+| `internal/http/summoner.go` | Agent summoning -- LLM-powered context file generation |
+| `internal/tools/filesystem.go` | File access interception (write_file, read_file), virtual file reminder handling |
+
+### Skills System
+| File | Description |
+|------|-------------|
+| `internal/skills/loader.go` | Skill loader (5-tier hierarchy, BuildSummary, inline/search mode decision) |
+| `internal/skills/search.go` | BM25 search index (tokenization, IDF scoring) |
+| `internal/skills/watcher.go` | fsnotify watcher (500ms debounce, hot-reload, version bumping) |
+| `internal/store/pg/skills.go` | Managed skill store (embedding search, auto-backfill) |
+| `internal/store/pg/skills_grants.go` | Skill grants (agent/user visibility, version pinning, RBAC) |
+
+### V3 Memory System (New)
+| File | Description |
+|------|-------------|
+| `internal/memory/auto_injector.go` | AutoInjector interface for L0 auto-injection into system prompt |
+| `internal/memory/auto_injector_impl.go` | AutoInjector implementation (episodic search + relevance filtering) |
+| `internal/memory/unified_search.go` | Hybrid search across episodic summaries + KG |
+| `internal/memory/l1_cache.go` | L1 cache for fast episodic lookups |
+| `internal/consolidation/workers.go` | Worker registration + event subscriptions |
+| `internal/consolidation/episodic_worker.go` | Extract summaries from sessions → episodic_summaries |
+| `internal/consolidation/semantic_worker.go` | Extract entities/relations from episodic → KG |
+| `internal/consolidation/dedup_worker.go` | Merge duplicate entities via embeddings |
+| `internal/consolidation/dreaming_worker.go` | Batch synthesis of episodic → long-term memory (10m debounce) |
+| `internal/consolidation/l0_abstract.go` | L0 abstract generation (~50 tokens) |
+
+### Memory Store
+| File | Description |
+|------|-------------|
+| `internal/store/episodic_store.go` | EpisodicStore interface (CRUD, search, promotion lifecycle) |
+| `internal/store/evolution_store.go` | EvolutionMetricsStore, EvolutionSuggestionStore interfaces |
+| `internal/store/vault_store.go` | VaultStore interface (document registry, links, search) |
+| `internal/store/pg/episodic*.go` | PG implementation of episodic store |
+| `internal/store/pg/memory_docs.go` | Memory document store (chunking, indexing, embedding, scoping) |
+| `internal/store/pg/memory_search.go` | Hybrid search (FTS + vector merge, weighted scoring, scope filtering) |
 
 ---
 

@@ -10,6 +10,7 @@ import (
 // SubagentTaskData represents a persisted subagent task for audit trail and cost attribution.
 type SubagentTaskData struct {
 	BaseModel
+	TenantID       uuid.UUID      `json:"tenant_id" db:"tenant_id"`
 	ParentAgentKey string         `json:"parent_agent_key" db:"parent_agent_key"`
 	SessionKey     *string        `json:"session_key,omitempty" db:"session_key"`
 	Subject        string         `json:"subject" db:"subject"`
@@ -27,7 +28,6 @@ type SubagentTaskData struct {
 	OriginPeerKind *string        `json:"origin_peer_kind,omitempty" db:"origin_peer_kind"`
 	OriginUserID   *string        `json:"origin_user_id,omitempty" db:"origin_user_id"`
 	SpawnedBy      *uuid.UUID     `json:"spawned_by,omitempty" db:"spawned_by"`
-	ProjectID      *uuid.UUID     `json:"project_id,omitempty" db:"project_id"` // inherited from parent agent's project binding
 	CompletedAt    *time.Time     `json:"completed_at,omitempty" db:"completed_at"`
 	ArchivedAt     *time.Time     `json:"archived_at,omitempty" db:"archived_at"`
 	Metadata       map[string]any `json:"metadata,omitempty" db:"metadata"`

@@ -144,8 +144,9 @@ func (h *PendingMessagesHandler) handleCompact(w http.ResponseWriter, r *http.Re
 	if keepRecent <= 0 {
 		keepRecent = 15
 	}
+	tenantID := store.TenantIDFromContext(r.Context())
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+		ctx, cancel := context.WithTimeout(store.WithTenantID(context.Background(), tenantID), 180*time.Second)
 		defer cancel()
 		remaining, err := channels.CompactGroup(ctx, h.store, req.ChannelName, req.HistoryKey, provider, model, keepRecent, h.maxTokens)
 		if err != nil {
@@ -167,7 +168,7 @@ func (h *PendingMessagesHandler) resolveProviderAndModel(ctx context.Context) (p
 
 	// Config-level provider/model override.
 	if h.cfgProvider != "" {
-		if p, err := h.providerReg.GetByName(h.cfgProvider); err == nil {
+		if p, err := h.providerReg.Get(ctx, h.cfgProvider); err == nil {
 			model := h.cfgModel
 			if model == "" {
 				model = p.DefaultModel()
@@ -194,8 +195,8 @@ func (h *PendingMessagesHandler) resolveProviderAndModel(ctx context.Context) (p
 	}
 
 	// Fallback: first provider with a valid default model
-	for _, name := range h.providerReg.List() {
-		p, err := h.providerReg.GetByName(name)
+	for _, name := range h.providerReg.List(ctx) {
+		p, err := h.providerReg.Get(ctx, name)
 		if err != nil {
 			continue
 		}

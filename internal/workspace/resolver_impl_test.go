@@ -6,27 +6,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 )
 
-// TestResolve_Personal verifies the v4 single personal-scope shape: every
-// personal agent shares its directory at agent level. The legacy open-agent
-// per-user / group-chat segmenting was removed when AgentType went away.
-func TestResolve_Personal(t *testing.T) {
+func TestResolve_PersonalOpen(t *testing.T) {
 	base := t.TempDir()
 	r := NewResolver()
 	wc, err := r.Resolve(context.Background(), ResolveParams{
-		AgentID:  "agent-123",
-		UserID:   "user-456",
-		PeerKind: "direct",
-		BaseDir:  base,
+		AgentID:    "agent-123",
+		AgentType:  "open",
+		UserID:     "user-456",
+		TenantID:   "tenant-uuid-1",
+		TenantSlug: "acme",
+		PeerKind:   "direct",
+		BaseDir:    base,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := filepath.Join(base, "agent-123")
+	want := filepath.Join(base, "tenants", "acme", "agent-123", "user-456")
 	if wc.ActivePath != want {
 		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
 	}
@@ -42,12 +40,39 @@ func TestResolve_Personal(t *testing.T) {
 	assertDirExists(t, wc.ActivePath)
 }
 
+func TestResolve_PersonalGroup(t *testing.T) {
+	base := t.TempDir()
+	r := NewResolver()
+	wc, err := r.Resolve(context.Background(), ResolveParams{
+		AgentID:    "agent-123",
+		AgentType:  "open",
+		UserID:     "user-456",
+		ChatID:     "chat-789",
+		TenantID:   "tenant-uuid-1",
+		TenantSlug: "acme",
+		PeerKind:   "group",
+		BaseDir:    base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Group chat uses chatID for isolation
+	want := filepath.Join(base, "tenants", "acme", "agent-123", "chat-789")
+	if wc.ActivePath != want {
+		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
+	}
+}
+
 func TestResolve_PredefinedShared(t *testing.T) {
 	base := t.TempDir()
 	r := NewResolver()
 	wc, err := r.Resolve(context.Background(), ResolveParams{
 		AgentID:    "agent-pre",
+		AgentType:  "predefined",
 		UserID:     "user-1",
+		TenantID:   "tenant-uuid-1",
+		TenantSlug: "acme",
 		PeerKind:   "direct",
 		BaseDir:    base,
 	})
@@ -56,7 +81,7 @@ func TestResolve_PredefinedShared(t *testing.T) {
 	}
 
 	// Predefined = shared, no user subdir
-	want := filepath.Join(base, "agent-pre")
+	want := filepath.Join(base, "tenants", "acme", "agent-pre")
 	if wc.ActivePath != want {
 		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
 	}
@@ -68,8 +93,11 @@ func TestResolve_TeamShared(t *testing.T) {
 	teamID := "team-abc"
 	wc, err := r.Resolve(context.Background(), ResolveParams{
 		AgentID:    "agent-1",
+		AgentType:  "open",
 		UserID:     "user-1",
 		ChatID:     "chat-1",
+		TenantID:   "tenant-uuid-1",
+		TenantSlug: "acme",
 		PeerKind:   "direct",
 		TeamID:     &teamID,
 		TeamConfig: &TeamWorkspaceConfig{WorkspaceScope: "shared"},
@@ -79,7 +107,7 @@ func TestResolve_TeamShared(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := filepath.Join(base, "teams", "team-abc")
+	want := filepath.Join(base, "tenants", "acme", "teams", "team-abc")
 	if wc.ActivePath != want {
 		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
 	}
@@ -100,8 +128,11 @@ func TestResolve_TeamIsolated(t *testing.T) {
 	teamID := "team-abc"
 	wc, err := r.Resolve(context.Background(), ResolveParams{
 		AgentID:    "agent-1",
+		AgentType:  "open",
 		UserID:     "user-1",
 		ChatID:     "chat-1",
+		TenantID:   "tenant-uuid-1",
+		TenantSlug: "acme",
 		PeerKind:   "direct",
 		TeamID:     &teamID,
 		TeamConfig: &TeamWorkspaceConfig{WorkspaceScope: "isolated"},
@@ -111,7 +142,7 @@ func TestResolve_TeamIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	teamRoot := filepath.Join(base, "teams", "team-abc")
+	teamRoot := filepath.Join(base, "tenants", "acme", "teams", "team-abc")
 	want := filepath.Join(teamRoot, "chat-1")
 	if wc.ActivePath != want {
 		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
@@ -132,6 +163,7 @@ func TestResolve_Delegation(t *testing.T) {
 	r := NewResolver()
 	wc, err := r.Resolve(context.Background(), ResolveParams{
 		AgentID:   "agent-1",
+		AgentType: "open",
 		UserID:    "user-1",
 		BaseDir:   base,
 		DelegateCtx: &DelegateContext{
@@ -183,7 +215,6 @@ func TestResolve_EnforcementLabel(t *testing.T) {
 		{"team_shared", ScopeTeam, true, "shared team workspace"},
 		{"team_isolated", ScopeTeam, false, "isolated team workspace"},
 		{"delegate", ScopeDelegate, false, "delegated task"},
-		{"project", ScopeProject, false, "project workspace"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -206,80 +237,43 @@ func TestResolve_EmptyBaseDir(t *testing.T) {
 	}
 }
 
-func TestResolve_DefaultUser(t *testing.T) {
+func TestResolve_MasterTenant(t *testing.T) {
 	base := t.TempDir()
 	r := NewResolver()
 	wc, err := r.Resolve(context.Background(), ResolveParams{
-		AgentID:  "agent-1",
-		UserID:   "user-1",
-		PeerKind: "direct",
-		BaseDir:  base,
+		AgentID:   "agent-1",
+		AgentType: "open",
+		UserID:    "user-1",
+		TenantID:  masterTenantID,
+		PeerKind:  "direct",
+		BaseDir:   base,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// v4 personal scope shares the agent directory across users; no per-user segment.
-	want := filepath.Join(base, "agent-1")
+	// Master tenant = base dir (no tenants/ prefix)
+	want := filepath.Join(base, "agent-1", "user-1")
 	if wc.ActivePath != want {
 		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
 	}
 }
 
-// TestResolve_ProjectPriority verifies that when ProjectID + ProjectSlug are set
-// the workspace resolver routes the session to the project workspace path and
-// returns ScopeProject — not the personal or team branch.
-func TestResolve_ProjectPriority(t *testing.T) {
-	base := t.TempDir()
-	// Override workspace root so ProjectWorkspacePath resolves under base.
-	t.Setenv("GOCLAW_WORKSPACE_ROOT", base)
-
-	projectID := uuid.MustParse("01900000-0000-7000-8000-000000000001")
-	slug := "my-project"
-
-	r := NewResolver()
-	wc, err := r.Resolve(context.Background(), ResolveParams{
-		AgentID:     "agent-1",
-		UserID:      "user-1",
-		PeerKind:    "direct",
-		BaseDir:     base,
-		ProjectID:   &projectID,
-		ProjectSlug: slug,
-	})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if wc.Scope != ScopeProject {
-		t.Errorf("Scope = %q, want project", wc.Scope)
-	}
-	if wc.ProjectID == nil || *wc.ProjectID != projectID {
-		t.Errorf("ProjectID = %v, want %v", wc.ProjectID, projectID)
-	}
-	if wc.ProjectSlug != slug {
-		t.Errorf("ProjectSlug = %q, want %q", wc.ProjectSlug, slug)
-	}
-	// Active path must be under <base>/projects/<slug>
-	want := filepath.Join(base, "projects", slug)
-	if wc.ActivePath != want {
-		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
-	}
-	assertDirExists(t, wc.ActivePath)
-}
-
-func TestResolve_SingleTenantPath(t *testing.T) {
+func TestResolve_EmptyTenantID(t *testing.T) {
 	base := t.TempDir()
 	r := NewResolver()
 	wc, err := r.Resolve(context.Background(), ResolveParams{
-		AgentID:  "agent-1",
-		UserID:   "user-1",
-		PeerKind: "direct",
-		BaseDir:  base,
+		AgentID:   "agent-1",
+		AgentType: "open",
+		UserID:    "user-1",
+		PeerKind:  "direct",
+		BaseDir:   base,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := filepath.Join(base, "agent-1")
+	want := filepath.Join(base, "agent-1", "user-1")
 	if wc.ActivePath != want {
 		t.Errorf("ActivePath = %q, want %q", wc.ActivePath, want)
 	}

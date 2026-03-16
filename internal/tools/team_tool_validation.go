@@ -102,10 +102,6 @@ func (m *TeamToolManager) ProcessPendingTasks(ctx context.Context, teamID uuid.U
 		if pk, ok := task.Metadata[TaskMetaPeerKind].(string); ok {
 			taskPeerKind = pk
 		}
-		taskLocalKey := ""
-		if lk, ok := task.Metadata[TaskMetaLocalKey].(string); ok {
-			taskLocalKey = lk
-		}
 		m.broadcastTeamEvent(ctx, protocol.EventTeamTaskDispatched, BuildTaskEventPayload(
 			teamID.String(), task.ID.String(),
 			store.TeamTaskStatusInProgress,
@@ -115,7 +111,6 @@ func (m *TeamToolManager) ProcessPendingTasks(ctx context.Context, teamID uuid.U
 			WithChannel(task.Channel),
 			WithChatID(task.ChatID),
 			WithPeerKind(taskPeerKind),
-			WithLocalKey(taskLocalKey),
 		))
 		// Restore leader's trace context from task metadata (ctx here is the
 		// consumer goroutine context which has no trace after the turn ends).
@@ -188,6 +183,7 @@ func (m *TeamToolManager) notifyLeaderCycleError(ctx context.Context, teamID uui
 		AgentID:  leadAgent.AgentKey,
 		UserID:   team.CreatedBy,
 		PeerKind: ToolPeerKindFromCtx(ctx),
+		TenantID: store.TenantIDFromContext(ctx),
 		Content:  content,
 	})
 }

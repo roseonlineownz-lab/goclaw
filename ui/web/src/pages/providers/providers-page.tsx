@@ -69,10 +69,6 @@ function ProviderListView() {
     () => getChatGPTOAuthPoolOwnership(providers),
     [providers],
   );
-  const selectablePoolOwnership = useMemo(
-    () => getChatGPTOAuthPoolOwnership(providers, { enabledOnly: true }),
-    [providers],
-  );
   const oauthAvailabilityByName = useMemo(
     () => new Map(statuses.map((status) => [status.provider.name, status.availability])),
     [statuses],
@@ -82,11 +78,10 @@ function ProviderListView() {
     () => providers.filter(
       (p) =>
         p.provider_type === "chatgpt_oauth" &&
-        p.enabled &&
-        !selectablePoolOwnership.membersByOwner.has(p.name) &&
-        !selectablePoolOwnership.ownerByMember.has(p.name),
+        !poolOwnership.membersByOwner.has(p.name) &&
+        !poolOwnership.ownerByMember.has(p.name),
     ),
-    [providers, selectablePoolOwnership],
+    [providers, poolOwnership],
   );
 
   const filtered = useMemo(() => providers.filter(
@@ -212,7 +207,7 @@ function ProviderListView() {
                       return owner?.display_name || owner?.name || ownerName;
                     })(),
                     memberCount: poolOwnership.membersByOwner.get(p.name)?.length ?? 0,
-                    strategy: poolOwnership.strategyByOwner.get(p.name) ?? "priority_order",
+                    strategy: poolOwnership.strategyByOwner.get(p.name) ?? "primary_first",
                     connectorPosition: memberConnectorByName.get(p.name) ?? "none",
                     quota: quotaByName.get(p.name),
                     quotaLoading: oauthAvailabilityByName.get(p.name) === "ready"
@@ -221,9 +216,8 @@ function ProviderListView() {
                   } : undefined}
                   showPoolHint={
                     p.provider_type === "chatgpt_oauth" &&
-                    p.enabled &&
-                    !selectablePoolOwnership.ownerByMember.has(p.name) &&
-                    !selectablePoolOwnership.membersByOwner.has(p.name) &&
+                    !poolOwnership.ownerByMember.has(p.name) &&
+                    !poolOwnership.membersByOwner.has(p.name) &&
                     unpooledProviders.length >= 2
                   }
                   onClick={() => navigate(`/providers/${p.id}`)}

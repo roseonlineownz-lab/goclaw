@@ -99,7 +99,7 @@ func TestSafeWalkWorkspace_ExcludedPaths(t *testing.T) {
 
 func TestSafeWalkWorkspace_MaxFileLimit(t *testing.T) {
 	dir := t.TempDir()
-	for i := range 20 {
+	for i := 0; i < 20; i++ {
 		writeFile(t, dir, filepath.Join("files", string(rune('a'+i))+".txt"), "data")
 	}
 
@@ -119,11 +119,10 @@ func TestSafeWalkWorkspace_MaxFileLimit(t *testing.T) {
 
 func TestSafeWalkWorkspace_MaxTotalBytes(t *testing.T) {
 	dir := t.TempDir()
-	// Create files that exceed total byte limit. Use a whitelisted extension
-	// (.txt) so the files actually register — the extension whitelist would skip .bin.
+	// Create files that exceed total byte limit.
 	bigContent := make([]byte, 1024) // 1KB each
-	for i := range 10 {
-		writeFile(t, dir, filepath.Join("data", string(rune('a'+i))+".txt"), string(bigContent))
+	for i := 0; i < 10; i++ {
+		writeFile(t, dir, filepath.Join("data", string(rune('a'+i))+".bin"), string(bigContent))
 	}
 
 	opts := DefaultWalkOptions()
@@ -143,7 +142,7 @@ func TestSafeWalkWorkspace_MaxTotalBytes(t *testing.T) {
 
 func TestSafeWalkWorkspace_ContextCancel(t *testing.T) {
 	dir := t.TempDir()
-	for i := range 50 {
+	for i := 0; i < 50; i++ {
 		writeFile(t, dir, filepath.Join("files", string(rune('a'+i/26))+"_"+string(rune('a'+i%26))+".txt"), "data")
 	}
 
@@ -159,10 +158,9 @@ func TestSafeWalkWorkspace_ContextCancel(t *testing.T) {
 func TestSafeWalkWorkspace_PerFileSizeSkip(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "small.txt", "ok")
-	// Create a file larger than MaxFileBytes. Use a whitelisted extension
-	// (.txt) so the extension whitelist doesn't short-circuit before the size check.
+	// Create a file larger than MaxFileBytes
 	bigContent := make([]byte, 100*1024) // 100KB
-	writeFile(t, dir, "huge.txt", string(bigContent))
+	writeFile(t, dir, "huge.bin", string(bigContent))
 
 	opts := DefaultWalkOptions()
 	opts.MaxFileBytes = 50 * 1024 // 50KB per-file limit
@@ -208,7 +206,7 @@ func TestIsExcludedPath(t *testing.T) {
 		{"images/screenshot.png", false},
 		{"teams/abc-123/doc.md", false},
 		{"soul-notes.md", false},
-		{"deep/SOUL.md", false}, // not root-level context file
+		{"deep/SOUL.md", false},   // not root-level context file
 		{".uploads/photo.jpg", false},
 		{"report.pdf", false},
 	}

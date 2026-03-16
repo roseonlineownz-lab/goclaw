@@ -15,6 +15,7 @@ import {
   FileSidebar,
   FileEditor,
   RegenerateDialog,
+  OpenAgentEmptyState,
 } from "./file-sections";
 
 interface AgentFilesTabProps {
@@ -47,14 +48,21 @@ export function AgentFilesTab({
   const [resummonOpen, setResummonOpen] = useState(false);
   const [resummonning, setResummonning] = useState(false);
 
+  const isOpen = agent.agent_type === "open";
+  const isPredefined = agent.agent_type === "predefined";
   const isOwner = agent.owner_id === userId;
-  const canEdit = isOwner;
+  const canEdit = !isPredefined || isOwner;
 
   const displayFiles = files.filter(
-    (f) => f.name !== "MEMORY.json" && f.name !== "BOOTSTRAP.md",
+    (f) =>
+      f.name !== "MEMORY.json" &&
+      !(isPredefined && f.name === "BOOTSTRAP.md"),
   );
+  const allMissing =
+    displayFiles.length > 0 && displayFiles.every((f) => f.missing);
 
-  const isUserScoped = (fileName: string) => fileName === "USER.md";
+  const isUserScoped = (fileName: string) =>
+    isPredefined && fileName === "USER.md";
 
   useEffect(() => {
     if (!selectedFile) return;
@@ -96,7 +104,11 @@ export function AgentFilesTab({
     }
   };
 
-  const aiActions = isOwner && (
+  if (isOpen && allMissing) {
+    return <OpenAgentEmptyState files={displayFiles} />;
+  }
+
+  const aiActions = isPredefined && isOwner && (
     <>
       {onResummon && (
         <Button
@@ -125,7 +137,7 @@ export function AgentFilesTab({
 
   return (
     <div className="space-y-3">
-      {!isOwner && (
+      {isPredefined && !isOwner && (
         <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
           <Lock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="text-sm">
@@ -152,7 +164,7 @@ export function AgentFilesTab({
           canEdit={canEdit}
           onSave={handleSave}
           headerActions={aiActions || undefined}
-          contactSearchEnabled={true}
+          contactSearchEnabled={isPredefined}
         />
       </div>
 

@@ -6,20 +6,25 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 const contactResolveCacheTTL = 60 * time.Second
 
-// contactResolveEntry holds a cached user resolution result.
+// contactResolveEntry holds a cached tenant-user resolution result.
 type contactResolveEntry struct {
 	tenantUserID string // empty = not merged
 	fetched      time.Time
 }
 
-// contactResolveCache is a TTL cache for contact→user resolution.
+// contactResolveCache is a TTL cache for contact→tenant-user resolution.
+// Mirrors the pattern in config_permissions.go (permCacheTTL).
 type contactResolveCache struct {
 	mu    sync.RWMutex
-	items map[string]contactResolveEntry // key: "channelType:senderID"
+	items map[string]contactResolveEntry // key: "tenantID:channelType:senderID"
 }
 
 func newContactResolveCache() *contactResolveCache {
@@ -41,7 +46,7 @@ func (c *contactResolveCache) set(key, tenantUserID string) {
 	c.mu.Unlock()
 }
 
-// InvalidateContactResolveCache clears all cached contact→user resolutions.
+// InvalidateContactResolveCache clears all cached contact→tenant-user resolutions.
 // Call after merge/unmerge operations.
 func (s *PGContactStore) InvalidateContactResolveCache() {
 	if s.resolveCache == nil {
@@ -52,37 +57,46 @@ func (s *PGContactStore) InvalidateContactResolveCache() {
 	s.resolveCache.mu.Unlock()
 }
 
-// ResolveTenantUserID returns the merged user UUID (as string) for a given
-// (channelType, senderID) lookup, or "" if the contact is missing or unmerged.
-// Result is cached in-memory for 60s (TTL) and invalidated on merge.
+// ResolveTenantUserID looks up a contact's merged tenant-user identity.
+// Uses an in-memory cache with 60s TTL to avoid per-message DB queries.
 func (s *PGContactStore) ResolveTenantUserID(ctx context.Context, channelType, senderID string) (string, error) {
-	if channelType == "" || senderID == "" {
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
 		return "", nil
 	}
-	key := channelType + ":" + senderID
+	cacheKey := tid.String() + ":" + channelType + ":" + senderID
+
+	// Check cache.
 	if s.resolveCache != nil {
-		if hit, ok := s.resolveCache.get(key); ok {
-			return hit, nil
+		if resolved, ok := s.resolveCache.get(cacheKey); ok {
+			return resolved, nil
 		}
 	}
-	var merged string
+
+	// Query DB: join channel_contacts → tenant_users via merged_id.
+	var tenantUserID string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT merged_id::text FROM channel_contacts
-		  WHERE channel_type = $1 AND sender_id = $2 AND merged_id IS NOT NULL
-		  LIMIT 1`,
-		channelType, senderID,
-	).Scan(&merged)
+		`SELECT tu.user_id FROM channel_contacts cc
+		 JOIN tenant_users tu ON cc.merged_id = tu.id
+		 WHERE cc.tenant_id = $1 AND cc.channel_type = $2 AND cc.sender_id = $3
+		 AND cc.merged_id IS NOT NULL`,
+		tid, channelType, senderID,
+	).Scan(&tenantUserID)
+
 	if errors.Is(err, sql.ErrNoRows) {
+		// Not merged — cache the negative result too.
 		if s.resolveCache != nil {
-			s.resolveCache.set(key, "")
+			s.resolveCache.set(cacheKey, "")
 		}
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
+
+	// Cache positive result.
 	if s.resolveCache != nil {
-		s.resolveCache.set(key, merged)
+		s.resolveCache.set(cacheKey, tenantUserID)
 	}
-	return merged, nil
+	return tenantUserID, nil
 }

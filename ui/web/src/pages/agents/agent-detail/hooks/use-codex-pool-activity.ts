@@ -58,7 +58,7 @@ export function useCodexPoolActivity(agentId: string, limit = 18, enabled = true
   return {
     ...query,
     data: query.data ?? {
-      strategy: "priority_order" as const,
+      strategy: "primary_first" as const,
       pool_providers: [],
       stats_sample_size: 0,
       provider_counts: [],

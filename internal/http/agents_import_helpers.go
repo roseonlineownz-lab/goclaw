@@ -5,12 +5,15 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/store/pg"
 )
 
@@ -176,6 +179,15 @@ func rawOrNil(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return raw
+}
+
+// importTenantID returns the tenant UUID from context, falling back to MasterTenantID.
+func importTenantID(ctx context.Context) uuid.UUID {
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		return store.MasterTenantID
+	}
+	return tid
 }
 
 // nullJSON returns nil if raw is empty (for JSONB nullable columns), otherwise returns raw.

@@ -4,13 +4,12 @@ import { useHttp } from "@/hooks/use-ws";
 import { queryKeys } from "@/lib/query-keys";
 import type { ComboboxOption } from "@/components/ui/combobox";
 
-/** User search result from channel_contacts. */
+/** Unified search result from contacts + tenant_users. */
 export interface UserPickerItem {
   id: string;
-  uuid?: string;
   display_name?: string;
   username?: string;
-  source: "contact";
+  source: "contact" | "tenant_user";
   channel_type?: string;
   peer_kind?: string;
   merged_tenant_user_id?: string;
@@ -18,16 +17,16 @@ export interface UserPickerItem {
 }
 
 /**
- * User picker hook — searches channel_contacts.
+ * Unified user picker hook — searches both channel_contacts and tenant_users.
  * - Empty search: returns 30 most recent
  * - With search: debounced server-side ILIKE search
+ * - Deduplicates merged contacts (shows tenant_user badge instead)
  */
-export function useUserPicker(
-  search: string,
-  peerKind?: string,
-  source?: "contact",
-  valueMode?: "user_id" | "uuid",
-) {
+/**
+ * @param source - Filter by source: "contact" | "tenant_user" | undefined (both).
+ *   Use "tenant_user" for merge dialog / add tenant user (contacts excluded).
+ */
+export function useUserPicker(search: string, peerKind?: string, source?: "contact" | "tenant_user") {
   const http = useHttp();
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
@@ -52,20 +51,19 @@ export function useUserPicker(
 
   const results = data ?? [];
 
-  /** Format results as ComboboxOptions with source badges.
-   *  Committed value = uuid field when valueMode === "uuid" and uuid is present,
-   *  otherwise user_id string. */
+  /** Format results as ComboboxOptions with source badges. */
   const options: ComboboxOption[] = useMemo(() =>
     results.map((r) => {
       const parts: string[] = [];
       if (r.display_name) parts.push(r.display_name);
       if (r.username) parts.push(`@${r.username}`);
       parts.push(`(${r.id})`);
-      if (r.channel_type) parts.push(`[${r.channel_type}]`);
-      const value = valueMode === "uuid" && r.uuid ? r.uuid : r.id;
-      return { value, label: parts.join(" ") };
+      if (r.source === "contact" && r.channel_type) parts.push(`[${r.channel_type}]`);
+      if (r.source === "tenant_user") parts.push("[tenant]");
+      if (r.merged_tenant_user_id) parts.push(`→ ${r.merged_tenant_user_id}`);
+      return { value: r.id, label: parts.join(" ") };
     }),
-    [results, valueMode],
+    [results],
   );
 
   return { results, options, loading: isLoading };

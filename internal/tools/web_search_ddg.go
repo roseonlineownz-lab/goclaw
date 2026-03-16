@@ -14,21 +14,18 @@ import (
 // --- DuckDuckGo Search Provider ---
 
 type duckDuckGoSearchProvider struct {
-	maxResults int
-	client     *http.Client
+	client *http.Client
 }
 
-func newDuckDuckGoSearchProvider(maxResults int) *duckDuckGoSearchProvider {
+func newDuckDuckGoSearchProvider() *duckDuckGoSearchProvider {
 	return &duckDuckGoSearchProvider{
-		maxResults: normalizeProviderMaxResults(maxResults),
-		client:     &http.Client{Timeout: time.Duration(searchTimeoutSeconds) * time.Second},
+		client: &http.Client{Timeout: time.Duration(searchTimeoutSeconds) * time.Second},
 	}
 }
 
-func (p *duckDuckGoSearchProvider) Name() string { return searchProviderDuckDuckGo }
+func (p *duckDuckGoSearchProvider) Name() string { return "duckduckgo" }
 
 func (p *duckDuckGoSearchProvider) Search(ctx context.Context, params searchParams) ([]searchResult, error) {
-	count := clampProviderResultCount(params.Count, p.maxResults)
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(params.Query))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
@@ -48,7 +45,7 @@ func (p *duckDuckGoSearchProvider) Search(ctx context.Context, params searchPara
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	return extractDDGResults(string(body), count)
+	return extractDDGResults(string(body), params.Count)
 }
 
 var (

@@ -5,7 +5,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
@@ -16,7 +15,7 @@ func makeBridgeTool(serverName, toolName string) *BridgeTool {
 		Name:        toolName,
 		Description: "test tool " + toolName,
 		InputSchema: mcpgo.ToolInputSchema{Type: "object"},
-	}, nil, "", 30, nil, uuid.Nil, nil)
+	}, nil, "", 30, nil)
 }
 
 // setupSearchModeManager returns a Manager already in search mode with the given

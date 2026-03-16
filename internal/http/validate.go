@@ -3,8 +3,6 @@ package http
 import (
 	"log/slog"
 	"regexp"
-
-	"github.com/nextlevelbuilder/goclaw/internal/audio"
 )
 
 var slugRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
@@ -29,19 +27,12 @@ func filterAllowedKeys(updates map[string]any, allowed map[string]bool) map[stri
 	return filtered
 }
 
-// validateAgentTTSParams is a thin wrapper around audio.ValidateAgentTTSParams
-// so HTTP handlers can call it without importing the audio package directly.
-// The allow-list is owned by internal/audio (single source of truth, Action D).
-func validateAgentTTSParams(ttsParams map[string]any) error {
-	return audio.ValidateAgentTTSParams(ttsParams)
-}
-
 // --- Field allowlists for update endpoints ---
 // Each map lists the columns that HTTP clients may update.
 // Immutable fields (id, owner_id, created_at, deleted_at) are excluded.
 
 var agentAllowedFields = map[string]bool{
-	"agent_key": true, "display_name": true,
+	"agent_key": true, "agent_type": true, "display_name": true,
 	"provider": true, "model": true, "status": true,
 	"context_window": true, "max_tool_iterations": true,
 	"workspace": true,
@@ -52,7 +43,7 @@ var agentAllowedFields = map[string]bool{
 	// Promoted from other_config
 	"emoji": true, "agent_description": true, "thinking_level": true, "max_tokens": true,
 	"self_evolve": true, "skill_evolve": true, "skill_nudge_interval": true,
-	"reasoning_config": true, "share_workspace": true, "share_memory": true, "chatgpt_oauth_routing": true,
+	"reasoning_config": true, "workspace_sharing": true, "chatgpt_oauth_routing": true,
 	"shell_deny_groups": true, "kg_dedup_config": true,
 }
 

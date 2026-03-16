@@ -83,6 +83,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
   return (
     <div
       className="not-prose my-3 overflow-x-auto rounded-lg border border-border/60 bg-background p-4"
+      // eslint-disable-next-line react/no-danger
       dangerouslySetInnerHTML={{ __html: svg ?? "" }}
     />
   );

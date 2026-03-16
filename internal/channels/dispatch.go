@@ -9,9 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
-	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // WebhookRoute holds a path and handler pair for mounting on the main gateway mux.
@@ -70,17 +68,7 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 				}
 			}
 
-			sendCtx := ctx
-
-			// Add agent audio context for per-agent TTS voice override
-			if msg.AgentID != uuid.Nil && len(msg.AgentOtherConfig) > 0 {
-				sendCtx = store.WithAgentAudio(sendCtx, store.AgentAudioSnapshot{
-					AgentID:     msg.AgentID,
-					OtherConfig: msg.AgentOtherConfig,
-				})
-			}
-
-			if err := channel.Send(sendCtx, msg); err != nil {
+			if err := channel.Send(ctx, msg); err != nil {
 				slog.Error("error sending message to channel",
 					"channel", msg.Channel,
 					"chat_id", msg.ChatID,
@@ -98,7 +86,7 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 						Content:  formatChannelSendError(err),
 						Metadata: sendErrorMeta(msg.Metadata),
 					}
-					if err2 := channel.Send(sendCtx, notifyMsg); err2 != nil {
+					if err2 := channel.Send(ctx, notifyMsg); err2 != nil {
 						slog.Warn("failed to send error notification",
 							"channel", msg.Channel, "error", err2)
 					}

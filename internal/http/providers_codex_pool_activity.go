@@ -53,7 +53,7 @@ func (h *ProvidersHandler) handleProviderCodexPoolActivity(w http.ResponseWriter
 	const maxPoolCandidates = 20
 	settings := store.ParseChatGPTOAuthProviderSettings(provider.Settings)
 	poolCandidates := []string{provider.Name}
-	strategy := store.ChatGPTOAuthStrategyPriority
+	strategy := store.ChatGPTOAuthStrategyPrimaryFirst
 	if settings != nil && settings.CodexPool != nil {
 		if settings.CodexPool.Strategy != "" {
 			strategy = settings.CodexPool.Strategy
@@ -69,7 +69,7 @@ func (h *ProvidersHandler) handleProviderCodexPoolActivity(w http.ResponseWriter
 	}
 
 	// Filter to registered Codex providers
-	poolProviders := registeredCodexPoolProviders(h.providerReg, poolCandidates)
+	poolProviders := registeredCodexPoolProviders(h.providerReg, provider.TenantID, poolCandidates)
 	if len(poolProviders) == 0 {
 		writeJSON(w, http.StatusOK, emptyProviderPoolActivityResponse())
 		return
@@ -83,7 +83,7 @@ func (h *ProvidersHandler) handleProviderCodexPoolActivity(w http.ResponseWriter
 	}
 	statsLimit := maxInt(limit, codexPoolRuntimeHealthSampleSize)
 
-	rawSpans, err := h.tracingStore.ListCodexPoolSpansByProviders(r.Context(), poolProviders, statsLimit)
+	rawSpans, err := h.tracingStore.ListCodexPoolSpansByProviders(r.Context(), provider.TenantID, poolProviders, statsLimit)
 	if err != nil {
 		slog.Error("providers.codex_pool_activity", "provider", provider.Name, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgFailedToList, "pool activity")})
@@ -125,7 +125,7 @@ func (h *ProvidersHandler) handleProviderCodexPoolActivity(w http.ResponseWriter
 
 func emptyProviderPoolActivityResponse() map[string]any {
 	return map[string]any{
-		"strategy":          store.ChatGPTOAuthStrategyPriority,
+		"strategy":          store.ChatGPTOAuthStrategyPrimaryFirst,
 		"pool_providers":    []string{},
 		"stats_sample_size": 0,
 		"provider_counts":   []codexPoolProviderCount{},

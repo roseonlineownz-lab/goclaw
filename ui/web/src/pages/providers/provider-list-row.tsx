@@ -33,7 +33,8 @@ interface ProviderListRowProps {
 
 function strategyLabelKey(strategy: EffectiveChatGPTOAuthRoutingStrategy): string {
   if (strategy === "round_robin") return "list.strategy.roundRobin";
-  return "list.strategy.priorityOrder";
+  if (strategy === "priority_order") return "list.strategy.priorityOrder";
+  return "list.strategy.primaryFirst";
 }
 
 export function ProviderListRow({

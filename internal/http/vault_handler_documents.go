@@ -11,6 +11,7 @@ import (
 // handleListAllDocuments lists vault documents across all agents in tenant.
 // Optional query param agent_id to filter by specific agent.
 func (h *VaultHandler) handleListAllDocuments(w http.ResponseWriter, r *http.Request) {
+	tenantID := store.TenantIDFromContext(r.Context())
 	agentID := r.URL.Query().Get("agent_id")
 	opts := h.parseListOpts(r)
 
@@ -21,11 +22,11 @@ func (h *VaultHandler) handleListAllDocuments(w http.ResponseWriter, r *http.Req
 		}
 	}
 	// Non-owner without team_id filter: show personal + user's teams.
-	if opts.TeamID == nil && !store.IsRootRole(r.Context()) {
+	if opts.TeamID == nil && !store.IsOwnerRole(r.Context()) {
 		h.applyNonOwnerTeamScope(r.Context(), &opts)
 	}
 
-	docs, err := h.store.ListDocuments(r.Context(), agentID, opts)
+	docs, err := h.store.ListDocuments(r.Context(), tenantID.String(), agentID, opts)
 	if err != nil {
 		slog.Warn("vault.list_all failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -34,7 +35,7 @@ func (h *VaultHandler) handleListAllDocuments(w http.ResponseWriter, r *http.Req
 	if docs == nil {
 		docs = []store.VaultDocument{}
 	}
-	total, cntErr := h.store.CountDocuments(r.Context(), agentID, opts)
+	total, cntErr := h.store.CountDocuments(r.Context(), tenantID.String(), agentID, opts)
 	if cntErr != nil {
 		slog.Warn("vault.count failed", "error", cntErr)
 	}
@@ -43,6 +44,7 @@ func (h *VaultHandler) handleListAllDocuments(w http.ResponseWriter, r *http.Req
 
 // handleListDocuments lists vault documents for a specific agent.
 func (h *VaultHandler) handleListDocuments(w http.ResponseWriter, r *http.Request) {
+	tenantID := store.TenantIDFromContext(r.Context())
 	agentID := r.PathValue("agentID")
 	opts := h.parseListOpts(r)
 
@@ -51,11 +53,11 @@ func (h *VaultHandler) handleListDocuments(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	if opts.TeamID == nil && !store.IsRootRole(r.Context()) {
+	if opts.TeamID == nil && !store.IsOwnerRole(r.Context()) {
 		h.applyNonOwnerTeamScope(r.Context(), &opts)
 	}
 
-	docs, err := h.store.ListDocuments(r.Context(), agentID, opts)
+	docs, err := h.store.ListDocuments(r.Context(), tenantID.String(), agentID, opts)
 	if err != nil {
 		slog.Warn("vault.list failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -64,7 +66,7 @@ func (h *VaultHandler) handleListDocuments(w http.ResponseWriter, r *http.Reques
 	if docs == nil {
 		docs = []store.VaultDocument{}
 	}
-	total, cntErr := h.store.CountDocuments(r.Context(), agentID, opts)
+	total, cntErr := h.store.CountDocuments(r.Context(), tenantID.String(), agentID, opts)
 	if cntErr != nil {
 		slog.Warn("vault.count failed", "error", cntErr)
 	}
@@ -73,10 +75,11 @@ func (h *VaultHandler) handleListDocuments(w http.ResponseWriter, r *http.Reques
 
 // handleGetDocument returns a single vault document by ID, scoped to the agent.
 func (h *VaultHandler) handleGetDocument(w http.ResponseWriter, r *http.Request) {
+	tenantID := store.TenantIDFromContext(r.Context())
 	agentID := r.PathValue("agentID")
 	docID := r.PathValue("docID")
 
-	doc, err := h.store.GetDocumentByID(r.Context(), docID)
+	doc, err := h.store.GetDocumentByID(r.Context(), tenantID.String(), docID)
 	if err != nil {
 		slog.Warn("vault.get failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -86,16 +89,8 @@ func (h *VaultHandler) handleGetDocument(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "document not found"})
 		return
 	}
-	// Personal-scope docs belong to the owner only. Non-root callers can only read their own.
-	if doc.OwnerUserID != nil && *doc.OwnerUserID != "" && !store.IsRootRole(r.Context()) {
-		callerID := store.UserIDFromContext(r.Context())
-		if callerID != *doc.OwnerUserID {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "document not found"})
-			return
-		}
-	}
 	// Verify team boundary — non-owner must be team member to view team docs.
-	if doc.TeamID != nil && *doc.TeamID != "" && !store.IsRootRole(r.Context()) {
+	if doc.TeamID != nil && *doc.TeamID != "" && !store.IsOwnerRole(r.Context()) {
 		if !h.validateTeamMembership(r.Context(), w, *doc.TeamID) {
 			return
 		}
@@ -106,6 +101,7 @@ func (h *VaultHandler) handleGetDocument(w http.ResponseWriter, r *http.Request)
 // handleCreateDocument creates a new vault document.
 func (h *VaultHandler) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	locale := extractLocale(r)
+	tenantID := store.TenantIDFromContext(r.Context())
 	agentID := r.PathValue("agentID")
 
 	var body struct {
@@ -143,19 +139,12 @@ func (h *VaultHandler) handleCreateDocument(w http.ResponseWriter, r *http.Reque
 	}
 
 	doc := &store.VaultDocument{
+		TenantID: tenantID.String(),
 		Path:     body.Path,
 		Title:    body.Title,
 		DocType:  body.DocType,
 		Scope:    body.Scope,
 		Metadata: body.Metadata,
-	}
-	// Bind personal-scope docs to the authenticated caller before any scope promotion,
-	// so that scope=personal always carries an owner regardless of agent/team context.
-	if body.Scope == "personal" {
-		callerID := store.UserIDFromContext(r.Context())
-		if callerID != "" {
-			doc.OwnerUserID = &callerID
-		}
 	}
 	if agentID != "" {
 		doc.AgentID = &agentID
@@ -177,7 +166,7 @@ func (h *VaultHandler) handleCreateDocument(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	// Re-fetch by ID (set via RETURNING) — unambiguous even when same path exists across teams.
-	created, _ := h.store.GetDocumentByID(r.Context(), doc.ID)
+	created, _ := h.store.GetDocumentByID(r.Context(), tenantID.String(), doc.ID)
 	if created != nil {
 		writeJSON(w, http.StatusCreated, created)
 	} else {
@@ -188,10 +177,11 @@ func (h *VaultHandler) handleCreateDocument(w http.ResponseWriter, r *http.Reque
 // handleUpdateDocument updates an existing vault document.
 func (h *VaultHandler) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	locale := extractLocale(r)
+	tenantID := store.TenantIDFromContext(r.Context())
 	agentID := r.PathValue("agentID")
 	docID := r.PathValue("docID")
 
-	existing, err := h.store.GetDocumentByID(r.Context(), docID)
+	existing, err := h.store.GetDocumentByID(r.Context(), tenantID.String(), docID)
 	if err != nil || existing == nil || (agentID != "" && existing.AgentID != nil && *existing.AgentID != agentID) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "document not found"})
 		return
@@ -219,7 +209,7 @@ func (h *VaultHandler) handleUpdateDocument(w http.ResponseWriter, r *http.Reque
 	}
 	if body.TeamID != nil {
 		// Only owner/admin can change team assignment.
-		if !store.IsRootRole(r.Context()) {
+		if !store.IsOwnerRole(r.Context()) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "only owner can change document team assignment"})
 			return
 		}
@@ -240,7 +230,7 @@ func (h *VaultHandler) handleUpdateDocument(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	updated, _ := h.store.GetDocumentByID(r.Context(), docID)
+	updated, _ := h.store.GetDocumentByID(r.Context(), tenantID.String(), docID)
 	if updated != nil {
 		writeJSON(w, http.StatusOK, updated)
 	} else {
@@ -250,17 +240,18 @@ func (h *VaultHandler) handleUpdateDocument(w http.ResponseWriter, r *http.Reque
 
 // handleDeleteDocument deletes a vault document by ID.
 func (h *VaultHandler) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
+	tenantID := store.TenantIDFromContext(r.Context())
 	agentID := r.PathValue("agentID")
 	docID := r.PathValue("docID")
 
-	existing, err := h.store.GetDocumentByID(r.Context(), docID)
+	existing, err := h.store.GetDocumentByID(r.Context(), tenantID.String(), docID)
 	if err != nil || existing == nil || (agentID != "" && existing.AgentID != nil && *existing.AgentID != agentID) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "document not found"})
 		return
 	}
 
 	// Verify team boundary before deletion.
-	if existing.TeamID != nil && *existing.TeamID != "" && !store.IsRootRole(r.Context()) {
+	if existing.TeamID != nil && *existing.TeamID != "" && !store.IsOwnerRole(r.Context()) {
 		if !h.validateTeamMembership(r.Context(), w, *existing.TeamID) {
 			return
 		}
@@ -273,7 +264,7 @@ func (h *VaultHandler) handleDeleteDocument(w http.ResponseWriter, r *http.Reque
 	if existing.AgentID != nil {
 		deleteAgentID = *existing.AgentID
 	}
-	if err := h.store.DeleteDocument(r.Context(), deleteAgentID, existing.Path); err != nil {
+	if err := h.store.DeleteDocument(r.Context(), tenantID.String(), deleteAgentID, existing.Path); err != nil {
 		slog.Warn("vault.delete failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

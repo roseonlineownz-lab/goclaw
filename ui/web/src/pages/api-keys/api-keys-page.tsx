@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, RefreshCw, Key, Ban, Copy, Check, Code2 } from "lucide-react";
+import { Plus, RefreshCw, Key, Ban, Copy, Check, Building2, Code2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,6 +21,7 @@ import { useMinLoading } from "@/hooks/use-min-loading";
 import { useDeferredLoading } from "@/hooks/use-deferred-loading";
 import { usePagination } from "@/hooks/use-pagination";
 import { useApiKeys } from "./hooks/use-api-keys";
+import { useTenants } from "@/hooks/use-tenants";
 import { formatRelativeTime } from "@/lib/format";
 import type { ApiKeyData } from "@/types/api-key";
 
@@ -49,6 +50,7 @@ export function ApiKeysPage() {
   const { t } = useTranslation("api-keys");
   const { t: tc } = useTranslation("common");
   const { apiKeys, loading, refresh, createApiKey, revokeApiKey } = useApiKeys();
+  const { isOwner, tenants } = useTenants();
 
   const spinning = useMinLoading(loading);
   const showSkeleton = useDeferredLoading(loading && apiKeys.length === 0);
@@ -84,6 +86,11 @@ export function ApiKeysPage() {
     await navigator.clipboard.writeText(newKeyRaw);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const tenantName = (tenantId?: string) => {
+    if (!tenantId) return t("tenantBadgeSystem");
+    return tenants.find((tn) => tn.id === tenantId)?.name ?? t("tenantBadgeUnknown");
   };
 
   return (
@@ -122,6 +129,9 @@ export function ApiKeysPage() {
                 <tr className="border-b bg-muted/50">
                   <th className="px-4 py-3 text-left font-medium">{t("columns.name")}</th>
                   <th className="px-4 py-3 text-left font-medium">{t("columns.scopes")}</th>
+                  {isOwner && (
+                    <th className="px-4 py-3 text-left font-medium">Tenant</th>
+                  )}
                   <th className="px-4 py-3 text-left font-medium">{t("columns.status")}</th>
                   <th className="px-4 py-3 text-left font-medium">{t("columns.expiry")}</th>
                   <th className="px-4 py-3 text-left font-medium">{t("columns.lastUsed")}</th>
@@ -151,6 +161,14 @@ export function ApiKeysPage() {
                           ))}
                         </div>
                       </td>
+                      {isOwner && (
+                        <td className="px-4 py-3">
+                          <Badge variant="outline" className="text-xs gap-1">
+                            <Building2 className="h-3 w-3" />
+                            {tenantName(key.tenant_id)}
+                          </Badge>
+                        </td>
+                      )}
                       <td className="px-4 py-3">
                         <Badge variant={status.variant} className="text-xs">{status.label}</Badge>
                       </td>

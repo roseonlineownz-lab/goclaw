@@ -64,36 +64,6 @@ func RestoreDatabase(ctx context.Context, dsn string, dumpReader io.Reader) erro
 	return nil
 }
 
-// RevokeAllSessionsPostRestore revokes every still-active row in user_sessions
-// after a restore completes. Without this step, a backup taken on day-2 and
-// restored on day-4 would reactivate refresh tokens that were legitimately
-// revoked between days 2 and 4 — defeating refresh-token-rotation safety.
-// RFC 6749 §10.4 implication: revocation isn't a delete, so the rows survive
-// the round-trip; we force re-auth instead.
-//
-// Returns the number of rows updated. A missing user_sessions table (fresh DB
-// with old-schema backup) is treated as a soft warning, not an error.
-func RevokeAllSessionsPostRestore(ctx context.Context, dsn string) (int64, error) {
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return 0, fmt.Errorf("open db: %w", err)
-	}
-	defer db.Close()
-
-	res, err := db.ExecContext(ctx,
-		`UPDATE user_sessions SET revoked_at = NOW() WHERE revoked_at IS NULL`)
-	if err != nil {
-		// undefined_table → restored schema predates the user_sessions table; nothing to revoke.
-		if strings.Contains(err.Error(), "user_sessions") &&
-			strings.Contains(err.Error(), "does not exist") {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("revoke sessions: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
-}
-
 // CheckActiveConnections returns the number of active backend connections to the
 // database (excluding the current connection). Used as a pre-restore safety check.
 func CheckActiveConnections(ctx context.Context, dsn string) (int, error) {

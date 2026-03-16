@@ -4,13 +4,9 @@ package backup
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"os"
-	"strings"
-
-	_ "modernc.org/sqlite"
 )
 
 // RestoreDatabase copies the dump stream directly to the SQLite database file.
@@ -31,33 +27,6 @@ func RestoreDatabase(_ context.Context, dsn string, dumpReader io.Reader) error 
 		return fmt.Errorf("write SQLite db: %w", err)
 	}
 	return nil
-}
-
-// RevokeAllSessionsPostRestore revokes every still-active row in user_sessions
-// after a restore completes. See db_restore.go for full rationale (RFC 6749
-// §10.4 implication — restore must force re-auth).
-func RevokeAllSessionsPostRestore(ctx context.Context, dsn string) (int64, error) {
-	dbPath := parseSQLitePath(dsn)
-	if dbPath == "" {
-		return 0, fmt.Errorf("could not resolve SQLite database path from DSN: %q", dsn)
-	}
-
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return 0, fmt.Errorf("open db: %w", err)
-	}
-	defer db.Close()
-
-	res, err := db.ExecContext(ctx,
-		`UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL`)
-	if err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("revoke sessions: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
 }
 
 // CheckActiveConnections always returns 0 for SQLite builds.

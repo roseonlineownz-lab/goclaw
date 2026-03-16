@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router";
 import { AppLayout } from "@/components/layout/app-layout";
 import { RequireAuth } from "@/components/shared/require-auth";
 import { RequireAdmin, RequireCrossTenant } from "@/components/shared/require-role";
+import { RequireSetup } from "@/components/shared/require-setup";
 import { ErrorBoundary } from "@/components/shared/error-boundary";
 import { ROUTES } from "@/lib/constants";
 import { lazyWithRetry } from "@/lib/lazy-with-retry";
@@ -10,12 +11,6 @@ import { lazyWithRetry } from "@/lib/lazy-with-retry";
 // Lazy-loaded pages
 const LoginPage = lazyWithRetry(() =>
   import("@/pages/login/login-page").then((m) => ({ default: m.LoginPage })),
-);
-const BootstrapPage = lazyWithRetry(() =>
-  import("@/pages/bootstrap/bootstrap-page").then((m) => ({ default: m.BootstrapPage })),
-);
-const ProfilePage = lazyWithRetry(() =>
-  import("@/pages/profile/profile-page").then((m) => ({ default: m.ProfilePage })),
 );
 const OverviewPage = lazyWithRetry(() =>
   import("@/pages/overview/overview-page").then((m) => ({ default: m.OverviewPage })),
@@ -80,6 +75,9 @@ const EventsPage = lazyWithRetry(() =>
 const StoragePage = lazyWithRetry(() =>
   import("@/pages/storage/storage-page").then((m) => ({ default: m.StoragePage })),
 );
+const SetupPage = lazyWithRetry(() =>
+  import("@/pages/setup/setup-page").then((m) => ({ default: m.SetupPage })),
+);
 const PendingMessagesPage = lazyWithRetry(() =>
   import("@/pages/pending-messages/pending-messages-page").then((m) => ({ default: m.PendingMessagesPage })),
 );
@@ -107,11 +105,17 @@ const ApiKeysPage = lazyWithRetry(() =>
 const PackagesPage = lazyWithRetry(() =>
   import("@/pages/packages/packages-page").then((m) => ({ default: m.PackagesPage })),
 );
+const TenantsAdminPage = lazyWithRetry(() =>
+  import("@/pages/tenants-admin/tenants-admin-page").then((m) => ({ default: m.TenantsAdminPage })),
+);
+const TenantDetailPage = lazyWithRetry(() =>
+  import("@/pages/tenants-admin/tenant-detail-page").then((m) => ({ default: m.TenantDetailPage })),
+);
 const BackupRestorePage = lazyWithRetry(() =>
   import("@/pages/backup-restore/backup-restore-page").then((m) => ({ default: m.BackupRestorePage })),
 );
-const HooksPage = lazyWithRetry(() =>
-  import("@/pages/hooks").then((m) => ({ default: m.HooksPage })),
+const TenantSelectorPage = lazyWithRetry(() =>
+  import("@/pages/login/tenant-selector").then((m) => ({ default: m.TenantSelectorPage })),
 );
 
 function PageLoader() {
@@ -128,13 +132,27 @@ export function AppRoutes() {
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path={ROUTES.LOGIN} element={<LoginPage />} />
-        <Route path={ROUTES.BOOTSTRAP} element={<BootstrapPage />} />
 
-        {/* Main app — requires auth */}
+        {/* Tenant selector — accessible when authenticated but tenant not yet selected */}
+        <Route path={ROUTES.SELECT_TENANT} element={<TenantSelectorPage />} />
+
+        {/* Setup wizard — standalone layout, requires auth but no sidebar */}
+        <Route
+          path={ROUTES.SETUP}
+          element={
+            <RequireAuth>
+              <SetupPage />
+            </RequireAuth>
+          }
+        />
+
+        {/* Main app — requires auth + setup complete */}
         <Route
           element={
             <RequireAuth>
-              <AppLayout />
+              <RequireSetup>
+                <AppLayout />
+              </RequireSetup>
             </RequireAuth>
           }
         >
@@ -154,9 +172,6 @@ export function AppRoutes() {
           <Route path={ROUTES.SKILL_DETAIL} element={<SkillsPage key="detail" />} />
           <Route path={ROUTES.CRON} element={<CronPage key="list" />} />
           <Route path={ROUTES.CRON_DETAIL} element={<CronPage key="detail" />} />
-          <Route path={ROUTES.HOOKS} element={<HooksPage key="list" />} />
-          <Route path={ROUTES.HOOK_DETAIL} element={<HooksPage key="detail" />} />
-          <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
           {/* Admin-only pages */}
           <Route path={ROUTES.CONFIG} element={<RequireCrossTenant><ConfigPage /></RequireCrossTenant>} />
           <Route path={ROUTES.PROVIDERS} element={<RequireAdmin><ProvidersPage key="list" /></RequireAdmin>} />
@@ -172,6 +187,8 @@ export function AppRoutes() {
           <Route path={ROUTES.TTS} element={<RequireCrossTenant><TtsPage /></RequireCrossTenant>} />
           <Route path={ROUTES.STORAGE} element={<RequireAdmin><StoragePage /></RequireAdmin>} />
           <Route path={ROUTES.PACKAGES} element={<RequireAdmin><PackagesPage /></RequireAdmin>} />
+          <Route path={ROUTES.TENANTS} element={<RequireCrossTenant><TenantsAdminPage /></RequireCrossTenant>} />
+          <Route path={ROUTES.TENANT_DETAIL} element={<RequireCrossTenant><TenantDetailPage /></RequireCrossTenant>} />
 
           {/* Operator+ pages */}
           <Route path={ROUTES.TRACES} element={<TracesPage key="list" />} />

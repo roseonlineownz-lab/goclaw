@@ -7,7 +7,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { usePackages, type PackageInfo } from "./hooks/use-packages";
 import { usePackageRuntimes } from "./hooks/use-package-runtimes";
-import { GitHubBinariesSection } from "./github-binaries-section";
 
 type ActionStatus = "idle" | "loading" | "success" | "error";
 
@@ -103,12 +102,6 @@ export function PackagesPage() {
         loading={loading}
         onInstall={(pkg) => installPackage(`npm:${pkg}`, t)}
         onUninstall={(pkg) => uninstallPackage(`npm:${pkg}`, t)}
-      />
-
-      <GitHubBinariesSection
-        packages={packages?.github}
-        onInstall={(pkg) => installPackage(pkg, t)}
-        onUninstall={(pkg) => uninstallPackage(pkg, t)}
       />
     </div>
   );

@@ -21,9 +21,6 @@ const (
 
 	// sttTranscribeEndpoint is the path appended to STTProxyURL.
 	sttTranscribeEndpoint = "/transcribe_audio"
-
-	// stt_tenant_id is the multipart form field name for the proxy tenant identifier (external STT API contract).
-	sttTenantIDField = "tenant_id" // stt_tenant_id: external proxy API field, not a GoClaw concept
 )
 
 var (
@@ -50,7 +47,7 @@ func getSTTClient() *http.Client {
 type STTConfig struct {
 	ProxyURL       string // base URL of the STT proxy (e.g. "http://localhost:8080")
 	APIKey         string // optional Bearer token
-	STTTenantID    string // optional tenant identifier forwarded to the STT proxy
+	TenantID       string // optional tenant identifier
 	TimeoutSeconds int    // request timeout (defaults to DefaultSTTTimeout)
 }
 
@@ -93,9 +90,9 @@ func TranscribeAudio(ctx context.Context, cfg STTConfig, filePath string) (strin
 		return "", fmt.Errorf("stt: write audio bytes to form: %w", err)
 	}
 
-	if cfg.STTTenantID != "" {
-		if err := w.WriteField(sttTenantIDField, cfg.STTTenantID); err != nil {
-			return "", fmt.Errorf("stt: write stt_tenant_id field: %w", err)
+	if cfg.TenantID != "" {
+		if err := w.WriteField("tenant_id", cfg.TenantID); err != nil {
+			return "", fmt.Errorf("stt: write tenant_id field: %w", err)
 		}
 	}
 

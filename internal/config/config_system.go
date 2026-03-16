@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"strconv"
 )
 
@@ -83,13 +82,5 @@ func (c *Config) ApplySystemConfigs(configs map[string]string) {
 		integer("compaction.max_tokens", &pc.MaxTokens)
 		str("compaction.provider", &pc.Provider)
 		str("compaction.model", &pc.Model)
-	}
-
-	// Allowed paths (JSON array)
-	if v, ok := configs["allowed_paths"]; ok && v != "" {
-		var paths []string
-		if err := json.Unmarshal([]byte(v), &paths); err == nil {
-			c.Agents.Defaults.AllowedPaths = paths
-		}
 	}
 }

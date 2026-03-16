@@ -51,17 +51,11 @@ export const queryKeys = {
   cron: {
     all: ["cron"] as const,
   },
-  hooks: {
-    all: ["hooks"] as const,
-    detail: (id: string) => ["hooks", id] as const,
-    history: (id: string) => ["hooks", id, "history"] as const,
-  },
   builtinTools: {
     all: ["builtinTools"] as const,
   },
   config: {
     all: ["config"] as const,
-    defaults: ["config", "defaults"] as const,
   },
   tts: {
     all: ["tts"] as const,
@@ -92,9 +86,17 @@ export const queryKeys = {
     all: ["packages"] as const,
     runtimes: ["packages", "runtimes"] as const,
   },
+  tenantUsers: {
+    all: ["tenantUsers"] as const,
+  },
   users: {
     all: ["users"] as const,
     search: (params: Record<string, unknown>) => ["users", "search", params] as const,
+  },
+  tenants: {
+    all: ["tenants"] as const,
+    detail: (tenantId: string) => ["tenants", tenantId] as const,
+    users: (tenantId: string) => ["tenants", tenantId, "users"] as const,
   },
   vault: {
     all: ["vault"] as const,

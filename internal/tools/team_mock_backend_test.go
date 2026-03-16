@@ -156,9 +156,6 @@ func (b *baseNoopTeamStore) ListTaskAttachments(_ context.Context, _ uuid.UUID) 
 func (b *baseNoopTeamStore) DetachFileFromTask(_ context.Context, _ uuid.UUID, _ string) error {
 	return fmt.Errorf("not implemented: DetachFileFromTask")
 }
-func (b *baseNoopTeamStore) BatchGetTaskSiblingsByBasenames(_ context.Context, _ []string, _ int) (map[string][]store.TaskSibling, error) {
-	return nil, nil
-}
 
 // TaskRecoveryStore
 func (b *baseNoopTeamStore) RecoverAllStaleTasks(_ context.Context) ([]store.RecoveredTaskInfo, error) {
@@ -883,7 +880,7 @@ func newTestTeamSetup() (*mockBackend, *TeamTasksTool, uuid.UUID, uuid.UUID, con
 	tool := NewTeamTasksTool(mb, FullTeamPolicy{})
 
 	ctx := context.Background()
-
+	ctx = store.WithTenantID(ctx, testTenantID)
 	ctx = store.WithAgentID(ctx, testLeadID)
 	ctx = WithToolChannel(ctx, ChannelDashboard)
 	ctx = WithToolChatID(ctx, testTeamID.String())

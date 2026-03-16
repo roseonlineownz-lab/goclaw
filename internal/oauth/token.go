@@ -62,6 +62,7 @@ type DBTokenSource struct {
 	providerStore store.ProviderStore
 	secretsStore  store.ConfigSecretsStore
 	providerName  string
+	tenantID      uuid.UUID // tenant context for DB queries
 
 	providerDisplayName string
 	providerAPIBase     string
@@ -84,7 +85,14 @@ func NewDBTokenSource(provStore store.ProviderStore, secretsStore store.ConfigSe
 		providerStore: provStore,
 		secretsStore:  secretsStore,
 		providerName:  providerName,
+		tenantID:      store.MasterTenantID,
 	}
+}
+
+// WithTenantID sets the tenant context for DB queries. Must be called at init time before Token().
+func (ts *DBTokenSource) WithTenantID(tenantID uuid.UUID) *DBTokenSource {
+	ts.tenantID = tenantID
+	return ts
 }
 
 // WithProviderMeta sets defaults used when creating or updating OAuth-backed providers.
@@ -140,13 +148,18 @@ func (ts *DBTokenSource) RouteEligibility(ctx context.Context) providers.RouteEl
 
 // refreshRouteEligibility fetches quota eligibility in the background and updates the cache.
 func (ts *DBTokenSource) refreshRouteEligibility() {
-	ts.fetchAndCacheEligibility(context.Background())
+	ctx := store.WithTenantID(context.Background(), ts.tenantID)
+	ts.fetchAndCacheEligibility(ctx)
 }
 
 func (ts *DBTokenSource) fetchAndCacheEligibility(ctx context.Context) providers.RouteEligibility {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if store.TenantIDFromContext(ctx) == uuid.Nil {
+		ctx = store.WithTenantID(ctx, ts.tenantID)
+	}
+
 	eligibility := providers.RouteEligibility{Class: providers.RouteEligibilityUnknown, Reason: "unavailable"}
 	provider, err := ts.loadOAuthProvider(ctx)
 	if err == nil {
@@ -189,7 +202,10 @@ func (ts *DBTokenSource) loadOAuthProvider(ctx context.Context) (*store.LLMProvi
 
 func (ts *DBTokenSource) withTenantContext(ctx context.Context) context.Context {
 	if ctx == nil {
-		return context.Background()
+		ctx = context.Background()
+	}
+	if store.TenantIDFromContext(ctx) == uuid.Nil {
+		ctx = store.WithTenantID(ctx, ts.tenantID)
 	}
 	return ctx
 }
@@ -278,7 +294,7 @@ func (ts *DBTokenSource) Token() (string, error) {
 		return ts.cachedToken, nil
 	}
 
-	ctx := context.Background()
+	ctx := store.WithTenantID(context.Background(), ts.tenantID)
 
 	// Load from DB if not cached
 	if ts.cachedToken == "" {

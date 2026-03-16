@@ -16,7 +16,6 @@ export interface SubagentsConfig {
   maxSpawnDepth?: number;
   maxChildrenPerAgent?: number;
   archiveAfterMinutes?: number;
-  maxRetries?: number;
   model?: string;
 }
 
@@ -32,7 +31,6 @@ export interface CompactionConfig {
 
 export interface ContextPruningConfig {
   mode?: "off" | "cache-ttl";
-  ttl?: string;             // cache TTL gate duration, e.g. "5m" (default). Only used when mode="cache-ttl"
   keepLastAssistants?: number;
   softTrimRatio?: number;
   hardClearRatio?: number;
@@ -91,14 +89,16 @@ export interface WorkspaceSharingConfig {
   shared_users?: string[];
   share_memory?: boolean;
   share_knowledge_graph?: boolean;
-  share_sessions?: boolean;
 }
 
 export type ChatGPTOAuthRoutingStrategy =
+  | "manual"
+  | "primary_first"
   | "round_robin"
   | "priority_order";
 
 export type EffectiveChatGPTOAuthRoutingStrategy =
+  | "primary_first"
   | "round_robin"
   | "priority_order";
 
@@ -139,6 +139,7 @@ export interface AgentData {
   max_tool_iterations: number;
   workspace: string;
   restrict_to_workspace: boolean;
+  agent_type: "open" | "predefined";
   is_default: boolean;
   status: string;
   created_at?: string;
@@ -168,6 +169,7 @@ export interface AgentData {
   // Extensibility bag for future/unknown fields
   other_config?: Record<string, unknown> | null;
   budget_monthly_cents?: number | null;
+  tenant_id?: string;
 }
 
 export interface AgentShareData {
@@ -215,6 +217,7 @@ export interface AgentInfo {
   avatar?: string;
   description?: string;
   workspace?: string;
+  agentType?: "open" | "predefined";
   status?: string;
 }
 

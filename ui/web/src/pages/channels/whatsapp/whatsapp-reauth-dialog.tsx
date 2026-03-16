@@ -30,7 +30,7 @@ export function WhatsAppReauthDialog({
   // because we only want to trigger on open/close transitions, not on identity changes.
   useEffect(() => {
     if (open && status === "idle") start();
-  }, [open]);  
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset state when dialog closes
   useEffect(() => {

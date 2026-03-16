@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -10,13 +9,46 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
-// seedConfigForContext writes config keys into system_configs.
+// syncSystemConfigs upserts non-secret config values into the system_configs table.
+// Seeds per-tenant entries for all known tenants using real tenant IDs.
 // When onlyMissing is true, existing keys are preserved (used at startup).
 // When onlyMissing is false, all keys are upserted (used after config.apply/patch).
-func seedConfigForContext(ctx context.Context, sc store.SystemConfigStore, cfg *config.Config, onlyMissing bool) {
+func syncSystemConfigs(sc store.SystemConfigStore, ts store.TenantStore, cfg *config.Config, onlyMissing bool) {
 	if sc == nil {
 		return
 	}
+
+	// Enumerate tenants and seed each one
+	if ts != nil {
+		tenants, err := ts.ListTenants(context.Background())
+		if err != nil {
+			slog.Warn("failed to list tenants for system config seed", "error", err)
+			// Fall back to master tenant only
+			masterCtx := store.WithTenantID(context.Background(), store.MasterTenantID)
+			seedConfigForContext(masterCtx, sc, cfg, onlyMissing)
+			return
+		}
+
+		if len(tenants) == 0 {
+			// No tenants yet (fresh install before onboard) → seed master tenant
+			masterCtx := store.WithTenantID(context.Background(), store.MasterTenantID)
+			seedConfigForContext(masterCtx, sc, cfg, onlyMissing)
+			return
+		}
+
+		for _, t := range tenants {
+			tenantCtx := store.WithTenantID(context.Background(), t.ID)
+			seedConfigForContext(tenantCtx, sc, cfg, onlyMissing)
+		}
+	} else {
+		// No tenant store → seed master tenant
+		masterCtx := store.WithTenantID(context.Background(), store.MasterTenantID)
+		seedConfigForContext(masterCtx, sc, cfg, onlyMissing)
+	}
+}
+
+// seedConfigForContext writes config keys for a specific tenant context.
+func seedConfigForContext(ctx context.Context, sc store.SystemConfigStore, cfg *config.Config, onlyMissing bool) {
 	var existing map[string]string
 	if onlyMissing {
 		var err error
@@ -100,12 +132,5 @@ func seedConfigForContext(ctx context.Context, sc store.SystemConfigStore, cfg *
 		setInt("compaction.max_tokens", pc.MaxTokens)
 		set("compaction.provider", pc.Provider)
 		set("compaction.model", pc.Model)
-	}
-
-	// Allowed paths (filesystem access beyond workspace).
-	if len(cfg.Agents.Defaults.AllowedPaths) > 0 {
-		if b, err := json.Marshal(cfg.Agents.Defaults.AllowedPaths); err == nil {
-			set("allowed_paths", string(b))
-		}
 	}
 }

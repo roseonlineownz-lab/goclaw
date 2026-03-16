@@ -10,10 +10,9 @@ interface UserPickerComboboxProps {
   className?: string;
   /** Filter contacts by peer_kind: "direct" | "group" | undefined (all). */
   peerKind?: "direct" | "group";
-  /** Filter contacts by source. Currently only "contact" is supported. */
-  source?: "contact";
-  /** Committed value shape. "user_id" (default) or "uuid". */
-  valueMode?: "user_id" | "uuid";
+  /** Filter by source: "contact" | "tenant_user" | undefined (both).
+   *  Use "tenant_user" for merge dialogs and tenant user pickers. */
+  source?: "contact" | "tenant_user";
   /** Allow typing custom values not in the list. Default true. */
   allowCustom?: boolean;
   /** Render dropdown into a portal container (useful inside dialogs). */
@@ -21,10 +20,15 @@ interface UserPickerComboboxProps {
 }
 
 /**
- * User picker that searches channel_contacts.
+ * Unified user picker that searches both channel_contacts and tenant_users.
+ * Drop-in replacement for Combobox + useContactSearch/useContactPicker.
+ *
  * - Shows 30 most recent results when opened (no typing needed)
  * - Debounced server-side search as user types
- * - Source badges: [telegram], [discord]
+ * - Source badges: [telegram], [discord], [tenant], merged status
+ * - Deduplicates merged contacts
+ *
+ * Uses `value` prop as search term (same pattern as useContactSearch(userId)).
  */
 export function UserPickerCombobox({
   value,
@@ -34,11 +38,10 @@ export function UserPickerCombobox({
   className,
   peerKind,
   source,
-  valueMode,
   allowCustom = true,
   portalContainer,
 }: UserPickerComboboxProps) {
-  const { options } = useUserPicker(value, peerKind, source, valueMode);
+  const { options } = useUserPicker(value, peerKind, source);
 
   return (
     <Combobox

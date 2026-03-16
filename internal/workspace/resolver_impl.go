@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+// masterTenantID is the sentinel UUID for the master/default tenant.
+// Master tenant workspaces use base dir directly (no tenants/ prefix).
+// Must match config.masterTenantID in internal/config/tenant_paths.go.
+const masterTenantID = "0193a5b0-7000-7000-8000-000000000001"
+
 // defaultResolver implements Resolver for all 6 workspace scenarios.
 // Stateless — all inputs come via ResolveParams. No DB queries.
 // Does NOT import tools package (avoids circular dependency).
@@ -22,12 +27,8 @@ func (r *defaultResolver) Resolve(_ context.Context, params ResolveParams) (*Wor
 		return nil, fmt.Errorf("workspace: base dir is required")
 	}
 
-	// Priority: project > delegation > team > personal/predefined.
-	// Project binding wins so the session always operates in its assigned
-	// project folder regardless of which team or personal agent serves it.
+	// Priority: delegation > team > personal/predefined
 	switch {
-	case params.ProjectID != nil && params.ProjectSlug != "":
-		return r.resolveProject(params)
 	case params.DelegateCtx != nil:
 		return r.resolveDelegate(params)
 	case params.TeamID != nil && *params.TeamID != "":
@@ -35,28 +36,6 @@ func (r *defaultResolver) Resolve(_ context.Context, params ResolveParams) (*Wor
 	default:
 		return r.resolvePersonal(params), nil
 	}
-}
-
-// resolveProject handles sessions bound to a specific project.
-// The project folder is the active path; slug validation is re-confirmed here
-// so a bad slug stored in the DB cannot escape the projects directory.
-func (r *defaultResolver) resolveProject(p ResolveParams) (*WorkspaceContext, error) {
-	path, err := ProjectWorkspacePath(p.ProjectSlug)
-	if err != nil {
-		return nil, fmt.Errorf("workspace: project resolution failed: %w", err)
-	}
-	ensureDir(path)
-	wc := &WorkspaceContext{
-		ActivePath:       path,
-		Scope:            ScopeProject,
-		OwnerID:          ownerID(p),
-		MemoryScope:      "user",
-		KGScope:          "user",
-		EnforcementLabel: DefaultEnforcementLabel(ScopeProject, false),
-		ProjectID:        p.ProjectID,
-		ProjectSlug:      p.ProjectSlug,
-	}
-	return wc, nil
 }
 
 // resolveDelegate handles delegated task workspace.
@@ -85,7 +64,7 @@ func (r *defaultResolver) resolveDelegate(p ResolveParams) (*WorkspaceContext, e
 
 // resolveTeam handles team workspace (shared or isolated).
 func (r *defaultResolver) resolveTeam(p ResolveParams) *WorkspaceContext {
-	base := p.BaseDir
+	base := tenantPath(p.BaseDir, p.TenantID, p.TenantSlug)
 	teamRoot := filepath.Join(base, "teams", sanitizeSegment(*p.TeamID))
 
 	shared := p.TeamConfig.IsShared()
@@ -115,24 +94,59 @@ func (r *defaultResolver) resolveTeam(p ResolveParams) *WorkspaceContext {
 	return wc
 }
 
-// resolvePersonal returns the personal-scope workspace. v4 collapses the
-// open/predefined split — every personal agent shares its directory at
-// agent level, so the active path is always <base>/<agentID>.
+// resolvePersonal handles open agent (per-user) and predefined agent (shared) workspaces.
 func (r *defaultResolver) resolvePersonal(p ResolveParams) *WorkspaceContext {
-	base := p.BaseDir
+	base := tenantPath(p.BaseDir, p.TenantID, p.TenantSlug)
 	agentDir := filepath.Join(base, sanitizeSegment(p.AgentID))
+
+	activePath := agentDir
+	shared := p.AgentType == "predefined"
+	if !shared {
+		segment := userChatSegment(p)
+		if segment != "" {
+			activePath = filepath.Join(agentDir, segment)
+		}
+	}
 
 	scope := sharingScope(p)
 	wc := &WorkspaceContext{
-		ActivePath:       agentDir,
+		ActivePath:       activePath,
 		Scope:            ScopePersonal,
 		OwnerID:          ownerID(p),
 		MemoryScope:      scope,
 		KGScope:          scope,
-		EnforcementLabel: DefaultEnforcementLabel(ScopePersonal, true),
+		EnforcementLabel: DefaultEnforcementLabel(ScopePersonal, shared),
 	}
 	ensureDir(wc.ActivePath)
 	return wc
+}
+
+// tenantPath returns tenant-scoped directory.
+// Master tenant returns base dir directly (backward compat with v2).
+// Uses slug when available (matches config.TenantWorkspace), falls back to UUID.
+func tenantPath(base, tenantID, tenantSlug string) string {
+	if tenantID == "" || tenantID == masterTenantID {
+		return base
+	}
+	segment := tenantSlug
+	if segment == "" {
+		segment = tenantID
+	}
+	result := filepath.Join(base, "tenants", sanitizeSegment(segment))
+	// Path traversal defense: ensure result stays under tenants/ base
+	tenantsBase := filepath.Join(base, "tenants") + string(filepath.Separator)
+	if !strings.HasPrefix(result+string(filepath.Separator), tenantsBase) {
+		return filepath.Join(base, "tenants", sanitizeSegment(tenantID))
+	}
+	return result
+}
+
+// userChatSegment returns the isolation segment: chatID for group, userID for direct.
+func userChatSegment(p ResolveParams) string {
+	if p.PeerKind == "group" && p.ChatID != "" {
+		return sanitizeSegment(p.ChatID)
+	}
+	return sanitizeSegment(p.UserID)
 }
 
 // ownerID picks the identifying owner: userID or chatID.
@@ -151,15 +165,7 @@ func sharingScope(p ResolveParams) string {
 	return "user"
 }
 
-// SanitizeSegment makes a string safe for filesystem path use.
-// Replaces any character that is not ASCII alphanumeric, hyphen, or underscore
-// with '_'. Used by both the workspace resolver and the FS-backed memory writer
-// to build scope-derived directory paths safely.
-func SanitizeSegment(s string) string {
-	return sanitizeSegment(s)
-}
-
-// sanitizeSegment is the internal implementation; exported as SanitizeSegment.
+// sanitizeSegment makes a string safe for filesystem path use.
 // Mirrors tools.SanitizePathSegment without importing tools package.
 func sanitizeSegment(s string) string {
 	var b strings.Builder

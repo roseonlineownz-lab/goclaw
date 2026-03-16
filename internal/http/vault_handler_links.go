@@ -21,6 +21,7 @@ func (h *VaultHandler) handleSearch(w http.ResponseWriter, r *http.Request) {
 // doSearch is the shared search implementation for both per-agent and tenant-wide endpoints.
 func (h *VaultHandler) doSearch(w http.ResponseWriter, r *http.Request, agentID string) {
 	locale := extractLocale(r)
+	tenantID := store.TenantIDFromContext(r.Context())
 
 	var body struct {
 		Query      string   `json:"query"`
@@ -29,7 +30,6 @@ func (h *VaultHandler) doSearch(w http.ResponseWriter, r *http.Request, agentID 
 		DocTypes   []string `json:"doc_types"`
 		MaxResults int      `json:"max_results"`
 		TeamID     string   `json:"team_id"`
-		ChatID     string   `json:"chat_id"` // optional: when set with TeamID, restrict to same-chat + team-wide docs (isolated semantics)
 	}
 	if !bindJSON(w, r, locale, &body) {
 		return
@@ -49,6 +49,7 @@ func (h *VaultHandler) doSearch(w http.ResponseWriter, r *http.Request, agentID 
 	searchOpts := store.VaultSearchOptions{
 		Query:      body.Query,
 		AgentID:    agentID,
+		TenantID:   tenantID.String(),
 		Scope:      body.Scope,
 		DocTypes:   body.DocTypes,
 		MaxResults: body.MaxResults,
@@ -58,13 +59,7 @@ func (h *VaultHandler) doSearch(w http.ResponseWriter, r *http.Request, agentID 
 			return
 		}
 		searchOpts.TeamID = &body.TeamID
-		// Caller-supplied chat scope: apply isolation filter when searching a specific chat.
-		if body.ChatID != "" {
-			cid := body.ChatID
-			searchOpts.ChatID = &cid
-			searchOpts.TeamIsolated = true
-		}
-	} else if !store.IsRootRole(r.Context()) {
+	} else if !store.IsOwnerRole(r.Context()) {
 		if ids := h.userAccessibleTeamIDs(r.Context()); len(ids) > 0 {
 			searchOpts.TeamIDs = ids
 		} else {
@@ -87,16 +82,17 @@ func (h *VaultHandler) doSearch(w http.ResponseWriter, r *http.Request, agentID 
 
 // handleGetLinks returns outgoing links and backlinks for a vault document.
 func (h *VaultHandler) handleGetLinks(w http.ResponseWriter, r *http.Request) {
+	tenantID := store.TenantIDFromContext(r.Context())
 	_ = r.PathValue("agentID") // agent scoping done at document level
 	docID := r.PathValue("docID")
 
-	outLinks, err := h.store.GetOutLinks(r.Context(), docID)
+	outLinks, err := h.store.GetOutLinks(r.Context(), tenantID.String(), docID)
 	if err != nil {
 		slog.Warn("vault.outlinks failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	backlinks, err := h.store.GetBacklinks(r.Context(), docID)
+	backlinks, err := h.store.GetBacklinks(r.Context(), tenantID.String(), docID)
 	if err != nil {
 		slog.Warn("vault.backlinks failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -111,9 +107,9 @@ func (h *VaultHandler) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 
 	// Filter backlinks by team boundary — derive team context from the target document
 	// itself (not a query param) so clients don't need to supply it correctly.
-	isOwner := store.IsRootRole(r.Context())
+	isOwner := store.IsOwnerRole(r.Context())
 	if !isOwner {
-		targetDoc, _ := h.store.GetDocumentByID(r.Context(), docID)
+		targetDoc, _ := h.store.GetDocumentByID(r.Context(), tenantID.String(), docID)
 		var currentTeamID string
 		if targetDoc != nil && targetDoc.TeamID != nil {
 			currentTeamID = *targetDoc.TeamID
@@ -140,7 +136,7 @@ func (h *VaultHandler) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 		if _, seen := docNames[l.ToDocID]; seen {
 			continue
 		}
-		if d, err := h.store.GetDocumentByID(r.Context(), l.ToDocID); err == nil && d != nil {
+		if d, err := h.store.GetDocumentByID(r.Context(), tenantID.String(), l.ToDocID); err == nil && d != nil {
 			name := d.Title
 			if name == "" {
 				if idx := strings.LastIndex(d.Path, "/"); idx >= 0 {
@@ -163,6 +159,7 @@ func (h *VaultHandler) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 // handleCreateLink creates a link between two vault documents.
 func (h *VaultHandler) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	locale := extractLocale(r)
+	tenantID := store.TenantIDFromContext(r.Context())
 
 	var body struct {
 		FromDocID string `json:"from_doc_id"`
@@ -183,8 +180,8 @@ func (h *VaultHandler) handleCreateLink(w http.ResponseWriter, r *http.Request) 
 
 	// Verify both docs exist, same tenant, and at least source belongs to this agent.
 	agentID := r.PathValue("agentID")
-	from, _ := h.store.GetDocumentByID(r.Context(), body.FromDocID)
-	to, _ := h.store.GetDocumentByID(r.Context(), body.ToDocID)
+	from, _ := h.store.GetDocumentByID(r.Context(), tenantID.String(), body.FromDocID)
+	to, _ := h.store.GetDocumentByID(r.Context(), tenantID.String(), body.ToDocID)
 	if from == nil || to == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "one or both documents not found"})
 		return
@@ -216,6 +213,7 @@ func (h *VaultHandler) handleCreateLink(w http.ResponseWriter, r *http.Request) 
 // handleBatchGetLinks returns all outlinks for a batch of doc IDs in one query.
 func (h *VaultHandler) handleBatchGetLinks(w http.ResponseWriter, r *http.Request) {
 	locale := extractLocale(r)
+	tenantID := store.TenantIDFromContext(r.Context())
 
 	var body struct {
 		DocIDs []string `json:"doc_ids"`
@@ -231,7 +229,7 @@ func (h *VaultHandler) handleBatchGetLinks(w http.ResponseWriter, r *http.Reques
 		body.DocIDs = body.DocIDs[:500]
 	}
 
-	links, err := h.store.GetOutLinksBatch(r.Context(), body.DocIDs)
+	links, err := h.store.GetOutLinksBatch(r.Context(), tenantID.String(), body.DocIDs)
 	if err != nil {
 		slog.Warn("vault.batch_links failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -245,9 +243,10 @@ func (h *VaultHandler) handleBatchGetLinks(w http.ResponseWriter, r *http.Reques
 
 // handleDeleteLink deletes a vault link.
 func (h *VaultHandler) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
+	tenantID := store.TenantIDFromContext(r.Context())
 	linkID := r.PathValue("linkID")
 
-	if err := h.store.DeleteLink(r.Context(), linkID); err != nil {
+	if err := h.store.DeleteLink(r.Context(), tenantID.String(), linkID); err != nil {
 		slog.Warn("vault.delete_link failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

@@ -18,23 +18,25 @@ import (
 // protectedFileSet defines files that require group file writer permission in group chats.
 // These files control the agent's identity and behavior — only allowlisted users can modify them.
 var protectedFileSet = map[string]bool{
-	bootstrap.SoulFile:         true,
-	bootstrap.IdentityFile:     true,
-	bootstrap.AgentsFile:       true,
-	bootstrap.UserFile:         true,
-	bootstrap.CapabilitiesFile: true,
+	bootstrap.SoulFile:           true,
+	bootstrap.IdentityFile:       true,
+	bootstrap.AgentsFile:         true,
+	bootstrap.UserFile:           true,
+	bootstrap.UserPredefinedFile: true,
+	bootstrap.CapabilitiesFile:  true,
 }
 
 // contextFileSet is the set of filenames routed to the DB store.
 // TOOLS.md excluded — not applicable.
 var contextFileSet = map[string]bool{
-	bootstrap.SoulFile:         true,
-	bootstrap.AgentsFile:       true,
-	bootstrap.IdentityFile:     true,
-	bootstrap.UserFile:         true,
-	bootstrap.BootstrapFile:    true, // first-run file (deleted after completion)
-	bootstrap.HeartbeatFile:    true, // agent-level heartbeat checklist
-	bootstrap.CapabilitiesFile: true, // domain expertise (evolvable when self_evolve=true)
+	bootstrap.SoulFile:           true,
+	bootstrap.AgentsFile:         true,
+	bootstrap.IdentityFile:       true,
+	bootstrap.UserFile:           true,
+	bootstrap.UserPredefinedFile: true,
+	bootstrap.BootstrapFile:      true,       // first-run file (deleted after completion)
+	bootstrap.HeartbeatFile:      true,       // agent-level heartbeat checklist
+	bootstrap.CapabilitiesFile:  true,       // domain expertise (evolvable when self_evolve=true)
 }
 
 // isContextFile checks if a path refers to a workspace-root context file.
@@ -70,8 +72,8 @@ func isContextFile(path, workspace string) (fileName string, ok bool) {
 const defaultContextCacheTTL = 5 * time.Minute
 
 // ContextFileInterceptor routes context file reads/writes to the agent store.
-// Keeps SOUL.md, IDENTITY.md etc. in Postgres. USER.md and BOOTSTRAP.md are
-// per-user; everything else is agent-level shared.
+// Keeps SOUL.md, IDENTITY.md etc. in Postgres.
+// Routes based on agent type: "open" → all per-user, "predefined" → only USER.md per-user.
 type ContextFileInterceptor struct {
 	agentStore       store.AgentStore
 	workspace        string // workspace root for matching absolute paths
@@ -103,10 +105,9 @@ func (b *ContextFileInterceptor) SetConfigPermStore(s store.ConfigPermissionStor
 }
 
 // ReadFile attempts to read a context file from the DB (with cache).
-// USER.md and BOOTSTRAP.md are per-user; everything else is agent-level shared.
-// Identity files (SOUL.md, IDENTITY.md, AGENTS.md, …) are already injected
-// into the system prompt and reading them via tools is rejected to prevent
-// agents from echoing persona configuration back to users.
+// Routes based on agent type from context:
+//   - "open": all files per-user → fallback to agent-level
+//   - "predefined": USER.md + BOOTSTRAP.md per-user → all others agent-level
 //
 // Returns (content, true, nil) if handled, or ("", false, nil) if not a context file.
 func (b *ContextFileInterceptor) ReadFile(ctx context.Context, path string) (string, bool, error) {
@@ -121,9 +122,23 @@ func (b *ContextFileInterceptor) ReadFile(ctx context.Context, path string) (str
 	}
 
 	userID := store.UserIDFromContext(ctx)
+	agentType := store.AgentTypeFromContext(ctx)
 
-	// USER.md and BOOTSTRAP.md route to user-level first, then fall back to agent-level.
-	if userID != "" && (fileName == bootstrap.UserFile || fileName == bootstrap.BootstrapFile) {
+	// Open agent: ALL files per-user → fallback to agent-level
+	if agentType == store.AgentTypeOpen && userID != "" {
+		content, handled, err := b.readUserFile(ctx, agentID, userID, fileName)
+		if err != nil {
+			return "", handled, err
+		}
+		if content != "" {
+			return content, handled, nil
+		}
+		// User file not found → fall back to agent-level template
+		return b.readAgentFile(ctx, agentID, fileName)
+	}
+
+	// Predefined agent: USER.md and BOOTSTRAP.md per-user
+	if agentType == store.AgentTypePredefined && userID != "" && (fileName == bootstrap.UserFile || fileName == bootstrap.BootstrapFile) {
 		content, handled, err := b.readUserFile(ctx, agentID, userID, fileName)
 		if err != nil {
 			return "", handled, err
@@ -134,10 +149,12 @@ func (b *ContextFileInterceptor) ReadFile(ctx context.Context, path string) (str
 		return b.readAgentFile(ctx, agentID, fileName)
 	}
 
-	// Block reads of shared identity files. SOUL.md and CAPABILITIES.md are
-	// readable when self_evolve is enabled so the agent can inspect current
-	// content before making incremental updates.
-	if fileName != bootstrap.UserFile && fileName != bootstrap.BootstrapFile && fileName != bootstrap.HeartbeatFile {
+	// Predefined agent: block reads of shared identity files (SOUL.md, IDENTITY.md, AGENTS.md).
+	// These are already injected into the system prompt — allowing read_file would let the
+	// agent echo their full contents to users, leaking persona configuration.
+	// Exception: SOUL.md and CAPABILITIES.md are readable when self_evolve is enabled,
+	// so the agent can inspect current content before making incremental updates.
+	if agentType == store.AgentTypePredefined && fileName != bootstrap.UserFile && fileName != bootstrap.BootstrapFile && fileName != bootstrap.HeartbeatFile {
 		allowEvolveRead := (fileName == bootstrap.SoulFile || fileName == bootstrap.CapabilitiesFile) && store.SelfEvolveFromContext(ctx)
 		if !allowEvolveRead {
 			return "", true, fmt.Errorf(
@@ -147,6 +164,7 @@ func (b *ContextFileInterceptor) ReadFile(ctx context.Context, path string) (str
 		}
 	}
 
+	// Default: agent-level
 	return b.readAgentFile(ctx, agentID, fileName)
 }
 
@@ -169,10 +187,10 @@ func (b *ContextFileInterceptor) readUserFile(ctx context.Context, agentID uuid.
 }
 
 // WriteFile attempts to write a context file to the DB.
-//   - USER.md is per-user
-//   - BOOTSTRAP.md empty content → delete (first-run completed)
-//   - SOUL.md / CAPABILITIES.md allowed when self_evolve is enabled (writes go agent-level)
-//   - everything else: blocked (predefined identity must be edited from the dashboard)
+// Routes based on agent type:
+//   - "open": all files per-user
+//   - "predefined": only USER.md per-user, others agent-level
+//   - BOOTSTRAP.md with empty content → delete (first-run completed)
 //
 // Returns (true, nil) if handled, or (false, nil) if not a context file.
 func (b *ContextFileInterceptor) WriteFile(ctx context.Context, path, content string) (bool, error) {
@@ -187,6 +205,7 @@ func (b *ContextFileInterceptor) WriteFile(ctx context.Context, path, content st
 	}
 
 	userID := store.UserIDFromContext(ctx)
+	agentType := store.AgentTypeFromContext(ctx)
 
 	// Permission check: protected files in group context require allowlist membership.
 	// Exception: during bootstrap onboarding (BOOTSTRAP.md still exists for this user),
@@ -200,7 +219,7 @@ func (b *ContextFileInterceptor) WriteFile(ctx context.Context, path, content st
 			senderID := store.SenderIDFromContext(ctx)
 			if senderID != "" && b.permStore != nil {
 				numericID := strings.SplitN(senderID, "|", 2)[0]
-				allowed, err := b.permStore.CheckPermission(ctx, agentID, userID, store.ConfigTypeEditFile, numericID)
+				allowed, err := b.permStore.CheckPermission(ctx, agentID, userID, store.ConfigTypeFileWriter, numericID)
 				if err != nil {
 					slog.Warn("security.group_file_writer_check_failed",
 						"error", err, "sender", numericID, "file", fileName, "group", userID)
@@ -214,6 +233,8 @@ func (b *ContextFileInterceptor) WriteFile(ctx context.Context, path, content st
 	}
 
 	// BOOTSTRAP.md deletion: empty content = first-run completed → delete row.
+	// Must come BEFORE the predefined write block so bootstrap completion works
+	// for both open and predefined agents.
 	if fileName == bootstrap.BootstrapFile && content == "" && userID != "" {
 		err := b.agentStore.DeleteUserContextFile(ctx, agentID, userID, fileName)
 		if err == nil {
@@ -222,18 +243,9 @@ func (b *ContextFileInterceptor) WriteFile(ctx context.Context, path, content st
 		return true, err
 	}
 
-	// USER.md is the only file users can write through chat.
-	if userID != "" && fileName == bootstrap.UserFile {
-		err := b.agentStore.SetUserContextFile(ctx, agentID, userID, fileName, content)
-		if err == nil {
-			b.invalidateUser(agentID, userID)
-		}
-		return true, err
-	}
-
-	// HEARTBEAT.md is a system-managed signal file; allow writes at agent level.
-	// SOUL.md / CAPABILITIES.md are gated by self_evolve and write to agent level.
-	if fileName != bootstrap.HeartbeatFile {
+	// Predefined agent: block writes to shared files (only USER.md + HEARTBEAT.md allowed).
+	// Exception: SOUL.md and CAPABILITIES.md are allowed when self_evolve is enabled.
+	if agentType == store.AgentTypePredefined && fileName != bootstrap.UserFile && fileName != bootstrap.HeartbeatFile {
 		allowEvolve := (fileName == bootstrap.SoulFile || fileName == bootstrap.CapabilitiesFile) && store.SelfEvolveFromContext(ctx)
 		if !allowEvolve {
 			return true, fmt.Errorf(
@@ -242,13 +254,38 @@ func (b *ContextFileInterceptor) WriteFile(ctx context.Context, path, content st
 				fileName,
 			)
 		}
+		// Self-evolve: write to agent-level (shared across all users)
 		slog.Info("self-evolve: file updated",
 			"file", fileName,
 			"agent_id", agentID,
 			"user_id", userID,
 		)
+		err := b.agentStore.SetAgentContextFile(ctx, agentID, fileName, content)
+		if err == nil {
+			b.InvalidateAgent(agentID)
+		}
+		return true, err
 	}
 
+	// Open agent: all files per-user
+	if agentType == store.AgentTypeOpen && userID != "" {
+		err := b.agentStore.SetUserContextFile(ctx, agentID, userID, fileName, content)
+		if err == nil {
+			b.invalidateUser(agentID, userID)
+		}
+		return true, err
+	}
+
+	// Predefined agent: only USER.md per-user
+	if agentType == store.AgentTypePredefined && userID != "" && fileName == bootstrap.UserFile {
+		err := b.agentStore.SetUserContextFile(ctx, agentID, userID, fileName, content)
+		if err == nil {
+			b.invalidateUser(agentID, userID)
+		}
+		return true, err
+	}
+
+	// Default: agent-level
 	err := b.agentStore.SetAgentContextFile(ctx, agentID, fileName, content)
 	if err == nil {
 		b.InvalidateAgent(agentID)
@@ -259,14 +296,32 @@ func (b *ContextFileInterceptor) WriteFile(ctx context.Context, path, content st
 // LoadContextFiles loads context files for a specific user+agent combination.
 // Used by the agent loop to dynamically resolve context files for system prompt.
 // Uses the same agentCache/userCache as ReadFile — invalidated on WriteFile and pubsub events.
-//
-// Layering: agent-level files form the base; per-user files (USER.md, BOOTSTRAP.md, …)
-// override or extend the set when present.
-func (b *ContextFileInterceptor) LoadContextFiles(ctx context.Context, agentID uuid.UUID, userID string) []bootstrap.ContextFile {
-	if userID != "" {
+func (b *ContextFileInterceptor) LoadContextFiles(ctx context.Context, agentID uuid.UUID, userID, agentType string) []bootstrap.ContextFile {
+	// Open agent: all files from user_context_files
+	if agentType == store.AgentTypeOpen && userID != "" {
+		files := b.cachedUserFiles(ctx, agentID, userID)
+		var result []bootstrap.ContextFile
+		for _, f := range files {
+			if f.Content == "" {
+				continue
+			}
+			result = append(result, bootstrap.ContextFile{
+				Path:    f.FileName,
+				Content: f.Content,
+			})
+		}
+		if len(result) > 0 {
+			return result
+		}
+		// No user files yet → fall through to agent-level
+	}
+
+	// Predefined agent: agent files + override USER.md from user
+	if agentType == store.AgentTypePredefined && userID != "" {
 		agentFiles := b.cachedAgentFiles(ctx, agentID)
 		userFiles := b.cachedUserFiles(ctx, agentID, userID)
 
+		// Build user file map for override lookup
 		userMap := make(map[string]string, len(userFiles))
 		for _, f := range userFiles {
 			if f.Content != "" {
@@ -277,6 +332,7 @@ func (b *ContextFileInterceptor) LoadContextFiles(ctx context.Context, agentID u
 		var result []bootstrap.ContextFile
 		for _, f := range agentFiles {
 			content := f.Content
+			// Override with user version if available
 			if uc, ok := userMap[f.FileName]; ok {
 				content = uc
 			}

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -21,7 +20,6 @@ type PGMemoryStore struct {
 	provider store.EmbeddingProvider
 	mu       sync.RWMutex   // protects cfg from concurrent read/write
 	cfg      PGMemoryConfig
-	fsWriter memory.FSWriter // nil = FS-backed mode disabled (content stored in DB fallback)
 }
 
 // PGMemoryConfig configures the PG memory store.
@@ -48,104 +46,94 @@ func NewPGMemoryStore(db *sql.DB, cfg PGMemoryConfig) *PGMemoryStore {
 	return &PGMemoryStore{db: db, cfg: cfg}
 }
 
-// SetFSWriter attaches a filesystem writer to the store.
-// When set, GetDocument reads content from FS and PutDocument writes to FS.
-// Must be called before the store is used; not safe for concurrent mutation.
-func (s *PGMemoryStore) SetFSWriter(w memory.FSWriter) {
-	s.fsWriter = w
-}
-
 func (s *PGMemoryStore) GetDocument(ctx context.Context, agentID, userID, path string) (string, error) {
-	if s.fsWriter != nil {
-		scope := memory.ScopeKey{AgentID: agentID, UserID: userID}
-		data, _, err := s.fsWriter.Read(ctx, scope, path)
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
-	}
+	aid := mustParseUUID(agentID)
+	var content string
 
-	// Legacy path: no FSWriter configured — should not happen in v4 greenfield
-	// but kept as a safe fallback so tests without FSWriter wiring still compile.
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return "", fmt.Errorf("memory get document: %w", err)
-	}
-	var filePath string
+	var err error
 	if store.IsSharedMemory(ctx) {
+		// Shared: no user_id filter
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
+		if tcErr != nil {
+			return "", tcErr
+		}
 		err = s.db.QueryRowContext(ctx,
-			"SELECT file_path FROM memory_documents WHERE agent_id = $1 AND path = $2 ORDER BY updated_at DESC LIMIT 1",
-			aid, path).Scan(&filePath)
+			"SELECT content FROM memory_documents WHERE agent_id = $1 AND path = $2"+tc+" ORDER BY updated_at DESC LIMIT 1",
+			append([]any{aid, path}, tcArgs...)...).Scan(&content)
 	} else if userID == "" {
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
+		if tcErr != nil {
+			return "", tcErr
+		}
 		err = s.db.QueryRowContext(ctx,
-			"SELECT file_path FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id IS NULL",
-			aid, path).Scan(&filePath)
+			"SELECT content FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id IS NULL"+tc,
+			append([]any{aid, path}, tcArgs...)...).Scan(&content)
 	} else {
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 4)
+		if tcErr != nil {
+			return "", tcErr
+		}
 		err = s.db.QueryRowContext(ctx,
-			"SELECT file_path FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id = $3",
-			aid, path, userID).Scan(&filePath)
+			"SELECT content FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id = $3"+tc,
+			append([]any{aid, path, userID}, tcArgs...)...).Scan(&content)
 	}
 	if err != nil {
 		return "", err
 	}
-	data, readErr := os.ReadFile(filePath)
-	if readErr != nil {
-		return "", fmt.Errorf("memory get document: read file %s: %w", filePath, readErr)
-	}
-	return string(data), nil
+	return content, nil
 }
 
 func (s *PGMemoryStore) PutDocument(ctx context.Context, agentID, userID, path, content string) error {
-	if s.fsWriter != nil {
-		scope := memory.ScopeKey{AgentID: agentID, UserID: userID}
-		_, err := s.fsWriter.Write(ctx, scope, path, []byte(content), -1 /* unconditional */)
-		return err
-	}
-
-	// Legacy path: direct DB write without FSWriter.
-	// file_path and content_hash are stored; version starts at 1.
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return fmt.Errorf("memory put document: %w", err)
-	}
+	aid := mustParseUUID(agentID)
 	hash := memory.ContentHash(content)
 	id := uuid.Must(uuid.NewV7())
 	now := time.Now()
+	tid := tenantIDForInsert(ctx)
 
 	var uid *string
 	if userID != "" {
 		uid = &userID
 	}
 
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO memory_documents (id, agent_id, user_id, path, file_path, content_hash, version, updated_at)
-		 VALUES ($1, $2, $3, $4, '', $5, 1, $6)
-		 ON CONFLICT (agent_id, COALESCE(team_id::text,''), COALESCE(user_id::text,''), COALESCE(contact_id::text,''), COALESCE(project_id::text,''), path)
-		 DO UPDATE SET content_hash = EXCLUDED.content_hash, updated_at = EXCLUDED.updated_at`,
-		id, aid, uid, path, hash, now,
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO memory_documents (id, agent_id, user_id, path, content, hash, tenant_id, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT (agent_id, COALESCE(user_id, ''), path)
+		 DO UPDATE SET content = EXCLUDED.content, hash = EXCLUDED.hash, tenant_id = EXCLUDED.tenant_id, updated_at = EXCLUDED.updated_at`,
+		id, aid, uid, path, content, hash, tid, now,
 	)
 	return err
 }
 
 func (s *PGMemoryStore) DeleteDocument(ctx context.Context, agentID, userID, path string) error {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return fmt.Errorf("memory delete document: %w", err)
-	}
+	aid := mustParseUUID(agentID)
 	var res sql.Result
+	var err error
 	if store.IsSharedMemory(ctx) {
 		// Shared: delete any matching doc regardless of user_id
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
+		if tcErr != nil {
+			return tcErr
+		}
 		res, err = s.db.ExecContext(ctx,
-			"DELETE FROM memory_documents WHERE agent_id = $1 AND path = $2",
-			aid, path)
+			"DELETE FROM memory_documents WHERE agent_id = $1 AND path = $2"+tc,
+			append([]any{aid, path}, tcArgs...)...)
 	} else if userID == "" {
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
+		if tcErr != nil {
+			return tcErr
+		}
 		res, err = s.db.ExecContext(ctx,
-			"DELETE FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id IS NULL",
-			aid, path)
+			"DELETE FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id IS NULL"+tc,
+			append([]any{aid, path}, tcArgs...)...)
 	} else {
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 4)
+		if tcErr != nil {
+			return tcErr
+		}
 		res, err = s.db.ExecContext(ctx,
-			"DELETE FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id = $3",
-			aid, path, userID)
+			"DELETE FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id = $3"+tc,
+			append([]any{aid, path, userID}, tcArgs...)...)
 	}
 	if err != nil {
 		return err
@@ -158,23 +146,32 @@ func (s *PGMemoryStore) DeleteDocument(ctx context.Context, agentID, userID, pat
 }
 
 func (s *PGMemoryStore) ListDocuments(ctx context.Context, agentID, userID string) ([]store.DocumentInfo, error) {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return nil, fmt.Errorf("memory list documents: %w", err)
-	}
+	aid := mustParseUUID(agentID)
 
 	var q string
 	var args []any
 	if store.IsSharedMemory(ctx) {
 		// Shared: list ALL docs for agent (global + per-user from all users)
-		q = "SELECT agent_id, path, content_hash AS hash, user_id, updated_at FROM memory_documents WHERE agent_id = $1"
-		args = []any{aid}
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 2)
+		if tcErr != nil {
+			return nil, tcErr
+		}
+		q = "SELECT path, hash, user_id, updated_at FROM memory_documents WHERE agent_id = $1" + tc
+		args = append([]any{aid}, tcArgs...)
 	} else if userID == "" {
-		q = "SELECT agent_id, path, content_hash AS hash, user_id, updated_at FROM memory_documents WHERE agent_id = $1 AND user_id IS NULL"
-		args = []any{aid}
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 2)
+		if tcErr != nil {
+			return nil, tcErr
+		}
+		q = "SELECT path, hash, user_id, updated_at FROM memory_documents WHERE agent_id = $1 AND user_id IS NULL" + tc
+		args = append([]any{aid}, tcArgs...)
 	} else {
-		q = "SELECT agent_id, path, content_hash AS hash, user_id, updated_at FROM memory_documents WHERE agent_id = $1 AND (user_id IS NULL OR user_id::text = $2)"
-		args = []any{aid, userID}
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
+		if tcErr != nil {
+			return nil, tcErr
+		}
+		q = "SELECT path, hash, user_id, updated_at FROM memory_documents WHERE agent_id = $1 AND (user_id IS NULL OR user_id = $2)" + tc
+		args = append([]any{aid, userID}, tcArgs...)
 	}
 
 	var rows []documentInfoRow
@@ -190,10 +187,7 @@ func (s *PGMemoryStore) ListDocuments(ctx context.Context, agentID, userID strin
 
 // IndexDocument chunks a document and stores chunks with embeddings.
 func (s *PGMemoryStore) IndexDocument(ctx context.Context, agentID, userID, path string) error {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return fmt.Errorf("memory index document: %w", err)
-	}
+	aid := mustParseUUID(agentID)
 
 	// Get document content
 	content, err := s.GetDocument(ctx, agentID, userID, path)
@@ -205,17 +199,29 @@ func (s *PGMemoryStore) IndexDocument(ctx context.Context, agentID, userID, path
 	var docID uuid.UUID
 	if store.IsSharedMemory(ctx) {
 		// Shared: no user_id filter
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
+		if tcErr != nil {
+			return tcErr
+		}
 		err = s.db.QueryRowContext(ctx,
-			"SELECT id FROM memory_documents WHERE agent_id = $1 AND path = $2 ORDER BY updated_at DESC LIMIT 1",
-			aid, path).Scan(&docID)
+			"SELECT id FROM memory_documents WHERE agent_id = $1 AND path = $2"+tc+" ORDER BY updated_at DESC LIMIT 1",
+			append([]any{aid, path}, tcArgs...)...).Scan(&docID)
 	} else if userID == "" {
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
+		if tcErr != nil {
+			return tcErr
+		}
 		err = s.db.QueryRowContext(ctx,
-			"SELECT id FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id IS NULL",
-			aid, path).Scan(&docID)
+			"SELECT id FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id IS NULL"+tc,
+			append([]any{aid, path}, tcArgs...)...).Scan(&docID)
 	} else {
+		tc, tcArgs, _, tcErr := scopeClause(ctx, 4)
+		if tcErr != nil {
+			return tcErr
+		}
 		err = s.db.QueryRowContext(ctx,
-			"SELECT id FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id = $3",
-			aid, path, userID).Scan(&docID)
+			"SELECT id FROM memory_documents WHERE agent_id = $1 AND path = $2 AND user_id = $3"+tc,
+			append([]any{aid, path, userID}, tcArgs...)...).Scan(&docID)
 	}
 	if err != nil {
 		return err
@@ -331,6 +337,7 @@ func (s *PGMemoryStore) IndexDocument(ctx context.Context, agentID, userID, path
 	}
 
 	// Insert chunks
+	tid := tenantIDForInsert(ctx)
 	for i, tc := range chunks {
 		hash := memory.ContentHash(tc.Text)
 		chunkID := uuid.Must(uuid.NewV7())
@@ -344,17 +351,17 @@ func (s *PGMemoryStore) IndexDocument(ctx context.Context, agentID, userID, path
 		if embeddings != nil && i < len(embeddings) && embeddings[i] != nil {
 			// Insert with embedding via raw SQL (pgvector)
 			s.db.ExecContext(ctx,
-				`INSERT INTO memory_chunks (id, agent_id, document_id, user_id, path, start_line, end_line, hash, text, embedding, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::halfvec, $11)`,
+				`INSERT INTO memory_chunks (id, agent_id, document_id, user_id, path, start_line, end_line, hash, text, embedding, tenant_id, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11, $12)`,
 				chunkID, aid, docID, uid, path, tc.StartLine, tc.EndLine, hash, tc.Text,
-				vectorToString(embeddings[i]), now,
+				vectorToString(embeddings[i]), tid, now,
 			)
 		} else {
 			s.db.ExecContext(ctx,
-				`INSERT INTO memory_chunks (id, agent_id, document_id, user_id, path, start_line, end_line, hash, text, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+				`INSERT INTO memory_chunks (id, agent_id, document_id, user_id, path, start_line, end_line, hash, text, tenant_id, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 				 ON CONFLICT DO NOTHING`,
-				chunkID, aid, docID, uid, path, tc.StartLine, tc.EndLine, hash, tc.Text, now,
+				chunkID, aid, docID, uid, path, tc.StartLine, tc.EndLine, hash, tc.Text, tid, now,
 			)
 		}
 	}
@@ -437,7 +444,7 @@ func (s *PGMemoryStore) BackfillEmbeddings(ctx context.Context) (int, error) {
 			}
 			vecStr := vectorToString(embeddings[i])
 			if _, err := s.db.ExecContext(ctx,
-				"UPDATE memory_chunks SET embedding = $1::halfvec WHERE id = $2",
+				"UPDATE memory_chunks SET embedding = $1::vector WHERE id = $2",
 				vecStr, chunk.ID,
 			); err != nil {
 				return total, fmt.Errorf("update chunk embedding id=%s: %w", chunk.ID, err)
@@ -457,27 +464,7 @@ func (s *PGMemoryStore) Close() error { return nil }
 
 // --- Helpers ---
 
-// parseUUID returns the parsed UUID or a descriptive error. Use for every
-// INSERT/UPDATE/UPSERT/DELETE and any SELECT WHERE where silent nil would
-// either corrupt data or hide bugs as empty reads / zero-row updates. FK
-// constraints reject bad writes at the driver layer, but errors there come
-// back as cryptic PG 23503 — parseUUID catches them upstream with a clean
-// Go error. See docs/agent-identity-conventions.md.
-func parseUUID(s string) (uuid.UUID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("parse uuid %q: %w", s, err)
-	}
-	return id, nil
-}
-
-// parseUUIDOrNil returns the parsed UUID or uuid.Nil on failure, without
-// raising an error. INTENTIONALLY silent — only acceptable on read-only
-// SELECT WHERE paths where a no-match (empty result) is the correct
-// semantics on bad input. Do NOT use for writes, updates, deletes, or any
-// SELECT where an empty result would hide a bug. Prefer parseUUID for new
-// code. See docs/agent-identity-conventions.md.
-func parseUUIDOrNil(s string) uuid.UUID {
+func mustParseUUID(s string) uuid.UUID {
 	id, err := uuid.Parse(s)
 	if err != nil {
 		return uuid.Nil

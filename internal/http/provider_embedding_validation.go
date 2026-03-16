@@ -7,7 +7,7 @@ import (
 )
 
 // Provider-level embedding settings are used by the memory system, whose
-// PostgreSQL schema stores halfvec(3072) embeddings (pgvector half-precision).
+// PostgreSQL schema currently stores fixed vector(1536) embeddings.
 func validateProviderEmbeddingSettings(p *store.LLMProviderData) error {
 	es := store.ParseEmbeddingSettings(p.Settings)
 	if es == nil || !es.Enabled {

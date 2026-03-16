@@ -12,29 +12,24 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
-// RescanParams holds input for workspace rescan.
+// RescanParams holds input for tenant-wide workspace rescan.
 // AgentMap and TeamSet are pre-loaded by the caller to avoid per-file DB lookups.
 type RescanParams struct {
-	Workspace string            // absolute path to workspace root
+	TenantID  string
+	Workspace string            // absolute path to tenant's workspace root
 	AgentMap  map[string]string // agent_key → agent UUID
 	TeamSet   map[string]bool   // team UUID → exists (for validation)
 }
 
 // RescanResult holds the outcome of a workspace rescan.
 type RescanResult struct {
-	Scanned    int  `json:"scanned"`
-	New        int  `json:"new"`
-	Updated    int  `json:"updated"`
-	Unchanged  int  `json:"unchanged"`
-	Reenqueued int  `json:"reenqueued"` // docs re-enqueued for failed enrichment retry
-	Skipped    int  `json:"skipped"`
-	Errors     int  `json:"errors"`
-	Truncated  bool `json:"truncated"`
-
-	// PendingEvents holds enrichment events collected during scan.
-	// Caller must publish these AFTER calling progress.Start(total)
-	// to avoid race between event workers and progress tracking.
-	PendingEvents []eventbus.DomainEvent `json:"-"`
+	Scanned   int  `json:"scanned"`
+	New       int  `json:"new"`
+	Updated   int  `json:"updated"`
+	Unchanged int  `json:"unchanged"`
+	Skipped   int  `json:"skipped"`
+	Errors    int  `json:"errors"`
+	Truncated bool `json:"truncated"`
 }
 
 // RescanWorkspace walks the tenant workspace and registers missing or changed
@@ -54,7 +49,7 @@ func RescanWorkspace(ctx context.Context, params RescanParams, vs store.VaultSto
 	}
 
 	for _, entry := range entries {
-		agentID, teamID, chatID, scope, strippedPath := inferOwnerFromPath(entry.RelPath, params.AgentMap, params.TeamSet)
+		agentID, teamID, scope, strippedPath := inferOwnerFromPath(entry.RelPath, params.AgentMap, params.TeamSet)
 		if scope == "" {
 			// Unknown agent key or invalid team UUID — skip.
 			result.Skipped++
@@ -80,9 +75,9 @@ func RescanWorkspace(ctx context.Context, params RescanParams, vs store.VaultSto
 
 		// Check if document already exists with same hash.
 		// Fallback: also check old stripped path (pre-fix records stored without prefix).
-		existing, _ := vs.GetDocument(ctx, agentIDStr, relPath)
+		existing, _ := vs.GetDocument(ctx, params.TenantID, agentIDStr, relPath)
 		if existing == nil && strippedPath != relPath {
-			existing, _ = vs.GetDocument(ctx, agentIDStr, strippedPath)
+			existing, _ = vs.GetDocument(ctx, params.TenantID, agentIDStr, strippedPath)
 		}
 		if existing != nil && existing.ContentHash == hash {
 			result.Unchanged++
@@ -90,9 +85,9 @@ func RescanWorkspace(ctx context.Context, params RescanParams, vs store.VaultSto
 		}
 
 		doc := &store.VaultDocument{
+			TenantID:    params.TenantID,
 			AgentID:     agentID,
 			TeamID:      teamID,
-			ChatID:      chatID,
 			Scope:       scope,
 			Path:        relPath,
 			Title:       InferTitle(relPath),
@@ -112,19 +107,18 @@ func RescanWorkspace(ctx context.Context, params RescanParams, vs store.VaultSto
 			result.New++
 		}
 
-		// Collect enrichment events — published AFTER the loop so the caller
-		// can call progress.Start(total) before workers receive events.
-		// Skip auto-generated media files (goclaw_gen_*) — they create excessive
-		// noise links and shouldn't be counted in progress tracking.
-		if bus != nil && !shouldSkipEnrichment(filepath.Base(relPath)) {
-			result.PendingEvents = append(result.PendingEvents, eventbus.DomainEvent{
+		// Publish enrichment event. AgentID in payload stays string for serialization.
+		if bus != nil {
+			bus.Publish(eventbus.DomainEvent{
 				ID:        uuid.Must(uuid.NewV7()).String(),
 				Type:      eventbus.EventVaultDocUpserted,
 				SourceID:  doc.ID + ":" + hash,
+				TenantID:  params.TenantID,
 				AgentID:   agentIDStr,
 				Timestamp: time.Now(),
 				Payload: eventbus.VaultDocUpsertedPayload{
 					DocID:       doc.ID,
+					TenantID:    params.TenantID,
 					AgentID:     agentIDStr,
 					Path:        relPath,
 					ContentHash: hash,
@@ -135,6 +129,7 @@ func RescanWorkspace(ctx context.Context, params RescanParams, vs store.VaultSto
 	}
 
 	slog.Info("vault.rescan",
+		"tenant", params.TenantID,
 		"scanned", result.Scanned, "new", result.New,
 		"updated", result.Updated, "unchanged", result.Unchanged,
 		"skipped", result.Skipped, "errors", result.Errors,
@@ -144,80 +139,61 @@ func RescanWorkspace(ctx context.Context, params RescanParams, vs store.VaultSto
 }
 
 // inferOwnerFromPath parses a tenant-relative path to determine ownership.
-// Returns: agentID (*string), teamID (*string), chatID (*string), scope, strippedPath.
+// Returns: agentID (*string), teamID (*string), scope (string), strippedPath (string).
 //
-// Path patterns (checked in order):
+// Path patterns:
 //
-//	teams/{team_uuid}/{chat}/...     → teamID=uuid, chatID=chat, scope="team"
-//	teams/{team_uuid}/file.md        → teamID=uuid, chatID=nil (team-wide), scope="team"
-//	agents/{agent_key}/...           → agentID=lookup(key), scope="personal"  (legacy prefix)
-//	{agent_key}/...                  → agentID=lookup(key), scope="personal"  (workspace layout)
+//	agents/{agent_key}/rest/of/path → agentID=lookup(key), scope="personal", path="rest/of/path"
+//	teams/{team_uuid}/rest/of/path  → teamID=uuid, scope="team", path="rest/of/path"
+//	anything/else                    → scope="shared", path unchanged
 //
-// Chat segments starting with "." (e.g. ".goclaw") are config dirs, not real chats — chatID stays nil.
-// The full relPath is preserved in strippedPath for DB storage so enrichment workers
-// can locate files via filepath.Join(workspace, path).
 // Returns scope="" to signal the file should be skipped (unknown agent or invalid team).
-func inferOwnerFromPath(relPath string, agentMap map[string]string, teamSet map[string]bool) (agentID *string, teamID *string, chatID *string, scope string, strippedPath string) {
-	// Team paths: teams/{uuid}/[chat/]...
-	if strings.HasPrefix(relPath, "teams/") {
+func inferOwnerFromPath(relPath string, agentMap map[string]string, teamSet map[string]bool) (agentID *string, teamID *string, scope string, strippedPath string) {
+	switch {
+	case strings.HasPrefix(relPath, "agents/"):
+		rest := relPath[len("agents/"):]
+		key, remainder, hasSlash := strings.Cut(rest, "/")
+		if !hasSlash || key == "" || strings.Contains(remainder, "..") {
+			return nil, nil, "", relPath // malformed or path traversal
+		}
+		agentUUID, ok := agentMap[key]
+		if !ok {
+			return nil, nil, "", relPath // unknown agent key → skip
+		}
+		return &agentUUID, nil, "personal", remainder
+
+	case strings.HasPrefix(relPath, "teams/"):
 		rest := relPath[len("teams/"):]
 		id, remainder, hasSlash := strings.Cut(rest, "/")
 		if !hasSlash || id == "" || strings.Contains(remainder, "..") {
-			return nil, nil, nil, "", relPath
+			return nil, nil, "", relPath // malformed or path traversal
 		}
 		if _, parseErr := uuid.Parse(id); parseErr != nil {
-			return nil, nil, nil, "", relPath
+			return nil, nil, "", relPath // not a valid UUID → skip
 		}
 		if !teamSet[id] {
-			return nil, nil, nil, "", relPath
+			return nil, nil, "", relPath // team not found → skip
 		}
-		// Extract chat segment (second path component after team uuid) if present
-		// and not a config/hidden dir. Paths without a chat segment stay team-wide.
-		if chatSeg, _, hasChat := strings.Cut(remainder, "/"); hasChat && chatSeg != "" && !strings.HasPrefix(chatSeg, ".") {
-			cid := chatSeg
-			return nil, &id, &cid, "team", relPath
-		}
-		return nil, &id, nil, "team", relPath
-	}
+		return nil, &id, "team", remainder
 
-	// Agent paths: agents/{key}/... (legacy prefix) or {key}/... (actual workspace layout)
-	if strings.HasPrefix(relPath, "agents/") {
-		rest := relPath[len("agents/"):]
-		key, _, hasSlash := strings.Cut(rest, "/")
-		if hasSlash && key != "" && !strings.Contains(relPath, "..") {
-			if agentUUID, ok := agentMap[key]; ok {
-				return &agentUUID, nil, nil, "personal", relPath
-			}
-		}
-		return nil, nil, nil, "", relPath
+	default:
+		return nil, nil, "shared", relPath
 	}
-
-	// Root-level agent_key match: {agent_key}/...
-	// Workspace resolver uses agent_key as folder name directly.
-	firstSeg, _, hasSlash := strings.Cut(relPath, "/")
-	if hasSlash && firstSeg != "" {
-		if agentUUID, ok := agentMap[firstSeg]; ok {
-			return &agentUUID, nil, nil, "personal", relPath
-		}
-	}
-
-	// Everything else is shared (root-level files, unknown folders)
-	return nil, nil, nil, "shared", relPath
 }
 
 // InferDocType guesses doc_type from path conventions.
 // Exported so both rescan and vault interceptor share the same logic.
-//
-// Path-prefix rules (memory/, skills/, episodic/, SOUL/IDENTITY/AGENTS)
-// take precedence over extension classification — e.g. `memory/foo.md`
-// classifies as `memory` even though `.md` is a whitelisted note extension.
-// Extension fallback uses the shared `extensionDocType` whitelist so PDFs
-// and office files resolve to `document` instead of the prior `note`.
 func InferDocType(relPath string) string {
 	lower := strings.ToLower(relPath)
 	ext := strings.ToLower(filepath.Ext(relPath))
 
-	// Path-based overrides first (memory/ beats .md → note).
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp",
+		".mp4", ".webm", ".mov", ".avi", ".mkv",
+		".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a":
+		return "media"
+	}
+
 	switch {
 	case strings.HasPrefix(lower, "memory/"):
 		return "memory"
@@ -227,13 +203,9 @@ func InferDocType(relPath string) string {
 		return "skill"
 	case strings.HasPrefix(lower, "episodic/"):
 		return "episodic"
+	default:
+		return "note"
 	}
-
-	// Extension whitelist fallback — single source of truth shared with safe_walk.
-	if _, dt := isIncludedExtension(ext); dt != "" {
-		return dt
-	}
-	return "note"
 }
 
 // InferTitle extracts a human-readable title from a file path.

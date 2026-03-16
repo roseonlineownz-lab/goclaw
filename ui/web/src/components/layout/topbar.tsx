@@ -1,12 +1,13 @@
-import { Moon, Sun, PanelLeftClose, PanelLeftOpen, Menu, LogOut, Globe, Clock, ChevronDown, User, KeyRound, Info, Settings2 } from "lucide-react";
+import { Moon, Sun, PanelLeftClose, PanelLeftOpen, Menu, LogOut, Globe, Clock, Building2, ChevronDown, Check, User, KeyRound, Info, Settings2 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useUiStore } from "@/stores/use-ui-store";
 import { useAuthStore } from "@/stores/use-auth-store";
+import { useTenants } from "@/hooks/use-tenants";
 import { useIsMobile } from "@/hooks/use-media-query";
 import { useEmbeddingStatus } from "@/hooks/use-embedding-status";
 
-import { ROUTES, SUPPORTED_LANGUAGES, LANGUAGE_LABELS, TIMEZONE_OPTIONS, type Language } from "@/lib/constants";
+import { ROUTES, SUPPORTED_LANGUAGES, LANGUAGE_LABELS, TIMEZONE_OPTIONS, LOCAL_STORAGE_KEYS, type Language } from "@/lib/constants";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover } from "radix-ui";
 import { useState } from "react";
@@ -14,12 +15,7 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { AboutDialog } from "./about-dialog";
 import { SystemSettingsModal } from "./system-settings-modal";
 
-interface TopbarProps {
-  settingsOpen: boolean;
-  onSettingsOpenChange: (open: boolean) => void;
-}
-
-export function Topbar({ settingsOpen, onSettingsOpenChange }: TopbarProps) {
+export function Topbar() {
   const { t } = useTranslation("topbar");
   const theme = useUiStore((s) => s.theme);
   const setTheme = useUiStore((s) => s.setTheme);
@@ -33,7 +29,7 @@ export function Topbar({ settingsOpen, onSettingsOpenChange }: TopbarProps) {
   const isMobile = useIsMobile();
   const isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   const { status: embStatus } = useEmbeddingStatus();
-  const setSettingsOpen = onSettingsOpenChange;
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === "admin" || role === "owner";
 
@@ -123,12 +119,26 @@ export function Topbar({ settingsOpen, onSettingsOpenChange }: TopbarProps) {
 
 function UserMenu() {
   const { t } = useTranslation("topbar");
+  const { t: tt } = useTranslation("tenants");
   const logout = useAuthStore((s) => s.logout);
   const userId = useAuthStore((s) => s.userId);
+  const { currentTenant, currentTenantName, tenants, isOwner, isMultiTenant, currentTenantId } = useTenants();
   const [open, setOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const navigate = useNavigate();
+
+  const tenantLabel = currentTenant?.name || currentTenantName || "";
+
+  const handleSwitchTenant = (_tenantId: string, slug: string) => {
+    // Always set TENANT_ID so WS and HTTP both resolve the correct tenant.
+    localStorage.setItem(LOCAL_STORAGE_KEYS.TENANT_ID, slug);
+    // Non-owner: also set TENANT_HINT for browser pairing backward compat (Path 3a).
+    if (!isOwner) {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.TENANT_HINT, slug);
+    }
+    window.location.reload();
+  };
 
   return (
     <>
@@ -140,7 +150,7 @@ function UserMenu() {
         >
           <User className="h-4 w-4 shrink-0" />
           <span className="max-w-32 truncate hidden sm:inline">
-            {userId}
+            {userId}{tenantLabel ? ` (${tenantLabel})` : ""}
           </span>
           <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
         </button>
@@ -151,14 +161,51 @@ function UserMenu() {
           sideOffset={8}
           className="z-50 w-56 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95 pointer-events-auto"
         >
-          {/* Profile */}
-          <button
-            onClick={() => { setOpen(false); navigate(ROUTES.PROFILE); }}
-            className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
-          >
-            <User className="h-3.5 w-3.5 shrink-0" />
-            <span>{t("profile")}</span>
-          </button>
+          {/* Tenant name */}
+          {tenantLabel && (
+            <div className="px-2 py-1.5 text-sm font-medium truncate border-b mb-1">
+              {tenantLabel}
+            </div>
+          )}
+
+          {/* Tenant section */}
+          {isMultiTenant && (
+            <>
+              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                {tt("currentTenant")}
+              </div>
+              {tenants.map((tenant) => (
+                <button
+                  key={tenant.id}
+                  onClick={() => {
+                    if (tenant.id !== currentTenantId) {
+                      handleSwitchTenant(tenant.id, tenant.slug);
+                    }
+                    setOpen(false);
+                  }}
+                  className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+                >
+                  <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="flex-1 truncate text-left">{tenant.name}</span>
+                  {tenant.id === currentTenantId && (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  )}
+                </button>
+              ))}
+              <div className="my-1 border-t" />
+            </>
+          )}
+
+          {/* Tenants */}
+          {isMultiTenant && (
+            <button
+              onClick={() => { setOpen(false); navigate(ROUTES.TENANTS); }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+            >
+              <Building2 className="h-3.5 w-3.5 shrink-0" />
+              <span>{tt("title")}</span>
+            </button>
+          )}
 
           {/* API Keys shortcut */}
           <button

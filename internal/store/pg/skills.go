@@ -26,15 +26,16 @@ type PGSkillStore struct {
 	cache   map[string]*store.SkillInfo
 	version atomic.Int64
 
-	// List cache: cached result of ListSkills() with version + TTL validation.
-	listCache *listCacheEntry
+	// List cache: per-tenant cached result of ListSkills() with version + TTL validation.
+	// Key is tenant UUID; uuid.Nil = cross-tenant (system admin).
+	listCache map[uuid.UUID]*listCacheEntry
 	ttl       time.Duration
 
 	// Embedding provider for vector-based skill search
 	embProvider store.EmbeddingProvider
 }
 
-// listCacheEntry holds cached skill list with version + TTL.
+// listCacheEntry holds per-tenant cached skill list with version + TTL.
 type listCacheEntry struct {
 	skills []store.SkillInfo
 	ver    int64
@@ -43,10 +44,11 @@ type listCacheEntry struct {
 
 func NewPGSkillStore(db *sql.DB, baseDir string) *PGSkillStore {
 	return &PGSkillStore{
-		db:      db,
-		baseDir: baseDir,
-		cache:   make(map[string]*store.SkillInfo),
-		ttl:     defaultSkillsCacheTTL,
+		db:        db,
+		baseDir:   baseDir,
+		cache:     make(map[string]*store.SkillInfo),
+		listCache: make(map[uuid.UUID]*listCacheEntry),
+		ttl:       defaultSkillsCacheTTL,
 	}
 }
 
@@ -56,23 +58,29 @@ func (s *PGSkillStore) Dirs() []string { return []string{s.baseDir} }
 
 func (s *PGSkillStore) ListSkills(ctx context.Context) []store.SkillInfo {
 	currentVer := s.version.Load()
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		tid = store.MasterTenantID
+	}
 
+	// Check per-tenant cache
 	s.mu.RLock()
-	if s.listCache != nil && s.listCache.ver == currentVer && time.Since(s.listCache.time) < s.ttl {
-		result := s.listCache.skills
+	if entry := s.listCache[tid]; entry != nil && entry.ver == currentVer && time.Since(entry.time) < s.ttl {
+		result := entry.skills
 		s.mu.RUnlock()
 		return result
 	}
 	s.mu.RUnlock()
 
 	// Cache miss or TTL expired → query DB
-	// Returns active + archived + builtin skills. Archived skills are shown dimmed in the UI
+	// Returns active + archived + system skills. Archived skills are shown dimmed in the UI
 	// so admins can see missing deps and re-activate after installing them.
+	// Tenant filter: system skills visible globally, custom skills scoped to tenant.
 	var scanned []skillInfoRowWithFrontmatter
 	if err := pkgSqlxDB.SelectContext(ctx, &scanned,
-		`SELECT id, name, slug, description, visibility, tags, version, source, status, enabled, deps, frontmatter, file_path
-		 FROM skills WHERE (status IN ('active', 'archived') OR source = 'builtin')
-		 ORDER BY name`); err != nil {
+		`SELECT id, name, slug, description, visibility, tags, version, is_system, status, enabled, deps, frontmatter, file_path
+		 FROM skills WHERE (status IN ('active', 'archived') OR is_system = true) AND (is_system = true OR tenant_id = $1)
+		 ORDER BY name`, tid); err != nil {
 		return nil
 	}
 
@@ -82,31 +90,36 @@ func (s *PGSkillStore) ListSkills(ctx context.Context) []store.SkillInfo {
 	}
 
 	s.mu.Lock()
-	s.listCache = &listCacheEntry{skills: result, ver: currentVer, time: time.Now()}
+	s.listCache[tid] = &listCacheEntry{skills: result, ver: currentVer, time: time.Now()}
 	s.mu.Unlock()
 
 	return result
 }
 
-// ListAllSkills returns all skills for admin operations like rescan-deps.
+// ListAllSkills returns system skills + custom skills for the given tenant (for admin operations like rescan-deps).
 // Disabled skills are excluded — no point scanning or updating them.
 func (s *PGSkillStore) ListAllSkills(ctx context.Context) []store.SkillInfo {
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		tid = store.MasterTenantID
+	}
 	var scanned []skillInfoRow
 	if err := pkgSqlxDB.SelectContext(ctx, &scanned,
-		`SELECT id, name, slug, description, visibility, tags, version, source, status, enabled, deps, file_path
-		 FROM skills WHERE enabled = true AND status != 'deleted'
-		 ORDER BY name`); err != nil {
+		`SELECT id, name, slug, description, visibility, tags, version, is_system, status, enabled, deps, file_path
+		 FROM skills WHERE enabled = true AND status != 'deleted' AND (is_system = true OR tenant_id = $1)
+		 ORDER BY name`, tid); err != nil {
 		return nil
 	}
 	return skillInfoRowsToSlice(scanned, s.baseDir)
 }
 
-// ListAllSystemSkills returns only builtin skills (for startup dependency scanning).
+// ListAllSystemSkills returns only system skills (for startup dependency scanning).
+// No tenant filter — system skills belong to MasterTenantID and are globally visible.
 func (s *PGSkillStore) ListAllSystemSkills(ctx context.Context) []store.SkillInfo {
 	var scanned []skillInfoRow
 	if err := pkgSqlxDB.SelectContext(ctx, &scanned,
-		`SELECT id, name, slug, description, visibility, tags, version, source, status, enabled, deps, file_path
-		 FROM skills WHERE source = 'builtin' AND enabled = true AND status != 'deleted'
+		`SELECT id, name, slug, description, visibility, tags, version, is_system, status, enabled, deps, file_path
+		 FROM skills WHERE is_system = true AND enabled = true AND status != 'deleted'
 		 ORDER BY name`); err != nil {
 		return nil
 	}
@@ -123,14 +136,17 @@ func skillInfoRowsToSlice(rows []skillInfoRow, baseDir string) []store.SkillInfo
 }
 
 // StoreMissingDeps persists the missing_deps list for a skill into the deps JSONB column.
+// Works for both system and custom skills. System skills bypass tenant filter;
+// custom skills require tenant_id match for cross-tenant safety.
 func (s *PGSkillStore) StoreMissingDeps(ctx context.Context, id uuid.UUID, missing []string) error {
 	encoded, err := marshalMissingDeps(missing)
 	if err != nil {
 		return err
 	}
+	tid := tenantIDForInsert(ctx)
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE skills SET deps = $1, updated_at = NOW() WHERE id = $2`,
-		encoded, id,
+		`UPDATE skills SET deps = $1, updated_at = NOW() WHERE id = $2 AND (is_system = true OR tenant_id = $3)`,
+		encoded, id, tid,
 	)
 	if err == nil {
 		s.BumpVersion()

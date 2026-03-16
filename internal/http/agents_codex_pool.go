@@ -49,23 +49,39 @@ type codexPoolRecentRequest struct {
 
 const runtimeNonCodexProviderType = "runtime_non_codex"
 
-func lookupProviderByName(
+func lookupProviderByNameWithMasterFallback(
 	ctx context.Context,
 	providerStore store.ProviderStore,
+	tenantID uuid.UUID,
 	name string,
 ) (*store.LLMProviderData, error) {
 	if providerStore == nil || name == "" {
 		return nil, errors.New("provider store unavailable")
 	}
-	providerData, err := providerStore.GetProviderByName(ctx, name)
-	if err != nil {
-		return nil, err
+
+	tenantIDs := []uuid.UUID{tenantID}
+	if tenantID != store.MasterTenantID {
+		tenantIDs = append(tenantIDs, store.MasterTenantID)
 	}
-	return providerData, nil
+
+	var lastErr error
+	for _, scopedTenantID := range tenantIDs {
+		providerCtx := store.WithTenantID(ctx, scopedTenantID)
+		providerData, err := providerStore.GetProviderByName(providerCtx, name)
+		if err == nil {
+			return providerData, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("provider not found")
+	}
+	return nil, lastErr
 }
 
 func registeredCodexPoolProviders(
 	providerReg *providers.Registry,
+	tenantID uuid.UUID,
 	names []string,
 ) []string {
 	if providerReg == nil || len(names) == 0 {
@@ -77,7 +93,7 @@ func registeredCodexPoolProviders(
 		if name == "" || slices.Contains(poolProviders, name) {
 			continue
 		}
-		provider, err := providerReg.GetByName(name)
+		provider, err := providerReg.GetForTenant(tenantID, name)
 		if err != nil {
 			continue
 		}
@@ -104,7 +120,7 @@ func resolveCodexPoolRouting(
 	baseProviderType := ""
 	var defaults *store.ChatGPTOAuthRoutingConfig
 
-	if providerData, err := lookupProviderByName(ctx, providerStore, agent.Provider); err == nil {
+	if providerData, err := lookupProviderByNameWithMasterFallback(ctx, providerStore, agent.TenantID, agent.Provider); err == nil {
 		baseProviderType = providerData.ProviderType
 		if providerData.ProviderType != store.ProviderChatGPTOAuth {
 			return providerData.ProviderType, nil, nil
@@ -115,7 +131,7 @@ func resolveCodexPoolRouting(
 	}
 
 	if providerReg != nil && agent.Provider != "" {
-		runtimeProvider, err := providerReg.GetByName(agent.Provider)
+		runtimeProvider, err := providerReg.GetForTenant(agent.TenantID, agent.Provider)
 		if err == nil {
 			codex, ok := runtimeProvider.(*providers.CodexProvider)
 			if !ok {
@@ -148,7 +164,7 @@ func resolveCodexPoolRouting(
 		}
 	}
 	if providerReg != nil {
-		return baseProviderType, routing, registeredCodexPoolProviders(providerReg, poolCandidates)
+		return baseProviderType, routing, registeredCodexPoolProviders(providerReg, agent.TenantID, poolCandidates)
 	}
 	if baseProviderType != store.ProviderChatGPTOAuth {
 		return baseProviderType, routing, nil
@@ -185,7 +201,7 @@ func (h *AgentsHandler) handleCodexPoolActivity(w http.ResponseWriter, r *http.R
 	statsLimit := maxInt(limit, codexPoolRuntimeHealthSampleSize)
 
 	baseProviderType, routing, poolProviders := resolveCodexPoolRouting(r.Context(), h.providers, h.providerReg, agent)
-	strategy := store.ChatGPTOAuthStrategyPriority
+	strategy := store.ChatGPTOAuthStrategyPrimaryFirst
 	if routing != nil && routing.Strategy != "" {
 		strategy = routing.Strategy
 	}
@@ -204,7 +220,7 @@ func (h *AgentsHandler) handleCodexPoolActivity(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	rawSpans, err := h.tracingStore.ListCodexPoolSpans(r.Context(), agent.ID, poolProviders, statsLimit)
+	rawSpans, err := h.tracingStore.ListCodexPoolSpans(r.Context(), agent.ID, agent.TenantID, poolProviders, statsLimit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

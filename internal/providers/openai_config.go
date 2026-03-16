@@ -35,7 +35,7 @@ func NewOpenAIProvider(name, apiKey, apiBase, defaultModel string) *OpenAIProvid
 		apiBase:      apiBase,
 		chatPath:     "/chat/completions",
 		defaultModel: defaultModel,
-		client:       NewDefaultHTTPClient(),
+		client:       &http.Client{Timeout: DefaultHTTPTimeout},
 		retryConfig:  DefaultRetryConfig(),
 		middlewares:  ComposeMiddlewares(FastModeMiddleware, ServiceTierMiddleware, CacheMiddleware),
 	}

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/nextlevelbuilder/goclaw/internal/bgalert"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
@@ -25,23 +24,12 @@ func NewSystemConfigsHandler(s store.SystemConfigStore, msgBus *bus.MessageBus) 
 // validKeyRe allows alphanumeric, dots, underscores, hyphens (1-100 chars).
 var validKeyRe = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,100}$`)
 
-// providerRelatedKeys lists system config keys whose changes should clear
-// background worker error alerts (user is likely fixing the root cause).
-var providerRelatedKeys = map[string]bool{
-	"background.provider":    true,
-	"background.model":       true,
-	"agent.default_provider": true,
-	"agent.default_model":    true,
-	"embedding.provider":     true,
-	"embedding.model":        true,
-}
-
 // RegisterRoutes registers system config endpoints on the given mux.
 func (h *SystemConfigsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/system-configs", requireAuth("", h.handleList))
 	mux.HandleFunc("GET /v1/system-configs/{key}", requireAuth("", h.handleGet))
-	mux.HandleFunc("PUT /v1/system-configs/{key}", requireAuth("root", h.handleSet))
-	mux.HandleFunc("DELETE /v1/system-configs/{key}", requireAuth("root", h.handleDelete))
+	mux.HandleFunc("PUT /v1/system-configs/{key}", requireAuth("admin", h.handleSet))
+	mux.HandleFunc("DELETE /v1/system-configs/{key}", requireAuth("admin", h.handleDelete))
 }
 
 func (h *SystemConfigsHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -86,15 +74,13 @@ func (h *SystemConfigsHandler) handleSet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Auto-clear background error alert when provider settings change.
-	if providerRelatedKeys[key] {
-		bgalert.ClearProviderError(r.Context(), h.store)
-	}
-
+	// Broadcast change with tenant context so in-memory config refreshes for the right tenant.
+	// Use fresh context with tenant ID — request context may be canceled before subscriber runs.
 	if h.msgBus != nil {
+		freshCtx := store.WithTenantID(context.Background(), store.TenantIDFromContext(r.Context()))
 		h.msgBus.Broadcast(bus.Event{
 			Name:    bus.TopicSystemConfigChanged,
-			Payload: context.Background(),
+			Payload: freshCtx,
 		})
 	}
 
@@ -109,9 +95,10 @@ func (h *SystemConfigsHandler) handleDelete(w http.ResponseWriter, r *http.Reque
 	}
 
 	if h.msgBus != nil {
+		freshCtx := store.WithTenantID(context.Background(), store.TenantIDFromContext(r.Context()))
 		h.msgBus.Broadcast(bus.Event{
 			Name:    bus.TopicSystemConfigChanged,
-			Payload: context.Background(),
+			Payload: freshCtx,
 		})
 	}
 

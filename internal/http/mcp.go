@@ -10,7 +10,6 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
-	"github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
@@ -21,9 +20,9 @@ type MCPToolLister interface {
 	ServerToolNames(serverName string) []string
 }
 
-// MCPPoolEvictor evicts a pooled connection by server name (called on credential rotation).
+// MCPPoolEvictor evicts pooled connections for a tenant+server (called on credential rotation).
 type MCPPoolEvictor interface {
-	Evict(serverName string)
+	Evict(tenantID uuid.UUID, serverName string)
 }
 
 // MCPHandler handles MCP server management HTTP endpoints.
@@ -143,24 +142,6 @@ func (h *MCPHandler) handleCreateServer(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Security validation: command+args for stdio, URL for HTTP transports
-	var args []string
-	if len(srv.Args) > 0 {
-		if err := json.Unmarshal(srv.Args, &args); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidRequest, "args must be a string array")})
-			return
-		}
-	}
-	if err := mcp.ValidateServerConfig(srv.Transport, srv.Command, args, srv.URL); err != nil {
-		userID := store.UserIDFromContext(r.Context())
-		slog.Warn("security.mcp.server_rejected",
-			"user_id", userID,
-			"reason", err.Error(),
-			"transport", srv.Transport)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-
 	userID := store.UserIDFromContext(r.Context())
 	if userID != "" {
 		srv.CreatedBy = userID
@@ -218,53 +199,10 @@ func (h *MCPHandler) handleUpdateServer(w http.ResponseWriter, r *http.Request) 
 	// Allowlist: only permit known MCP server columns.
 	updates = filterAllowedKeys(updates, mcpServerAllowedFields)
 
-	// Security validation: validate updated fields
-	// For updates, we need to consider the existing server + updated fields
-	existingSrv, _ := h.store.GetServer(r.Context(), id)
-	if existingSrv != nil {
-		// Determine effective values (update or existing)
-		transport := existingSrv.Transport
-		if t, ok := updates["transport"].(string); ok {
-			transport = t
-		}
-		command := existingSrv.Command
-		if c, ok := updates["command"].(string); ok {
-			command = c
-		}
-		url := existingSrv.URL
-		if u, ok := updates["url"].(string); ok {
-			url = u
-		}
-		// Parse args from updates or existing
-		var args []string
-		if argsRaw, ok := updates["args"]; ok {
-			if argsSlice, ok := argsRaw.([]any); ok {
-				for _, a := range argsSlice {
-					if s, ok := a.(string); ok {
-						args = append(args, s)
-					}
-				}
-			}
-		} else if len(existingSrv.Args) > 0 {
-			_ = json.Unmarshal(existingSrv.Args, &args)
-		}
-
-		if err := mcp.ValidateServerConfig(transport, command, args, url); err != nil {
-			userID := store.UserIDFromContext(r.Context())
-			slog.Warn("security.mcp.server_update_rejected",
-				"user_id", userID,
-				"server_id", id,
-				"reason", err.Error(),
-				"transport", transport)
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-	}
-
 	// Read server name before update for pool eviction
 	var serverName string
-	if existingSrv != nil {
-		serverName = existingSrv.Name
+	if srv, _ := h.store.GetServer(r.Context(), id); srv != nil {
+		serverName = srv.Name
 	}
 
 	if err := h.store.UpdateServer(r.Context(), id, updates); err != nil {
@@ -279,7 +217,8 @@ func (h *MCPHandler) handleUpdateServer(w http.ResponseWriter, r *http.Request) 
 		_, hasHeaders := updates["headers"]
 		_, hasEnv := updates["env"]
 		if hasKey || hasHeaders || hasEnv {
-			h.poolEvictor.Evict(serverName)
+			tid := store.TenantIDFromContext(r.Context())
+			h.poolEvictor.Evict(tid, serverName)
 		}
 	}
 
@@ -322,7 +261,8 @@ func (h *MCPHandler) handleReconnectServer(w http.ResponseWriter, r *http.Reques
 	}
 
 	if h.poolEvictor != nil {
-		h.poolEvictor.Evict(srv.Name)
+		tid := store.TenantIDFromContext(r.Context())
+		h.poolEvictor.Evict(tid, srv.Name)
 	}
 
 	h.emitCacheInvalidate()

@@ -95,7 +95,7 @@ export function AgentHeader({ agent, heartbeat, onBack, onDelete, onAdvanced, on
             >
               V3
             </Badge>
-            {(
+            {agent.agent_type === "predefined" && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Badge

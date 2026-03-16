@@ -31,14 +31,6 @@ func init() {
 		MsgUserIDRequired:    "user_id is required",
 		MsgMsgRequired:       "message is required",
 
-		// Abort
-		MsgAbortStopped:         "run stopped",
-		MsgAbortForced:          "run force-aborted (3s grace exceeded)",
-		MsgAbortAlreadyAborting: "abort already in progress",
-		MsgAbortNotFound:        "run not found or already finished",
-		MsgAbortUnauthorized:    "not authorized to abort this run",
-		MsgAbortFailed:          "failed to abort run: %s",
-
 		// Channel instances
 		MsgInvalidChannelType: "invalid channel_type",
 		MsgInstanceNotFound:   "instance not found",
@@ -73,8 +65,6 @@ func init() {
 		MsgAlreadySummoning:      "agent is already being summoned",
 		MsgSummoningUnavailable:  "summoning not available",
 		MsgNoDescription:         "agent has no description to resummon from",
-		MsgSummonCancelled:       "summon cancelled by user",
-		MsgCannotCancel:          "agent is not being summoned",
 		MsgInvalidPath:           "invalid path",
 
 		// Scheduler
@@ -91,12 +81,12 @@ func init() {
 		MsgNotImplemented: "%s not yet implemented",
 
 		// Agent links
-		MsgLinksNotConfigured: "agent links not configured",
-		MsgInvalidDirection:   "direction must be outbound, inbound, or bidirectional",
-		MsgSourceTargetSame:   "source and target must be different agents",
-		MsgAgentTypeRejected:  "agent_type field is no longer accepted; agents are predefined-only in v4",
-		MsgNoUpdatesProvided:  "no updates provided",
-		MsgInvalidLinkStatus:  "status must be active or disabled",
+		MsgLinksNotConfigured:   "agent links not configured",
+		MsgInvalidDirection:     "direction must be outbound, inbound, or bidirectional",
+		MsgSourceTargetSame:     "source and target must be different agents",
+		MsgCannotDelegateOpen:   "cannot delegate to open agents — only predefined agents can be delegation targets",
+		MsgNoUpdatesProvided:    "no updates provided",
+		MsgInvalidLinkStatus:    "status must be active or disabled",
 
 		// Teams
 		MsgTeamsNotConfigured:   "teams not configured",
@@ -110,19 +100,13 @@ func init() {
 		// Skills
 		MsgSkillsUpdateNotSupported: "skills.update not supported for file-based skills",
 		MsgCannotResolveSkillID:     "cannot resolve skill ID for file-based skill",
-		MsgInvalidSkillSource:       "invalid skill source: must be one of builtin, hub-verified, hub-unverified, agent-created, user-uploaded",
-		MsgIsSystemDeprecated:       "is_system field is no longer supported; use source='builtin' instead",
-		MsgVersionAlreadyArchived:   "skill version already archived",
-		MsgCuratorInvalidTransition: "invalid curator run state transition: %s -> %s",
 
 		// Logs
 		MsgInvalidLogAction: "action must be 'start' or 'stop'",
 
 		// Config
-		MsgRawConfigRequired:     "raw config is required",
-		MsgRawPatchRequired:      "raw patch is required",
-		MsgConfigMasterScopeOnly: "config.* methods are master-scope only; use tenant tool config endpoints for per-tenant overrides",
-		MsgMasterScopeRequired:   "this action requires master tenant scope",
+		MsgRawConfigRequired: "raw config is required",
+		MsgRawPatchRequired:  "raw patch is required",
 
 		// Storage / File
 		MsgCannotDeleteSkillsDir: "cannot delete skills directories",
@@ -193,67 +177,10 @@ func init() {
 
 		MsgInvalidRole: "invalid role: allowed values are owner, admin, operator, member, viewer",
 
-		MsgContactIDsRequired:       "contact_ids is required",
-		MsgMergeTargetRequired:      "target_user_id is required",
-		MsgTenantUserNotFound:       "tenant user not found",
-		MsgTenantMismatch:           "tenant user does not belong to this tenant",
-		MsgTenantScopeRequired:      "tenant scope is required for this operation",
-		MsgMergeSourceAlreadyMerged: "source contact already merged — user→user merge forbidden",
-		MsgMergeTargetAlreadyMerged: "target user already merged into another — chained merges forbidden",
-		MsgMergeUserToUserForbidden: "cannot merge between two authenticated users",
-		MsgMergeAtomicFailed:        "merge transaction failed: %s",
-		MsgMergeTargetUserNotFound:  "target user not found: %s",
-
-		// TTS / Voices
-		MsgTtsUnknownModel:       "unknown tts model: %s",
-		MsgVoicesListFailed:      "failed to list voices: %s",
-		MsgTtsGeminiInvalidVoice: "invalid Gemini voice: %s",
-		MsgTtsGeminiSpeakerLimit: "Gemini TTS supports at most 2 speakers",
-		MsgTtsGeminiInvalidModel:  "invalid Gemini TTS model: %s",
-		MsgTtsGeminiTextOnly:      "Gemini refused to generate audio. Try simpler text without translation or commentary.",
-		MsgTtsParamOutOfRange:     "TTS param %q value %v is out of range [%v, %v]",
-		MsgTtsParamUnknownKey:     "TTS param %q is not supported by this provider",
-		MsgTtsMiniMaxVoicesFailed: "failed to fetch MiniMax voices: %s",
-
-		// STT
-		MsgSTTAllProvidersFailed:     "All STT providers failed",
-		MsgSTTLegacyConfigDeprecated: "Legacy STT config deprecated; migrate to builtin_tools[stt]",
-		MsgSTTWhatsappPrivacyWarning: "Enabling STT for WhatsApp breaks end-to-end encryption for voice messages sent to this agent.",
-		MsgVoiceMessageFallback:      "[Voice message]",
-
-		// Hooks
-		MsgHookInvalidMatcher:          "invalid matcher regex: %s",
-		MsgHookCommandDisabledStandard: "command-type hooks are only available on Lite edition",
-		MsgHookPromptRequiresMatcher:   "prompt hooks require a matcher or if_expr (runaway-cost guard)",
-		MsgHookCircuitBreakerTripped:   "hook auto-disabled after repeated failures",
-		MsgHookBudgetExceeded:          "tenant hook token budget exceeded",
-		MsgHookPerTurnCapReached:       "hook invocation per-turn cap reached",
-		MsgHookBuiltinReadOnly:         "builtin hooks are read-only except for the enabled toggle",
-
-		// Message tool cross-target forward notice
-		MessageCrossTargetForwarded: "📤 Forwarded to %s as requested: %q",
-
-		// Auth + Bootstrap
-		MsgBootstrapRequired:    "gateway not bootstrapped — POST /v1/bootstrap/init first",
-		MsgBootstrapAlreadyDone: "bootstrap already completed",
-		MsgInvalidEmail:         "invalid email address",
-		MsgWeakPassword:         "password must be at least 12 chars and contain a letter, digit, and symbol",
-		MsgInvalidCredentials:   "invalid email or password",
-		MsgRefreshTokenInvalid:  "refresh token invalid",
-		MsgRefreshTokenExpired:  "refresh token expired",
-		MsgRefreshTokenRevoked:  "refresh token revoked",
-		MsgAccessTokenExpired:   "access token expired",
-		MsgAccessTokenInvalid:   "access token invalid",
-		MsgCurrentPasswordWrong: "current password is incorrect",
-		MsgDisplayNameInvalid:   "display name must be between 2 and 64 characters",
-
-		MsgPasswordResetInvalidToken: "invalid or expired reset token",
-		MsgPasswordResetEmailSubject: "Reset your password",
-		MsgPasswordResetEmailBody:    "Click the link to reset your password: %s\nThis link expires in 1 hour.",
-
-		MsgInvalidShareTarget: "share target must be exactly one of user_id or team_id",
-		MsgInvalidShareRole:   "share role must be one of viewer, member, editor",
-
-		MsgChannelDefaultProjectDenied: "You don't have permission to set this project as default for this channel",
+		MsgContactIDsRequired:  "contact_ids is required",
+		MsgMergeTargetRequired: "exactly one of tenant_user_id or create_user is required",
+		MsgTenantUserNotFound:  "tenant user not found",
+		MsgTenantMismatch:      "tenant user does not belong to this tenant",
+		MsgTenantScopeRequired: "tenant scope is required for this operation",
 	})
 }

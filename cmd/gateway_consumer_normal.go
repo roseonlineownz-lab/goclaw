@@ -11,11 +11,11 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
-	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/telegram/voiceguard"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/scheduler"
-	sessions "github.com/nextlevelbuilder/goclaw/internal/agentsessions"
+	"github.com/nextlevelbuilder/goclaw/internal/sessions"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
@@ -26,6 +26,14 @@ func processNormalMessage(
 	msg bus.InboundMessage,
 	deps *ConsumerDeps,
 ) {
+	// Inject tenant from channel instance into context so all store operations
+	// (agent lookup, session creation, etc.) are tenant-scoped.
+	if msg.TenantID != uuid.Nil {
+		ctx = store.WithTenantID(ctx, msg.TenantID)
+	} else {
+		ctx = store.WithTenantID(ctx, store.MasterTenantID)
+	}
+
 	// Determine target agent via bindings or explicit AgentID
 	agentID := msg.AgentID
 	if agentID == "" {
@@ -206,10 +214,15 @@ func processNormalMessage(
 
 	// Build outbound metadata for reply-to + thread routing BEFORE RegisterRun
 	// so block.reply handler can use it for routing intermediate messages.
-	outMeta := channels.CopyFinalRoutingMeta(msg.Metadata)
+	outMeta := make(map[string]string)
 	if isGroup {
 		if mid := msg.Metadata["message_id"]; mid != "" {
 			outMeta["reply_to_message_id"] = mid
+		}
+	}
+	for _, k := range []string{tools.MetaMessageThreadID, "local_key", "placeholder_key", "group_id"} {
+		if v := msg.Metadata[k]; v != "" {
+			outMeta[k] = v
 		}
 	}
 
@@ -244,16 +257,6 @@ func processNormalMessage(
 			extraPrompt += "\n\n"
 		}
 		extraPrompt += tsp
-	}
-
-	// Append channel-provided self-identity hint (e.g. "You are @bot (Name) on Telegram").
-	// Prevents the LLM from treating its own platform handle as another bot when users
-	// @mention it directly or reference it alongside another bot in multi-bot groups.
-	if identity := msg.Metadata[tools.MetaChannelSelfIdentity]; identity != "" {
-		if extraPrompt != "" {
-			extraPrompt += "\n\n"
-		}
-		extraPrompt += identity
 	}
 
 	// Per-topic skill filter override (from group/topic config hierarchy).
@@ -333,6 +336,11 @@ func processNormalMessage(
 		}
 	}
 
+	// Inject tenant context from channel instance so all store queries are tenant-scoped.
+	if msg.TenantID != uuid.Nil {
+		ctx = store.WithTenantID(ctx, msg.TenantID)
+	}
+
 	// Inject post-turn dispatch tracker so team task creates are deferred.
 	ptd := tools.NewPendingTeamDispatch()
 	schedCtx := tools.WithPendingTeamDispatch(ctx, ptd)
@@ -341,29 +349,6 @@ func processNormalMessage(
 	if rk := msg.Metadata["run_kind"]; rk != "" {
 		schedCtx = tools.WithRunKind(schedCtx, rk)
 	}
-
-	// Resolve effective sender: prefer MetaOriginSenderID when the on-wire
-	// SenderID is an internal/synthetic one (e.g. "notification:progress",
-	// "ticker:system", "system:escalation", "session_send_tool"). This lets
-	// system-initiated turns that DO have a real user behind them (because
-	// they propagated the origin via metadata) attribute actions to that user
-	// — e.g. for CheckFileWriterPermission in group chats (#915). Synthetic
-	// senders without propagation keep their on-wire value and hit F1's
-	// deny-in-group rule (safe default).
-	effectiveSenderID := msg.SenderID
-	if bus.IsInternalSender(effectiveSenderID) {
-		// Defense-in-depth: if a propagation bug ever writes a synthetic
-		// value into MetaOriginSenderID, do NOT honour it. We want only real
-		// user senders to override the on-wire synthetic.
-		if realSender := msg.Metadata[tools.MetaOriginSenderID]; realSender != "" && !bus.IsInternalSender(realSender) {
-			effectiveSenderID = realSender
-		}
-	}
-	// Role propagation: carry the RBAC role of the originating actor so
-	// permission checks during the re-ingress turn can bypass per-user
-	// grants for authenticated admins (#915). Only present when the
-	// upstream dispatch set MetaOriginRole.
-	effectiveRole := msg.Metadata[tools.MetaOriginRole]
 
 	// Schedule through main lane (per-session concurrency controlled by maxConcurrent)
 	outCh := deps.Sched.ScheduleWithOpts(schedCtx, "main", agent.RunRequest{
@@ -375,12 +360,10 @@ func processNormalMessage(
 		ChannelType:       resolveChannelType(deps.ChannelMgr, msg.Channel),
 		ChatTitle:         msg.Metadata[tools.MetaChatTitle],
 		ChatID:            msg.ChatID,
-		WorkspaceChatID:   msg.ChatID,
 		PeerKind:          peerKind,
 		LocalKey:          msg.Metadata["local_key"],
 		UserID:            userID,
-		SenderID:          effectiveSenderID,
-		Role:              effectiveRole,
+		SenderID:          msg.SenderID,
 		SenderName:        resolveSenderName(msg),
 		RunID:             runID,
 		Stream:            enableStream,
@@ -393,7 +376,7 @@ func processNormalMessage(
 	})
 
 	// Handle result asynchronously to not block the flush callback.
-	go func(agentKey, channel, chatID, session, rID, peerKind, inboundContent string, meta map[string]string, blockReplyEnabled bool, ptd *tools.PendingTeamDispatch, agentUUID uuid.UUID, agentOtherConfig []byte) {
+	go func(agentKey, channel, chatID, session, rID, peerKind, inboundContent string, meta map[string]string, blockReplyEnabled bool, ptd *tools.PendingTeamDispatch) {
 		outcome := <-outCh
 
 		// Release team create lock — tasks already visible in DB, other goroutines can list.
@@ -423,26 +406,15 @@ func processNormalMessage(
 					ChatID:   chatID,
 					Content:  "",
 					Metadata: meta,
-					AgentID:  agentUUID,
 				})
 				return
 			}
 			slog.Error("inbound: agent run failed", "error", outcome.Err, "channel", channel)
-			// Suppress technical error text on public-facing channels (FB, Telegram, etc.)
-			// Empty Content still triggers placeholder/typing cleanup downstream.
-			errContent := formatAgentError(outcome.Err)
-			if deps.ChannelMgr != nil {
-				if ct := deps.ChannelMgr.ChannelTypeForName(channel); isExternalChannel(ct) {
-					slog.Info("inbound: suppressed error for external channel", "channel", channel, "type", ct)
-					errContent = ""
-				}
-			}
 			deps.MsgBus.PublishOutbound(bus.OutboundMessage{
 				Channel:  channel,
 				ChatID:   chatID,
-				Content:  errContent,
+				Content:  formatAgentError(outcome.Err),
 				Metadata: meta,
-				AgentID:  agentUUID,
 			})
 			return
 		}
@@ -460,7 +432,6 @@ func processNormalMessage(
 				ChatID:   chatID,
 				Content:  "",
 				Metadata: meta,
-				AgentID:  agentUUID,
 			})
 			return
 		}
@@ -476,7 +447,6 @@ func processNormalMessage(
 				ChatID:   chatID,
 				Content:  "",
 				Metadata: meta,
-				AgentID:  agentUUID,
 			})
 			return
 		}
@@ -492,12 +462,10 @@ func processNormalMessage(
 
 		// Publish response back to the channel
 		outMsg := bus.OutboundMessage{
-			Channel:          channel,
-			ChatID:           chatID,
-			Content:          replyContent,
-			Metadata:         meta,
-			AgentID:          agentUUID,
-			AgentOtherConfig: agentOtherConfig,
+			Channel:  channel,
+			ChatID:   chatID,
+			Content:  replyContent,
+			Metadata: meta,
 		}
 
 		appendMediaToOutbound(&outMsg, outcome.Result.Media)
@@ -508,5 +476,5 @@ func processNormalMessage(
 		if deps.TeamStore != nil && channel != tools.ChannelSystem && channel != tools.ChannelTeammate && channel != tools.ChannelDashboard {
 			go autoSetFollowup(ctx, deps.TeamStore, deps.AgentStore, agentKey, channel, chatID, replyContent)
 		}
-	}(agentID, msg.Channel, msg.ChatID, sessionKey, runID, peerKind, msg.Content, outMeta, blockReply, ptd, agentLoop.UUID(), agentLoop.OtherConfig())
+	}(agentID, msg.Channel, msg.ChatID, sessionKey, runID, peerKind, msg.Content, outMeta, blockReply, ptd)
 }

@@ -77,11 +77,8 @@
   },
   "toast": {
     "failedLoad": "Failed to load traces",
-    "abortStopped": "Run stopped",
-    "abortForced": "Run force-stopped (still cleaning up in background)",
-    "abortAlreadyAborting": "Stop already in progress",
-    "abortNotFound": "Run already finished",
-    "abortUnauthorized": "Not authorized to stop this run",
-    "abortFailed": "Failed to stop run"
+    "abortSent": "Run stopped",
+    "abortFailed": "Failed to stop run",
+    "abortNotFound": "Run already finished or not found"
   }
 }

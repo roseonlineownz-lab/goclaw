@@ -46,15 +46,13 @@ func (s *SQLiteEpisodicStore) Create(ctx context.Context, ep *store.EpisodicSumm
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO episodic_summaries
-			(id, agent_id, user_id, team_id, contact_id, project_id,
-			 session_key, summary, key_topics,
+			(id, tenant_id, agent_id, user_id, session_key, summary, key_topics,
 			 turn_count, token_count, l0_abstract, source_id, source_type,
 			 created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT DO NOTHING`,
-		id.String(), ep.AgentID.String(),
-		ep.UserID, uuidPtrStr(ep.TeamID), uuidPtrStr(ep.ContactID), uuidPtrStr(ep.ProjectID),
-		ep.SessionKey, ep.Summary, topics,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (agent_id, user_id, source_id) WHERE source_id IS NOT NULL DO NOTHING`,
+		id.String(), ep.TenantID.String(), ep.AgentID.String(),
+		ep.UserID, ep.SessionKey, ep.Summary, topics,
 		ep.TurnCount, ep.TokenCount, ep.L0Abstract,
 		ep.SourceID, ep.SourceType,
 		now.Format(time.RFC3339Nano), expiresAt)
@@ -67,19 +65,22 @@ func (s *SQLiteEpisodicStore) Create(ctx context.Context, ep *store.EpisodicSumm
 
 // Get retrieves an episodic summary by ID.
 func (s *SQLiteEpisodicStore) Get(ctx context.Context, id string) (*store.EpisodicSummary, error) {
+	tenantID := tenantIDForInsert(ctx)
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, agent_id, user_id, session_key, summary, key_topics,
+		SELECT id, tenant_id, agent_id, user_id, session_key, summary, key_topics,
 		       turn_count, token_count, l0_abstract, source_id, source_type,
 		       created_at, expires_at, recall_count, recall_score, last_recalled_at
-		FROM episodic_summaries WHERE id = ?`,
-		id)
+		FROM episodic_summaries WHERE id = ? AND tenant_id = ?`,
+		id, tenantID.String())
 	return scanSQLiteEpisodic(row)
 }
 
 // Delete removes an episodic summary.
 func (s *SQLiteEpisodicStore) Delete(ctx context.Context, id string) error {
+	tenantID := tenantIDForInsert(ctx)
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM episodic_summaries WHERE id = ?`, id)
+		`DELETE FROM episodic_summaries WHERE id = ? AND tenant_id = ?`,
+		id, tenantID.String())
 	return err
 }
 
@@ -88,25 +89,26 @@ func (s *SQLiteEpisodicStore) List(ctx context.Context, agentID, userID string, 
 	if limit <= 0 {
 		limit = 20
 	}
+	tenantID := tenantIDForInsert(ctx)
 
 	var q string
 	var args []any
 	if userID != "" {
-		q = `SELECT id, agent_id, user_id, session_key, summary, key_topics,
+		q = `SELECT id, tenant_id, agent_id, user_id, session_key, summary, key_topics,
 			       turn_count, token_count, l0_abstract, source_id, source_type,
 			       created_at, expires_at, recall_count, recall_score, last_recalled_at
 			FROM episodic_summaries
-			WHERE agent_id = ? AND user_id = ?
+			WHERE agent_id = ? AND user_id = ? AND tenant_id = ?
 			ORDER BY created_at DESC LIMIT ? OFFSET ?`
-		args = []any{agentID, userID, limit, offset}
+		args = []any{agentID, userID, tenantID.String(), limit, offset}
 	} else {
-		q = `SELECT id, agent_id, user_id, session_key, summary, key_topics,
+		q = `SELECT id, tenant_id, agent_id, user_id, session_key, summary, key_topics,
 			       turn_count, token_count, l0_abstract, source_id, source_type,
 			       created_at, expires_at, recall_count, recall_score, last_recalled_at
 			FROM episodic_summaries
-			WHERE agent_id = ?
+			WHERE agent_id = ? AND tenant_id = ?
 			ORDER BY created_at DESC LIMIT ? OFFSET ?`
-		args = []any{agentID, limit, offset}
+		args = []any{agentID, tenantID.String(), limit, offset}
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -120,21 +122,23 @@ func (s *SQLiteEpisodicStore) List(ctx context.Context, agentID, userID string, 
 
 // ExistsBySourceID checks if an episodic summary with the given source_id exists.
 func (s *SQLiteEpisodicStore) ExistsBySourceID(ctx context.Context, agentID, userID, sourceID string) (bool, error) {
+	tenantID := tenantIDForInsert(ctx)
 	var exists bool
 	err := s.db.QueryRowContext(ctx, `
 		SELECT EXISTS(SELECT 1 FROM episodic_summaries
-		WHERE agent_id = ? AND user_id = ? AND source_id = ?)`,
-		agentID, userID, sourceID).Scan(&exists)
+		WHERE agent_id = ? AND user_id = ? AND source_id = ? AND tenant_id = ?)`,
+		agentID, userID, sourceID, tenantID.String()).Scan(&exists)
 	return exists, err
 }
 
 // PruneExpired deletes episodic summaries past their expiry.
 func (s *SQLiteEpisodicStore) PruneExpired(ctx context.Context) (int, error) {
+	tenantID := tenantIDForInsert(ctx)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	res, err := s.db.ExecContext(ctx, `
 		DELETE FROM episodic_summaries
-		WHERE expires_at IS NOT NULL AND expires_at < ?`,
-		now)
+		WHERE expires_at IS NOT NULL AND expires_at < ? AND tenant_id = ?`,
+		now, tenantID.String())
 	if err != nil {
 		return 0, err
 	}
@@ -161,15 +165,16 @@ func (s *SQLiteEpisodicStore) listUnpromoted(ctx context.Context, agentID, userI
 	if limit <= 0 {
 		limit = 20
 	}
+	tenantID := tenantIDForInsert(ctx)
 	query := `
-		SELECT id, agent_id, user_id, session_key, summary, key_topics,
+		SELECT id, tenant_id, agent_id, user_id, session_key, summary, key_topics,
 		       turn_count, token_count, l0_abstract, source_id, source_type,
 		       created_at, expires_at,
 		       recall_count, recall_score, last_recalled_at
 		FROM episodic_summaries
-		WHERE agent_id = ? AND user_id = ? AND promoted_at IS NULL
+		WHERE agent_id = ? AND user_id = ? AND tenant_id = ? AND promoted_at IS NULL
 		ORDER BY ` + orderBy + ` LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, query, agentID, userID, limit)
+	rows, err := s.db.QueryContext(ctx, query, agentID, userID, tenantID.String(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("episodic list_unpromoted: %w", err)
 	}
@@ -191,14 +196,15 @@ func (s *SQLiteEpisodicStore) RecordRecall(ctx context.Context, id string, score
 	} else if score > 1 {
 		score = 1
 	}
+	tenantID := tenantIDForInsert(ctx)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE episodic_summaries
 		SET recall_count = recall_count + 1,
 		    recall_score = (recall_score * recall_count + ?) / (recall_count + 1),
 		    last_recalled_at = ?
-		WHERE id = ?`,
-		score, now, id)
+		WHERE id = ? AND tenant_id = ?`,
+		score, now, id, tenantID.String())
 	if err != nil {
 		return fmt.Errorf("episodic record_recall: %w", err)
 	}
@@ -237,11 +243,12 @@ func (s *SQLiteEpisodicStore) MarkPromoted(ctx context.Context, ids []string) er
 
 // CountUnpromoted returns the count of unpromoted summaries for an agent/user.
 func (s *SQLiteEpisodicStore) CountUnpromoted(ctx context.Context, agentID, userID string) (int, error) {
+	tenantID := tenantIDForInsert(ctx)
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM episodic_summaries
-		WHERE agent_id = ? AND user_id = ? AND promoted_at IS NULL`,
-		agentID, userID).Scan(&count)
+		WHERE agent_id = ? AND user_id = ? AND tenant_id = ? AND promoted_at IS NULL`,
+		agentID, userID, tenantID.String()).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("episodic count_unpromoted: %w", err)
 	}
@@ -249,16 +256,17 @@ func (s *SQLiteEpisodicStore) CountUnpromoted(ctx context.Context, agentID, user
 }
 
 // scanSQLiteEpisodic scans a single row into EpisodicSummary. Column order
-// matches the SELECT lists in Get / List / ListUnpromoted* (16 columns).
+// matches the SELECT lists in Get / List / ListUnpromoted* (17 columns incl.
+// Phase 10 recall signals).
 func scanSQLiteEpisodic(row *sql.Row) (*store.EpisodicSummary, error) {
 	var ep store.EpisodicSummary
-	var idStr, agentStr string
+	var idStr, tenantStr, agentStr string
 	var topicsBytes []byte
 	var createdAt sqliteTime
 	var expiresAt nullSqliteTime
 	var lastRecalledAt nullSqliteTime
 	err := row.Scan(
-		&idStr, &agentStr, &ep.UserID, &ep.SessionKey,
+		&idStr, &tenantStr, &agentStr, &ep.UserID, &ep.SessionKey,
 		&ep.Summary, &topicsBytes, &ep.TurnCount, &ep.TokenCount,
 		&ep.L0Abstract, &ep.SourceID, &ep.SourceType,
 		&createdAt, &expiresAt,
@@ -270,6 +278,7 @@ func scanSQLiteEpisodic(row *sql.Row) (*store.EpisodicSummary, error) {
 		return nil, err
 	}
 	ep.ID, _ = uuid.Parse(idStr)
+	ep.TenantID, _ = uuid.Parse(tenantStr)
 	ep.AgentID, _ = uuid.Parse(agentStr)
 	scanJSONStringArray(topicsBytes, &ep.KeyTopics)
 	ep.CreatedAt = createdAt.Time
@@ -289,13 +298,13 @@ func scanSQLiteEpisodicRows(rows *sql.Rows) ([]store.EpisodicSummary, error) {
 	var results []store.EpisodicSummary
 	for rows.Next() {
 		var ep store.EpisodicSummary
-		var idStr, agentStr string
+		var idStr, tenantStr, agentStr string
 		var topicsBytes []byte
 		var createdAt sqliteTime
 		var expiresAt nullSqliteTime
 		var lastRecalledAt nullSqliteTime
 		if err := rows.Scan(
-			&idStr, &agentStr, &ep.UserID, &ep.SessionKey,
+			&idStr, &tenantStr, &agentStr, &ep.UserID, &ep.SessionKey,
 			&ep.Summary, &topicsBytes, &ep.TurnCount, &ep.TokenCount,
 			&ep.L0Abstract, &ep.SourceID, &ep.SourceType,
 			&createdAt, &expiresAt,
@@ -303,6 +312,7 @@ func scanSQLiteEpisodicRows(rows *sql.Rows) ([]store.EpisodicSummary, error) {
 			return nil, err
 		}
 		ep.ID, _ = uuid.Parse(idStr)
+		ep.TenantID, _ = uuid.Parse(tenantStr)
 		ep.AgentID, _ = uuid.Parse(agentStr)
 		scanJSONStringArray(topicsBytes, &ep.KeyTopics)
 		ep.CreatedAt = createdAt.Time

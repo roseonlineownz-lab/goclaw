@@ -344,8 +344,9 @@ func (h *AgentsHandler) doTeamImport(ctx context.Context, r *http.Request, teamA
 		}
 
 		dedupedKey := h.dedupAgentKey(ctx, agentKey)
+		tenantID := store.TenantIDFromContext(ctx)
 		userID := store.UserIDFromContext(ctx)
-		ag := h.buildAgentFromArchive(agArc.agentConfig, dedupedKey, "", userID)
+		ag := h.buildAgentFromArchive(agArc.agentConfig, dedupedKey, "", tenantID, userID)
 
 		if progressFn != nil {
 			progressFn(ProgressEvent{Phase: "agent", Status: "running", Detail: dedupedKey})

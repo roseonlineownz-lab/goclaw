@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
-import { Shield, Clock, KeyRound } from "lucide-react";
+import { Shield, Clock, Building2, KeyRound } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useTenants } from "@/hooks/use-tenants";
 import type { ApiKeyCreateInput } from "@/types/api-key";
 import { apiKeyCreateSchema, type ApiKeyCreateFormData } from "@/schemas/api-key.schema";
 
@@ -41,6 +42,9 @@ const EXPIRY_OPTIONS = [
   { value: "90d", seconds: 90 * 86400 },
 ] as const;
 
+// Sentinel for "system (all tenants)" — no tenant_id sent
+const SYSTEM_TENANT = "__system__";
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -49,6 +53,9 @@ interface Props {
 
 export function ApiKeyCreateDialog({ open, onOpenChange, onCreate }: Props) {
   const { t } = useTranslation("api-keys");
+  const { isOwner, currentTenantId, currentTenantName } = useTenants();
+
+  const defaultTenant = currentTenantId || SYSTEM_TENANT;
 
   const [saving, setSaving] = useState(false);
 
@@ -65,11 +72,13 @@ export function ApiKeyCreateDialog({ open, onOpenChange, onCreate }: Props) {
       name: "",
       scopes: [],
       expiry: "never",
+      tenantValue: defaultTenant,
     },
   });
 
   const scopes = watch("scopes");
   const expiry = watch("expiry");
+  const tenantValue = watch("tenantValue");
 
   const toggleScope = (scope: string) => {
     const next = scopes.includes(scope)
@@ -87,8 +96,11 @@ export function ApiKeyCreateDialog({ open, onOpenChange, onCreate }: Props) {
         scopes: data.scopes,
         expires_in: expiryOption && expiryOption.seconds > 0 ? expiryOption.seconds : undefined,
       };
+      if (isOwner && data.tenantValue !== SYSTEM_TENANT) {
+        input.tenant_id = data.tenantValue;
+      }
       await onCreate(input);
-      reset({ name: "", scopes: [], expiry: "never" });
+      reset({ name: "", scopes: [], expiry: "never", tenantValue: defaultTenant });
     } finally {
       setSaving(false);
     }
@@ -106,16 +118,46 @@ export function ApiKeyCreateDialog({ open, onOpenChange, onCreate }: Props) {
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onValid)} className="space-y-5">
-          <div className="space-y-1.5">
-            <Label htmlFor="key-name">{t("form.name")}</Label>
-            <Input
-              id="key-name"
-              {...register("name")}
-              placeholder={t("form.namePlaceholder")}
-              className="text-base md:text-sm"
-            />
-            {errors.name && (
-              <p className="text-xs text-destructive">{errors.name.message}</p>
+          {/* Name + Tenant row */}
+          <div className={`grid gap-4 ${isOwner ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+            <div className="space-y-1.5">
+              <Label htmlFor="key-name">{t("form.name")}</Label>
+              <Input
+                id="key-name"
+                {...register("name")}
+                placeholder={t("form.namePlaceholder")}
+                className="text-base md:text-sm"
+              />
+              {errors.name && (
+                <p className="text-xs text-destructive">{errors.name.message}</p>
+              )}
+            </div>
+
+            {isOwner && (
+              <div className="space-y-1.5">
+                <Label htmlFor="key-tenant" className="flex items-center gap-1.5">
+                  <Building2 className="h-3.5 w-3.5" />
+                  Tenant
+                </Label>
+                <Select
+                  value={tenantValue}
+                  onValueChange={(v) => setValue("tenantValue", v, { shouldValidate: true })}
+                >
+                  <SelectTrigger id="key-tenant" className="text-base md:text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={SYSTEM_TENANT}>
+                      {t("form.tenantSystem")}
+                    </SelectItem>
+                    {currentTenantId && (
+                      <SelectItem value={currentTenantId}>
+                        {currentTenantName || currentTenantId}
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
           </div>
 

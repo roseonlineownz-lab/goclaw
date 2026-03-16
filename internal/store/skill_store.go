@@ -13,11 +13,12 @@ type SkillInfo struct {
 	Slug        string   `json:"slug" db:"slug"`
 	Path        string   `json:"path" db:"path"`
 	BaseDir     string   `json:"baseDir" db:"-"`
-	Source      string   `json:"source" db:"source"` // builtin | hub-verified | hub-unverified | agent-created | user-uploaded
+	Source      string   `json:"source" db:"-"`
 	Description string   `json:"description" db:"description"`
 	Visibility  string   `json:"visibility,omitempty" db:"visibility"`
 	Tags        []string `json:"tags,omitempty" db:"tags"`
 	Version     int      `json:"version,omitempty" db:"version"`
+	IsSystem    bool     `json:"is_system,omitempty" db:"is_system"`
 	Status      string   `json:"status,omitempty" db:"status"`
 	Enabled     bool     `json:"enabled" db:"enabled"`
 	Author      string   `json:"author,omitempty" db:"author"`
@@ -70,7 +71,6 @@ type SkillCreateParams struct {
 	OwnerID     string
 	Visibility  string
 	Status      string // "active", "archived" (missing deps), or "deleted" (user-deleted)
-	Source      string // builtin | hub-verified | hub-unverified | agent-created | user-uploaded; defaults to "user-uploaded"
 	MissingDeps []string
 	Version     int
 	FilePath    string
@@ -89,7 +89,7 @@ type SkillWithGrantStatus struct {
 	Version     int       `json:"version" db:"version"`
 	Granted     bool      `json:"granted" db:"granted"`
 	PinnedVer   *int      `json:"pinned_version,omitempty" db:"pinned_version"`
-	Source      string    `json:"source" db:"source"` // builtin | hub-verified | hub-unverified | agent-created | user-uploaded
+	IsSystem    bool      `json:"is_system" db:"is_system"`
 }
 
 // SkillManageStore extends SkillStore with CRUD, ownership, and grant operations
@@ -108,9 +108,6 @@ type SkillManageStore interface {
 	GetSkillOwnerIDBySlug(ctx context.Context, slug string) (string, bool)
 	GetNextVersion(ctx context.Context, slug string) int
 	GetNextVersionLocked(ctx context.Context, slug string) (int, func() error, error)
-	// GetSkillHashBySlug returns the content hash and version of the latest non-deleted skill
-	// version for the given slug (tenant-scoped). Returns ok=false if no skill exists.
-	GetSkillHashBySlug(ctx context.Context, slug string) (hash string, version int, ok bool)
 	IsSystemSkill(slug string) bool
 	// System skill management
 	ListAllSkills(ctx context.Context) []SkillInfo
@@ -124,11 +121,5 @@ type SkillManageStore interface {
 	RevokeFromUser(ctx context.Context, skillID uuid.UUID, userID string) error
 	ListWithGrantStatus(ctx context.Context, agentID uuid.UUID) ([]SkillWithGrantStatus, error)
 	// Files
-	// GetSkillFilePath returns file path, slug, version, source, and ok for a skill by UUID.
-	// source == "builtin" means the skill is a builtin/system skill.
-	GetSkillFilePath(ctx context.Context, id uuid.UUID) (filePath string, slug string, version int, source string, ok bool)
-	// Sidecar updates (best-effort; callers should log and ignore errors).
-	MarkSkillUsed(ctx context.Context, id uuid.UUID) error
-	MarkSkillViewed(ctx context.Context, id uuid.UUID) error
-	PinSkill(ctx context.Context, id uuid.UUID, pinned bool) error
+	GetSkillFilePath(ctx context.Context, id uuid.UUID) (filePath string, slug string, version int, isSystem bool, ok bool)
 }

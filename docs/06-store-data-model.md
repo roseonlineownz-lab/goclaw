@@ -13,7 +13,7 @@ flowchart TD
     CHOOSE -->|Standard<br/>(PostgreSQL)| PG["PostgreSQL Backend"]
     CHOOSE -->|Lite<br/>(-tags sqliteonly)| SQLite["SQLite Backend"]
 
-    PG --> PG_STORES["PGSessionStore<br/>PGMemoryStore<br/>PGCronStore<br/>PGPairingStore<br/>PGSkillStore<br/>PGAgentStore<br/>PGProviderStore<br/>PGTracingStore<br/>PGMCPServerStore<br/>PGCustomToolStore<br/>PGChannelInstanceStore<br/>PGConfigSecretsStore<br/>PGTeamStore<br/>PGBuiltinToolStore<br/>PGPendingMessageStore<br/>PGKnowledgeGraphStore<br/>PGContactStore<br/>PGActivityStore<br/>PGSnapshotStore<br/>PGSecureCLIStore<br/>PGAPIKeyStore<br/>PGUsersStore<br/>PGUserSessionsStore<br/>PGSkillVersionsStore<br/>PGCuratorRunsStore<br/>PGUserHookBudgetStore"]
+    PG --> PG_STORES["PGSessionStore<br/>PGMemoryStore<br/>PGCronStore<br/>PGPairingStore<br/>PGSkillStore<br/>PGAgentStore<br/>PGProviderStore<br/>PGTracingStore<br/>PGMCPServerStore<br/>PGCustomToolStore<br/>PGChannelInstanceStore<br/>PGConfigSecretsStore<br/>PGTeamStore<br/>PGBuiltinToolStore<br/>PGPendingMessageStore<br/>PGKnowledgeGraphStore<br/>PGContactStore<br/>PGActivityStore<br/>PGSnapshotStore<br/>PGSecureCLIStore<br/>PGAPIKeyStore"]
     
     SQLite --> SQLITE_STORES["SQLiteActivityStore<br/>SQLiteEpisodicStore<br/>SQLiteEvolutionMetrics<br/>SQLiteEvolutionSuggestions<br/>SQLiteKnowledgeGraph<br/>SQLiteVaultStore<br/>SQLiteAgentLinks<br/>SQLiteSubagentTasks<br/>SQLiteSecureCLIStore"]
 ```
@@ -47,12 +47,6 @@ The `Stores` struct is the top-level container holding all PostgreSQL-backed sto
 | SnapshotStore | `PGSnapshotStore` | Hourly usage snapshots, cost aggregation, time series queries |
 | SecureCLIStore | `PGSecureCLIStore` | CLI binary configs with encrypted credential injection |
 | APIKeyStore | `PGAPIKeyStore` | Gateway API keys, scopes, expiration, revocation |
-| HookStore | `PGHookStore` | Lifecycle hook definitions (event, handler type, matcher, config), execution audit log |
-| UsersStore | `PGUsersStore` | User identity and profile metadata (v4 Phase 05) |
-| UserSessionsStore | `PGUserSessionsStore` | Per-user session lifecycle tracking (v4 Phase 05) |
-| SkillVersionsStore | `PGSkillVersionsStore` | Skill version history and evolution (v4 Phase 05) |
-| CuratorRunsStore | `PGCuratorRunsStore` | Curator task execution logs and results (v4 Phase 05) |
-| UserHookBudgetStore | `PGUserHookBudgetStore` | User hook execution budget and rate limiting (v4 Phase 05) |
 
 ### SQLite Parity (Lite Edition)
 
@@ -69,60 +63,6 @@ The `Stores` struct is the top-level container holding all PostgreSQL-backed sto
 | AgentLinksStore | `SQLiteAgentLinks` | LIKE search, no vector |
 | SubagentTasksStore | `SQLiteSubagentTasks` | ✓ Parity (json_set for metadata merge) |
 | SecureCLIStore | `SQLiteSecureCLIStore` | ✓ Parity + AES-256-GCM encryption mandatory (GOCLAW_KEY env var required) |
-| HookStore | `SQLiteHookStore` | ✓ Parity (agent_hooks + hook_executions tables, same schema as PG) |
-
----
-
-## 2b. Metadata JSONB Standard (v4 Phase B)
-
-**v4 rc1 Phase B** establishes `metadata` as a standard extensibility column across 13 entity tables. This provides a structured way to attach feature-specific data without schema migrations.
-
-### Table Coverage
-
-| Table | Type | Metadata use |
-|-------|------|---|
-| `agents` | Entity | Agent-specific runtime settings, feature flags |
-| `agent_teams` | Entity | Team metadata, workspace settings |
-| `agent_shares` | Junction | Share-level overrides, permissions metadata |
-| `agent_links` | Junction | Link-specific routing, version tracking |
-| `memory_documents` | Memory | Document tagging, source attribution |
-| `skills` | Entity | Skill-specific config, feature flags |
-| `skill_versions` | History | Version-level metadata, changelog |
-| `channel_instances` | Config | Channel-specific overrides, account metadata |
-| `mcp_servers` | Config | Server capabilities, transport-specific settings |
-| `cron_jobs` | Schedule | Job metadata, execution tracking |
-| `llm_providers` | Config | Provider-specific overrides, feature gates |
-| `system_configs` | Config | Tenant-wide settings extensions |
-| `user_sessions` | Session | Session-level metadata, context tracking |
-
-### Schema Pattern
-
-**PostgreSQL:**
-```sql
-ALTER TABLE agents ADD COLUMN metadata JSONB NOT NULL DEFAULT '{}';
-```
-
-**SQLite:**
-```sql
-ALTER TABLE agents ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
-```
-
-### Store API Pattern
-
-Stores read metadata via `BuildMapUpdate()` helper (handles JSONB + TEXT dually). On insert, `metadata` defaults to `{}`. Example:
-
-```go
-type Agent struct {
-    ID       uuid.UUID
-    AgentKey string
-    Metadata json.RawMessage  // or map[string]any for some types
-}
-
-// In store implementation:
-agent.Metadata = json.RawMessage(`{}`)  // fresh entity defaults
-```
-
-**Never mutate metadata in-place.** Always reconstruct and UPDATE the full object to preserve atomicity.
 
 ---
 
@@ -287,7 +227,7 @@ Context files are stored in two tables and routed based on agent type.
 | `open` | Template fallback only | All files (SOUL, IDENTITY, AGENTS, TOOLS, BOOTSTRAP, USER) |
 | `predefined` | Agent-level files (SOUL, IDENTITY, AGENTS, TOOLS, BOOTSTRAP) | Only USER.md |
 
-The `ContextFileInterceptor` routes USER.md and BOOTSTRAP.md to user_context_files (per-user) and every other context file to agent_context_files (agent-level shared).
+The `ContextFileInterceptor` checks agent type from context and routes read/write operations accordingly. For open agents, per-user files take priority with agent-level as fallback.
 
 ---
 
@@ -585,7 +525,7 @@ flowchart TD
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `agents` | Agent definitions | `agent_key` (UNIQUE), `owner_id`, `is_default`, `frontmatter`, `tsv`, `embedding`, soft delete via `deleted_at` |
+| `agents` | Agent definitions | `agent_key` (UNIQUE), `owner_id`, `agent_type` (open/predefined), `is_default`, `frontmatter`, `tsv`, `embedding`, soft delete via `deleted_at` |
 | `agent_shares` | Agent RBAC sharing | UNIQUE(agent_id, user_id), `role` (user/admin/operator) |
 | `agent_context_files` | Agent-level context | UNIQUE(agent_id, file_name) |
 | `user_context_files` | Per-user context | UNIQUE(agent_id, user_id, file_name) |
@@ -615,9 +555,6 @@ flowchart TD
 | `000003_agent_teams` | `agent_teams`, `agent_team_members`, `team_tasks`, `team_messages` + `team_id` on agent_links |
 | `000004_teams_v2` | FTS on `team_tasks` (tsv column) + `delegation_history` table |
 | `000005_phase4` | Additional team and delegation features |
-| `000001_initial` (v4 line) | v4 greenfield rebuild — supersedes the 000001…000005 v3 chain. Includes `users`, `user_sessions`, `skill_versions`, `curator_runs`, `user_hook_budget` and drops multi-tenant tables. |
-
-**v4 user-scoped stores:** 5 stores introduced (`UsersStore`, `UserSessionsStore`, `SkillVersionsStore`, `CuratorRunsStore`, `UserHookBudgetStore`) backed by the new tables above. Canonical `store.ErrNotFound` sentinel for not-found rows. All IDs use `uuid.NewV7()`. Tables intentionally have NO `tenant_id` column — multi-tenant primitives are being removed in v4. `skill_versions` has no `archived_at` column; archival is a higher-layer concern.
 
 ### Required PostgreSQL Extensions
 
@@ -643,6 +580,7 @@ flowchart TD
 |-----|------|---------|
 | `goclaw_user_id` | string | External user ID (e.g., Telegram user ID) |
 | `goclaw_agent_id` | uuid.UUID | Agent UUID |
+| `goclaw_agent_type` | string | Agent type: `"open"` or `"predefined"` |
 | `goclaw_sender_id` | string | Original individual sender ID (in group chats, `user_id` is group-scoped but `sender_id` preserves the actual person) |
 
 ### Tool Context Keys
@@ -671,10 +609,6 @@ Nullable columns are handled via Go pointers: `*string`, `*int`, `*time.Time`, `
 ### Dynamic Updates
 
 `execMapUpdate()` builds UPDATE statements dynamically from a `map[string]any` of column-value pairs. This avoids writing a separate UPDATE query for every combination of updatable fields.
-
-### Error Handling
-
-**v4 unified sentinel:** New store interfaces (UsersStore, UserSessionsStore, SkillVersionsStore, CuratorRunsStore, UserHookBudgetStore) return `store.ErrNotFound` for missing rows. Callers use `errors.Is(err, store.ErrNotFound)` — never `==`. Existing v3 stores return raw `sql.ErrNoRows` or custom errors; Phase 05 PR-05B will reconcile all to `store.ErrNotFound`.
 
 ### Upsert Pattern
 
@@ -868,11 +802,52 @@ Workers subscribe on startup via `consolidation.Register()`.
 
 ## 18. File Reference
 
-| Module | Path | Purpose |
-|---|---|---|
-| Store interfaces | `internal/store/` | All 22+ store interfaces (`SessionStore`, `AgentStore`, `TeamStore`, etc.), `Stores` container, context propagation helpers, v3 stores (episodic, vault, evolution, agent links) |
-| PostgreSQL implementations | `internal/store/pg/` | PG factory, `PGSessionStore`, `PGAgentStore`, `PGTeamStore`, `PGMemoryStore`, and all other PG-backed implementations; connection pool; helpers |
-| SQLite implementations | `internal/store/sqlitestore/` | SQLite-backed stores for desktop/Lite edition |
-| Tool context keys | `internal/tools/context_keys.go` | Tool context keys including `WithToolWorkspace` |
-
-Use `grep` or your editor's symbol search for specific files.
+| File | Purpose |
+|------|---------|
+| `internal/store/stores.go` | `Stores` container struct (all 22 store interfaces) |
+| `internal/store/types.go` | `BaseModel`, `StoreConfig`, `GenNewID()` |
+| `internal/store/context.go` | Context propagation: `WithUserID`, `WithAgentID`, `WithAgentType`, `WithSenderID`, `WithTenantID` |
+| `internal/store/session_store.go` | `SessionStore` interface, `SessionData`, `SessionInfo` |
+| `internal/store/memory_store.go` | `MemoryStore` interface, `MemorySearchResult`, `EmbeddingProvider` |
+| `internal/store/skill_store.go` | `SkillStore` interface |
+| `internal/store/agent_store.go` | `AgentStore` interface |
+| `internal/store/team_store.go` | `TeamStore` interface, `TeamData`, `TeamTaskData`, `DelegationHistoryData`, `TeamMessageData` |
+| `internal/store/provider_store.go` | `ProviderStore` interface |
+| `internal/store/tracing_store.go` | `TracingStore` interface, `TraceData`, `SpanData` |
+| `internal/store/mcp_store.go` | `MCPServerStore` interface, grant types, access request types |
+| `internal/store/channel_instance_store.go` | `ChannelInstanceStore` interface |
+| `internal/store/config_secrets_store.go` | `ConfigSecretsStore` interface |
+| `internal/store/pairing_store.go` | `PairingStore` interface |
+| `internal/store/cron_store.go` | `CronStore` interface |
+| `internal/store/custom_tool_store.go` | `CustomToolStore` interface |
+| `internal/store/builtin_tool_store.go` | `BuiltinToolStore` interface, system tool metadata |
+| `internal/store/pending_message_store.go` | `PendingMessageStore` interface, group message queue |
+| `internal/store/knowledge_graph_store.go` | `KnowledgeGraphStore` interface, entities and relations |
+| `internal/store/contact_store.go` | `ContactStore` interface, channel contact tracking |
+| `internal/store/activity_store.go` | `ActivityStore` interface, audit logs |
+| `internal/store/snapshot_store.go` | `SnapshotStore` interface, usage aggregation |
+| `internal/store/secure_cli_store.go` | `SecureCLIStore` interface, CLI credential injection |
+| `internal/store/api_key_store.go` | `APIKeyStore` interface, gateway API keys |
+| `internal/store/episodic_store.go` | `EpisodicStore` interface, episodic summary CRUD & hybrid search (v3 new) |
+| `internal/store/evolution_store.go` | `EvolutionMetricsStore`, `EvolutionSuggestionStore` interfaces (v3 new) |
+| `internal/store/vault_store.go` | `VaultStore` interface, document registry & links (v3 new) |
+| `internal/store/agent_link_store.go` | `AgentLinkStore` interface, delegation links (v3 new) |
+| `internal/store/pg/factory.go` | PG store factory: creates all PG store instances from a connection pool |
+| `internal/store/pg/sessions.go` | `PGSessionStore`: session cache, Save, GetOrCreate |
+| `internal/store/pg/agents.go` | `PGAgentStore`: CRUD, soft delete, access control |
+| `internal/store/pg/agents_context.go` | Agent and user context file operations |
+| `internal/store/pg/teams.go` | `PGTeamStore`: teams, tasks (atomic claim), messages, delegation history |
+| `internal/store/pg/memory_docs.go` | `PGMemoryStore`: document CRUD, indexing, chunking |
+| `internal/store/pg/memory_search.go` | Hybrid search: FTS, vector, ILIKE fallback, merge |
+| `internal/store/pg/skills.go` | `PGSkillStore`: skill CRUD and grants |
+| `internal/store/pg/skills_grants.go` | Skill agent and user grants |
+| `internal/store/pg/mcp_servers.go` | `PGMCPServerStore`: server CRUD, grants, access requests |
+| `internal/store/pg/channel_instances.go` | `PGChannelInstanceStore`: channel instance CRUD |
+| `internal/store/pg/config_secrets.go` | `PGConfigSecretsStore`: encrypted config secrets |
+| `internal/store/pg/custom_tools.go` | `PGCustomToolStore`: custom tool CRUD with encrypted env |
+| `internal/store/pg/providers.go` | `PGProviderStore`: provider CRUD with encrypted keys |
+| `internal/store/pg/tracing.go` | `PGTracingStore`: traces and spans with batch insert |
+| `internal/store/pg/pool.go` | Connection pool management |
+| `internal/store/pg/helpers.go` | Nullable helpers, JSON helpers, `execMapUpdate()`, `StructScan` |
+| `internal/store/validate.go` | Input validation utilities |
+| `internal/tools/context_keys.go` | Tool context keys including `WithToolWorkspace` |

@@ -11,16 +11,13 @@ import { BuiltinToolSettingsDialog } from "./builtin-tool-settings-dialog";
 import { MEDIA_TOOLS } from "./media-provider-params-schema";
 import { useMinLoading } from "@/hooks/use-min-loading";
 import { useDeferredLoading } from "@/hooks/use-deferred-loading";
+import { useTenants } from "@/hooks/use-tenants";
 import { CategoryGroup } from "./builtin-tool-category-group";
 
 const CATEGORY_ORDER = [
   "filesystem", "runtime", "web", "memory", "media", "browser",
   "sessions", "messaging", "scheduling", "subagents", "skills", "delegation", "teams",
 ];
-
-// Tools that have dedicated configuration pages elsewhere and should not appear
-// in the builtin-tools list. TTS config moved to /tts page.
-const HIDDEN_TOOL_NAMES = new Set(["tts"]);
 
 /** Media tool that is enabled but has no provider chain configured */
 function needsProviderConfig(tool: BuiltinToolData): boolean {
@@ -33,7 +30,8 @@ function needsProviderConfig(tool: BuiltinToolData): boolean {
 
 export function BuiltinToolsPage() {
   const { t } = useTranslation("tools");
-  const { tools, loading, refresh, updateTool } = useBuiltinTools();
+  const { tools, loading, refresh, updateTool, setTenantConfig, deleteTenantConfig } = useBuiltinTools();
+  const { currentTenantId } = useTenants();
   const spinning = useMinLoading(loading);
   const showSkeleton = useDeferredLoading(loading && tools.length === 0);
   const [search, setSearch] = useState("");
@@ -45,14 +43,12 @@ export function BuiltinToolsPage() {
     [tools],
   );
 
-  const filtered = tools
-    .filter((t) => !HIDDEN_TOOL_NAMES.has(t.name))
-    .filter(
-      (t) =>
-        t.name.toLowerCase().includes(search.toLowerCase()) ||
-        t.display_name.toLowerCase().includes(search.toLowerCase()) ||
-        t.description.toLowerCase().includes(search.toLowerCase()),
-    );
+  const filtered = tools.filter(
+    (t) =>
+      t.name.toLowerCase().includes(search.toLowerCase()) ||
+      t.display_name.toLowerCase().includes(search.toLowerCase()) ||
+      t.description.toLowerCase().includes(search.toLowerCase()),
+  );
 
   const grouped = new Map<string, BuiltinToolData[]>();
   for (const tool of filtered) {
@@ -150,6 +146,9 @@ export function BuiltinToolsPage() {
               tools={grouped.get(category)!}
               onToggle={handleToggle}
               onSettings={setSettingsTool}
+              tenantId={currentTenantId ?? null}
+              onSetTenantConfig={setTenantConfig}
+              onDeleteTenantConfig={deleteTenantConfig}
             />
           ))
         )}

@@ -13,45 +13,32 @@ import (
 )
 
 func (s *PGKnowledgeGraphStore) UpsertRelation(ctx context.Context, relation *store.Relation) error {
-	aid, err := parseUUID(relation.AgentID)
-	if err != nil {
-		return fmt.Errorf("kg upsert relation: agent: %w", err)
-	}
-	src, err := parseUUID(relation.SourceEntityID)
-	if err != nil {
-		return fmt.Errorf("kg upsert relation: source: %w", err)
-	}
-	tgt, err := parseUUID(relation.TargetEntityID)
-	if err != nil {
-		return fmt.Errorf("kg upsert relation: target: %w", err)
-	}
+	aid := mustParseUUID(relation.AgentID)
+	src := mustParseUUID(relation.SourceEntityID)
+	tgt := mustParseUUID(relation.TargetEntityID)
 	props, err := json.Marshal(relation.Properties)
 	if err != nil {
 		props = []byte("{}")
 	}
 	id := uuid.Must(uuid.NewV7())
 	now := time.Now()
+	tid := tenantIDForInsert(ctx)
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO kg_relations
-			(id, agent_id, user_id, team_id, source_entity_id, relation_type, target_entity_id, confidence, properties, created_at)
+			(id, agent_id, user_id, source_entity_id, relation_type, target_entity_id, confidence, properties, tenant_id, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (agent_id, COALESCE(user_id::text,''), source_entity_id, relation_type, target_entity_id) DO UPDATE SET
+		ON CONFLICT (agent_id, user_id, source_entity_id, relation_type, target_entity_id) DO UPDATE SET
 			confidence  = EXCLUDED.confidence,
-			properties  = EXCLUDED.properties`,
-		id, aid, nilStr(relation.UserID), nilStr(relation.TeamID), src, relation.RelationType, tgt, relation.Confidence, props, now,
+			properties  = EXCLUDED.properties,
+			tenant_id   = EXCLUDED.tenant_id`,
+		id, aid, relation.UserID, src, relation.RelationType, tgt, relation.Confidence, props, tid, now,
 	)
 	return err
 }
 
 func (s *PGKnowledgeGraphStore) DeleteRelation(ctx context.Context, agentID, userID, relationID string) error {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return fmt.Errorf("kg delete relation: agent: %w", err)
-	}
-	rid, err := parseUUID(relationID)
-	if err != nil {
-		return fmt.Errorf("kg delete relation: id: %w", err)
-	}
+	aid := mustParseUUID(agentID)
+	rid := mustParseUUID(relationID)
 	if store.IsSharedKG(ctx) {
 		tc, tcArgs, _, err := scopeClause(ctx, 3)
 		if err != nil {
@@ -75,14 +62,8 @@ func (s *PGKnowledgeGraphStore) DeleteRelation(ctx context.Context, agentID, use
 }
 
 func (s *PGKnowledgeGraphStore) ListRelations(ctx context.Context, agentID, userID, entityID string) ([]store.Relation, error) {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return nil, fmt.Errorf("kg list relations: agent: %w", err)
-	}
-	eid, err := parseUUID(entityID)
-	if err != nil {
-		return nil, fmt.Errorf("kg list relations: entity: %w", err)
-	}
+	aid := mustParseUUID(agentID)
+	eid := mustParseUUID(entityID)
 
 	var q string
 	var args []any
@@ -124,10 +105,7 @@ func (s *PGKnowledgeGraphStore) ListRelations(ctx context.Context, agentID, user
 }
 
 func (s *PGKnowledgeGraphStore) ListAllRelations(ctx context.Context, agentID, userID string, limit int) ([]store.Relation, error) {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return nil, fmt.Errorf("kg list all relations: %w", err)
-	}
+	aid := mustParseUUID(agentID)
 	if limit <= 0 {
 		limit = 200
 	}
@@ -166,20 +144,17 @@ func (s *PGKnowledgeGraphStore) ListAllRelations(ctx context.Context, agentID, u
 }
 
 func (s *PGKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentID, userID string, entities []store.Entity, relations []store.Relation) ([]string, error) {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return nil, fmt.Errorf("kg ingest extraction: agent: %w", err)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	aid := mustParseUUID(agentID)
 	now := time.Now()
+	tid := tenantIDForInsert(ctx)
 
-	// Upsert entities and build external_id → DB UUID lookup for relations.
-	// Team/contact/project scope is inherited from the caller (semantic worker threads from episodic row).
+	// Upsert entities and build external_id → DB UUID lookup for relations
 	extIDToUUID := make(map[string]uuid.UUID, len(entities))
 	for i := range entities {
 		e := &entities[i]
@@ -191,21 +166,20 @@ func (s *PGKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentID, u
 		var actualID uuid.UUID
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO kg_entities
-				(id, agent_id, user_id, team_id, contact_id, project_id,
-				 external_id, name, entity_type, description, properties, source_id, confidence, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
-			ON CONFLICT (agent_id, (COALESCE(user_id::text, '')), external_id) DO UPDATE SET
+				(id, agent_id, user_id, external_id, name, entity_type, description, properties, source_id, confidence, tenant_id, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+			ON CONFLICT (agent_id, user_id, external_id) DO UPDATE SET
 				name        = EXCLUDED.name,
 				entity_type = EXCLUDED.entity_type,
 				description = EXCLUDED.description,
 				properties  = EXCLUDED.properties,
 				source_id   = EXCLUDED.source_id,
 				confidence  = EXCLUDED.confidence,
+				tenant_id   = EXCLUDED.tenant_id,
 				updated_at  = EXCLUDED.updated_at
 			RETURNING id`,
-			id, aid, nilStr(userID), nilStr(e.TeamID), nilStr(e.ContactID), nilStr(e.ProjectID),
-			e.ExternalID, e.Name, e.EntityType,
-			e.Description, props, e.SourceID, e.Confidence, now,
+			id, aid, userID, e.ExternalID, e.Name, e.EntityType,
+			e.Description, props, e.SourceID, e.Confidence, tid, now,
 		).Scan(&actualID); err != nil {
 			return nil, err
 		}
@@ -230,7 +204,7 @@ func (s *PGKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentID, u
 				}
 				vecStr := vectorToString(emb)
 				if _, err := tx.ExecContext(ctx,
-					`UPDATE kg_entities SET embedding = $1::halfvec WHERE id = $2`,
+					`UPDATE kg_entities SET embedding = $1::vector WHERE id = $2`,
 					vecStr, ids[i],
 				); err != nil {
 					slog.Warn("kg entity embedding update failed", "entity_id", ids[i], "error", err)
@@ -253,12 +227,13 @@ func (s *PGKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentID, u
 		id := uuid.Must(uuid.NewV7())
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO kg_relations
-				(id, agent_id, user_id, team_id, source_entity_id, relation_type, target_entity_id, confidence, properties, created_at)
+				(id, agent_id, user_id, source_entity_id, relation_type, target_entity_id, confidence, properties, tenant_id, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-			ON CONFLICT (agent_id, COALESCE(user_id::text,''), source_entity_id, relation_type, target_entity_id) DO UPDATE SET
+			ON CONFLICT (agent_id, user_id, source_entity_id, relation_type, target_entity_id) DO UPDATE SET
 				confidence  = EXCLUDED.confidence,
-				properties  = EXCLUDED.properties`,
-			id, aid, nilStr(userID), nilStr(r.TeamID), src, r.RelationType, tgt, r.Confidence, props, now,
+				properties  = EXCLUDED.properties,
+				tenant_id   = EXCLUDED.tenant_id`,
+			id, aid, userID, src, r.RelationType, tgt, r.Confidence, props, tid, now,
 		); err != nil {
 			return nil, err
 		}
@@ -277,11 +252,9 @@ func (s *PGKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentID, u
 }
 
 func (s *PGKnowledgeGraphStore) PruneByConfidence(ctx context.Context, agentID, userID string, minConfidence float64) (int, error) {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return 0, fmt.Errorf("kg prune: %w", err)
-	}
+	aid := mustParseUUID(agentID)
 	var res sql.Result
+	var err error
 	if store.IsSharedKG(ctx) {
 		tc, tcArgs, _, tcErr := scopeClause(ctx, 3)
 		if tcErr != nil {
@@ -309,10 +282,7 @@ func (s *PGKnowledgeGraphStore) PruneByConfidence(ctx context.Context, agentID, 
 }
 
 func (s *PGKnowledgeGraphStore) Stats(ctx context.Context, agentID, userID string) (*store.GraphStats, error) {
-	aid, err := parseUUID(agentID)
-	if err != nil {
-		return nil, fmt.Errorf("kg stats: %w", err)
-	}
+	aid := mustParseUUID(agentID)
 	stats := &store.GraphStats{EntityTypes: make(map[string]int)}
 
 	userFilter := ""

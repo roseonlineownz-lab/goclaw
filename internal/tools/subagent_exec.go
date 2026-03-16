@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,9 +41,8 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask, call
 			OriginPeerKind:   task.OriginPeerKind,
 			OriginLocalKey:   task.OriginLocalKey,
 			OriginUserID:     task.OriginUserID,
-			OriginSenderID:   task.OriginSenderID,
-			OriginRole:       task.OriginRole,
 			OriginSessionKey: task.OriginSessionKey,
+			OriginTenantID:   task.OriginTenantID,
 			ParentAgent:      task.ParentID,
 			OriginTraceID:    task.OriginTraceID.String(),
 			OriginRootSpanID: task.OriginRootSpanID.String(),
@@ -80,21 +78,13 @@ func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask, call
 			if task.OriginSessionKey != "" {
 				announceMeta[MetaOriginSessionKey] = task.OriginSessionKey
 			}
-			if task.OriginSenderID != "" {
-				announceMeta[MetaOriginSenderID] = task.OriginSenderID
-			}
-			if task.OriginRole != "" {
-				announceMeta[MetaOriginRole] = task.OriginRole
-			}
-			if task.OriginUserID != "" {
-				announceMeta[MetaOriginUserID] = task.OriginUserID
-			}
 			sm.msgBus.PublishInbound(bus.InboundMessage{
 				Channel:  "system",
 				SenderID: fmt.Sprintf("subagent:%s", task.ID),
 				ChatID:   task.OriginChatID,
 				Content:  announceContent,
 				UserID:   task.OriginUserID,
+				TenantID: task.OriginTenantID,
 				Metadata: announceMeta,
 				Media:    task.Media,
 			})
@@ -187,7 +177,7 @@ func (sm *SubagentManager) executeTask(ctx context.Context, task *SubagentTask) 
 	activeProvider := sm.provider
 	if sm.providerReg != nil {
 		if parentProviderName := ParentProviderFromCtx(ctx); parentProviderName != "" {
-			if p, err := sm.providerReg.GetByName(parentProviderName); err == nil {
+			if p, err := sm.providerReg.Get(ctx, parentProviderName); err == nil {
 				activeProvider = p
 			}
 		}
@@ -251,9 +241,6 @@ func (sm *SubagentManager) executeTask(ctx context.Context, task *SubagentTask) 
 				}
 				slog.Info("subagent LLM retry", "id", task.ID, "iteration", iteration, "attempt", attempt+1)
 			}
-		// ctx is the parent agent's run context — cancelling the parent (e.g. agent abort)
-		// cascades here and to all subsequent tool calls in this iteration.
-		// Do NOT replace ctx with context.Background() here; that would detach abort propagation.
 			resp, err = activeProvider.Chat(ctx, chatReq)
 			if err == nil {
 				break
@@ -314,7 +301,7 @@ func (sm *SubagentManager) executeTask(ctx context.Context, task *SubagentTask) 
 					p = strings.TrimSpace(p[:nl])
 				}
 				if p != "" {
-					mediaFiles = append(mediaFiles, bus.MediaFile{Path: p, Filename: filepath.Base(p)})
+					mediaFiles = append(mediaFiles, bus.MediaFile{Path: p})
 				}
 			}
 

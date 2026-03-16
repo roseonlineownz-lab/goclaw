@@ -10,7 +10,6 @@ import (
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 
-	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/typing"
@@ -361,15 +360,6 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		}
 	}
 
-	// Strip bot's own @mention so the LLM sees clean content and does not
-	// mistake itself for another bot (cross-channel parity with Slack/Feishu).
-	// Re-check empty state: a message containing only "@botname" becomes empty
-	// after stripping, so we restore the placeholder used for originally-empty inbounds.
-	content = stripBotMention(content, c.bot.Username())
-	if content == "" {
-		content = "[empty message]"
-	}
-
 	// --- Group pairing gate (only reached when bot is mentioned) ---
 	if isGroup && topicCfg.groupPolicy == "pairing" && c.PairingService() != nil {
 		if !c.IsGroupApproved(chatIDStr) {
@@ -417,18 +407,7 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 			m := &mediaList[i]
 			switch m.Type {
 			case "audio", "voice":
-				var transcript string
-				var sttErr error
-				if c.audioMgr != nil {
-					sttCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-					res, err := c.audioMgr.Transcribe(sttCtx, audio.STTInput{FilePath: m.FilePath, MimeType: "audio/ogg"}, audio.STTOptions{})
-					cancel()
-					if err == nil && res != nil {
-						transcript = res.Text
-					} else {
-						sttErr = err
-					}
-				}
+				transcript, sttErr := c.transcribeAudio(ctx, m.FilePath)
 				if sttErr != nil {
 					slog.Warn("telegram: STT transcription failed",
 						"type", m.Type, "error", sttErr)
@@ -451,7 +430,6 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 				mediaFiles = append(mediaFiles, bus.MediaFile{
 					Path:     m.FilePath,
 					MimeType: m.ContentType,
-					Filename: m.FileName,
 				})
 			}
 		}
@@ -517,7 +495,6 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 					mediaFiles = append(mediaFiles, bus.MediaFile{
 						Path:     m.FilePath,
 						MimeType: m.ContentType,
-						Filename: m.FileName,
 					})
 				}
 				if len(histMedia) > 0 {
@@ -595,12 +572,6 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		metadata[tools.MetaDMThreadID] = fmt.Sprintf("%d", dmThreadID)
 		metadata[tools.MetaMessageThreadID] = fmt.Sprintf("%d", dmThreadID)
 	}
-	// Self-identity hint so the LLM knows its own Telegram handle and does not
-	// confuse other bots' @mentions (preserved after stripBotMention) for its own.
-	if identity := buildSelfIdentityPrompt(c.bot.Username(), c.botDisplayName); identity != "" {
-		metadata[tools.MetaChannelSelfIdentity] = identity
-	}
-
 	if topicCfg.systemPrompt != "" {
 		metadata[tools.MetaTopicSystemPrompt] = topicCfg.systemPrompt
 	}
@@ -655,6 +626,7 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		AgentID:      targetAgentID,
 		HistoryLimit: c.HistoryLimit(),
 		ToolAllow:    topicCfg.tools,
+		TenantID:     c.TenantID(),
 		Metadata:     metadata,
 	})
 

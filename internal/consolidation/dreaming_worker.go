@@ -8,10 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nextlevelbuilder/goclaw/internal/bgalert"
+	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
-	"github.com/nextlevelbuilder/goclaw/internal/providerresolve"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -27,9 +26,8 @@ const (
 type dreamingWorker struct {
 	episodicStore store.EpisodicStore
 	memoryStore   store.MemoryStore
-	systemConfigs store.SystemConfigStore // per-tenant provider config
-	registry      *providers.Registry     // provider resolution
-	alertDeps     bgalert.AlertDeps
+	provider      providers.Provider
+	model         string // LLM model for synthesis
 
 	// threshold/debounce are the global defaults. Per-agent overrides come
 	// from resolveConfig which reads the agent's MemoryConfig.Dreaming JSONB.
@@ -38,11 +36,6 @@ type dreamingWorker struct {
 	resolveConfig DreamingConfigResolver
 
 	lastRun sync.Map // key: "agentID:userID" → time.Time
-}
-
-// resolveProvider delegates to shared background provider resolution.
-func (w *dreamingWorker) resolveProvider(ctx context.Context) (providers.Provider, string) {
-	return providerresolve.ResolveBackgroundProvider(ctx, w.registry, w.systemConfigs)
 }
 
 // formatEntryForSynthesis renders a single episodic entry with recall
@@ -88,6 +81,13 @@ func (w *dreamingWorker) effectiveConfig(ctx context.Context, agentID string) re
 
 // Handle processes an episodic.created event for the dreaming pipeline.
 func (w *dreamingWorker) Handle(ctx context.Context, event eventbus.DomainEvent) error {
+	// Inject tenant context so store queries scope correctly
+	if event.TenantID != "" {
+		if tid, err := uuid.Parse(event.TenantID); err == nil {
+			ctx = store.WithTenantID(ctx, tid)
+		}
+	}
+
 	agentID := event.AgentID
 	userID := event.UserID
 
@@ -121,9 +121,9 @@ func (w *dreamingWorker) Handle(ctx context.Context, event eventbus.DomainEvent)
 		return nil
 	}
 
-	// Fetch unpromoted entries ordered by recall_score DESC. Falls back to
-	// created_at ASC for ties so agents with no recall history still get
-	// oldest-first behaviour.
+	// Fetch unpromoted entries ordered by recall_score DESC (Phase 10). Falls
+	// back to created_at ASC for ties so agents with no recall history still
+	// get oldest-first behaviour.
 	entries, err := w.episodicStore.ListUnpromotedScored(ctx, agentID, userID, dreamingFetchLimit)
 	if err != nil {
 		slog.Warn("dreaming: list unpromoted failed", "err", err, "agent", agentID)
@@ -143,17 +143,9 @@ func (w *dreamingWorker) Handle(ctx context.Context, event eventbus.DomainEvent)
 		return nil
 	}
 
-	// Resolve provider for this tenant at processing time.
-	provider, model := w.resolveProvider(ctx)
-	if provider == nil {
-		slog.Warn("dreaming: no provider available", "agent", agentID)
-		return nil
-	}
-
 	// Build LLM prompt and call provider.
-	synthesis, err := w.synthesize(ctx, provider, model, entries)
+	synthesis, err := w.synthesize(ctx, entries)
 	if err != nil {
-		bgalert.ReportProviderError(ctx, w.alertDeps, "dreaming", err)
 		slog.Warn("dreaming: LLM synthesis failed", "err", err, "agent", agentID)
 		return nil
 	}
@@ -189,19 +181,19 @@ func (w *dreamingWorker) Handle(ctx context.Context, event eventbus.DomainEvent)
 // synthesize calls the LLM to extract long-term facts from session summaries.
 // Each entry is annotated with its recall metadata so the LLM can weight
 // frequently-recalled memories higher during synthesis.
-func (w *dreamingWorker) synthesize(ctx context.Context, provider providers.Provider, model string, entries []store.EpisodicSummary) (string, error) {
+func (w *dreamingWorker) synthesize(ctx context.Context, entries []store.EpisodicSummary) (string, error) {
 	summaries := make([]string, len(entries))
 	for i, e := range entries {
 		summaries[i] = formatEntryForSynthesis(e)
 	}
 	body := strings.Join(summaries, "\n---\n")
 
-	resp, err := provider.Chat(ctx, providers.ChatRequest{
+	resp, err := w.provider.Chat(ctx, providers.ChatRequest{
 		Messages: []providers.Message{
 			{Role: "system", Content: dreamingSystemPrompt},
 			{Role: "user", Content: "Session summaries:\n---\n" + body + "\n---"},
 		},
-		Model: model,
+		Model: w.model,
 		Options: map[string]any{
 			providers.OptMaxTokens: dreamingMaxTokens,
 		},

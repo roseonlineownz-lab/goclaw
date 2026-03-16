@@ -166,11 +166,13 @@ func ExportMCPPreview(ctx context.Context, db *sql.DB) (*MCPExportPreview, error
 // ImportMCPServer inserts an MCP server from export data if no server with that name exists.
 // Returns the server UUID and whether it was newly created (false = already existed).
 func ImportMCPServer(ctx context.Context, db *sql.DB, srv MCPServerExport, createdBy string) (uuid.UUID, bool, error) {
+	tid := tenantIDForInsert(ctx)
+
 	// Check if server with same name already exists
 	var existing uuid.UUID
 	err := db.QueryRowContext(ctx,
-		"SELECT id FROM mcp_servers WHERE name = $1",
-		srv.Name,
+		"SELECT id FROM mcp_servers WHERE name = $1 AND tenant_id = $2",
+		srv.Name, tid,
 	).Scan(&existing)
 	if err == nil {
 		return existing, false, nil // already exists — return existing ID
@@ -184,12 +186,12 @@ func ImportMCPServer(ctx context.Context, db *sql.DB, srv MCPServerExport, creat
 		`INSERT INTO mcp_servers
 		   (id, name, display_name, transport, command, args, url,
 		    tool_prefix, timeout_sec, settings, enabled,
-		    created_by, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),NOW())`,
+		    created_by, created_at, updated_at, tenant_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),NOW(),$13)`,
 		id, srv.Name, srv.DisplayName, srv.Transport,
 		srv.Command, jsonOrNull(srv.Args), srv.URL,
 		srv.ToolPrefix, srv.TimeoutSec, jsonOrNull(srv.Settings), srv.Enabled,
-		createdBy,
+		createdBy, tid,
 	)
 	if err != nil {
 		return uuid.Nil, false, err
@@ -199,10 +201,11 @@ func ImportMCPServer(ctx context.Context, db *sql.DB, srv MCPServerExport, creat
 
 // ImportMCPGrant upserts an MCP agent grant for an imported server.
 func ImportMCPGrant(ctx context.Context, db *sql.DB, serverID, agentID uuid.UUID, g MCPGrantWithKey, grantedBy string) error {
+	tid := tenantIDForInsert(ctx)
 	_, err := db.ExecContext(ctx,
 		`INSERT INTO mcp_agent_grants
-		   (id, server_id, agent_id, enabled, tool_allow, tool_deny, config_overrides, granted_by, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+		   (id, server_id, agent_id, enabled, tool_allow, tool_deny, config_overrides, granted_by, created_at, tenant_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9)
 		 ON CONFLICT (server_id, agent_id) DO UPDATE
 		   SET enabled = EXCLUDED.enabled,
 		       tool_allow = EXCLUDED.tool_allow,
@@ -210,7 +213,7 @@ func ImportMCPGrant(ctx context.Context, db *sql.DB, serverID, agentID uuid.UUID
 		       config_overrides = EXCLUDED.config_overrides`,
 		uuid.Must(uuid.NewV7()), serverID, agentID, g.Enabled,
 		jsonOrNull(g.ToolAllow), jsonOrNull(g.ToolDeny), jsonOrNull(g.ConfigOverrides),
-		grantedBy,
+		grantedBy, tid,
 	)
 	return err
 }

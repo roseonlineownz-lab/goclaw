@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
@@ -80,7 +79,7 @@ func (l *Loop) enrichInputMedia(ctx context.Context, req *RunRequest, messages [
 		var imageFiles []bus.MediaFile
 		for _, ref := range mediaRefs {
 			if ref.Kind == "image" && ref.Path != "" {
-				imageFiles = append(imageFiles, bus.MediaFile{Path: ref.Path, MimeType: ref.MimeType, Filename: filepath.Base(ref.Path)})
+				imageFiles = append(imageFiles, bus.MediaFile{Path: ref.Path, MimeType: ref.MimeType})
 			}
 		}
 		if deferToReadImageTool {

@@ -293,20 +293,6 @@ func TestLiteEditionFeatures(t *testing.T) {
 			}
 		})
 	}
-
-	// MemoryMaxRows must be set to enforce the per-agent embedding row cap on SQLite.
-	if e.MemoryMaxRows != 10000 {
-		t.Errorf("Lite.MemoryMaxRows = %d; want 10000", e.MemoryMaxRows)
-	}
-}
-
-// TestStandardEditionMemoryMaxRowsUnlimited verifies Standard edition has no
-// memory row cap (0 = unlimited).
-func TestStandardEditionMemoryMaxRowsUnlimited(t *testing.T) {
-	e := Standard
-	if e.MemoryMaxRows != 0 {
-		t.Errorf("Standard.MemoryMaxRows = %d; want 0 (unlimited)", e.MemoryMaxRows)
-	}
 }
 
 // TestLiteEditionChannelLimits verifies Lite channel constraints.
@@ -360,7 +346,7 @@ func TestEditionConcurrentSafety(t *testing.T) {
 
 	// Goroutine 1: repeatedly read
 	go func() {
-		for range 100 {
+		for i := 0; i < 100; i++ {
 			_ = Current()
 		}
 		done <- true

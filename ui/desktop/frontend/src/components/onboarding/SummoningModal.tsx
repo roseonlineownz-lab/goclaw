@@ -11,18 +11,14 @@ interface SummoningModalProps {
   agentId: string
   agentName: string
   onContinue: () => void
-  onCancel?: (agentId: string) => Promise<void>
 }
 
-const CANCEL_THRESHOLD_SEC = 60
-
-export function SummoningModal({ agentId, agentName, onContinue, onCancel }: SummoningModalProps) {
+export function SummoningModal({ agentId, agentName, onContinue }: SummoningModalProps) {
   const { t } = useTranslation(['desktop', 'common'])
   const [generatedFiles, setGeneratedFiles] = useState<string[]>([])
   const [status, setStatus] = useState<'summoning' | 'completed' | 'failed'>('summoning')
   const [errorMsg, setErrorMsg] = useState('')
   const [retrying, setRetrying] = useState(false)
-  const [cancelling, setCancelling] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -85,19 +81,6 @@ export function SummoningModal({ agentId, agentName, onContinue, onCancel }: Sum
       // stay in failed state
     } finally {
       setRetrying(false)
-    }
-  }
-
-  const handleCancel = async () => {
-    if (!onCancel) return
-    setCancelling(true)
-    try {
-      await onCancel(agentId)
-      // BE emits WS type=failed → listener above switches to failed state
-    } catch {
-      // keep modal open
-    } finally {
-      setCancelling(false)
     }
   }
 
@@ -179,19 +162,6 @@ export function SummoningModal({ agentId, agentName, onContinue, onCancel }: Sum
             <p className="text-center text-xs text-text-muted tabular-nums">
               Please wait... ({Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')})
             </p>
-          )}
-
-          {status === 'summoning' && elapsed >= CANCEL_THRESHOLD_SEC && onCancel && (
-            <div className="flex flex-col items-center gap-1">
-              <p className="text-xs text-text-muted">{t('desktop:summoning.takingTooLong')}</p>
-              <button
-                onClick={handleCancel}
-                disabled={cancelling}
-                className="px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-tertiary rounded-md transition-colors disabled:opacity-50"
-              >
-                {cancelling ? t('desktop:summoning.cancelling') : t('desktop:summoning.cancel')}
-              </button>
-            </div>
           )}
 
           {status === 'completed' && (

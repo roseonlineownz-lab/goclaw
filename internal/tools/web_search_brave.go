@@ -13,27 +13,23 @@ import (
 // --- Brave Search Provider ---
 
 type braveSearchProvider struct {
-	apiKey     string
-	maxResults int
-	client     *http.Client
+	apiKey string
+	client *http.Client
 }
 
-func newBraveSearchProvider(apiKey string, maxResults int) *braveSearchProvider {
+func newBraveSearchProvider(apiKey string) *braveSearchProvider {
 	return &braveSearchProvider{
-		apiKey:     apiKey,
-		maxResults: normalizeProviderMaxResults(maxResults),
-		client:     &http.Client{Timeout: time.Duration(searchTimeoutSeconds) * time.Second},
+		apiKey: apiKey,
+		client: &http.Client{Timeout: time.Duration(searchTimeoutSeconds) * time.Second},
 	}
 }
 
-func (p *braveSearchProvider) Name() string { return searchProviderBrave }
+func (p *braveSearchProvider) Name() string { return "brave" }
 
 func (p *braveSearchProvider) Search(ctx context.Context, params searchParams) ([]searchResult, error) {
-	count := clampProviderResultCount(params.Count, p.maxResults)
-
 	q := url.Values{}
 	q.Set("q", params.Query)
-	q.Set("count", fmt.Sprintf("%d", count))
+	q.Set("count", fmt.Sprintf("%d", params.Count))
 
 	if params.Country != "" {
 		q.Set("country", params.Country)

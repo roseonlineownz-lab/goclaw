@@ -46,6 +46,9 @@ func Default() *Config {
 			RateLimitRPM:    20,
 		},
 		Tools: ToolsConfig{
+			Web: WebToolsConfig{
+				DuckDuckGo: DuckDuckGoConfig{Enabled: true, MaxResults: 5},
+			},
 			Browser: BrowserToolConfig{
 				Enabled:  true,
 				Headless: true,
@@ -97,6 +100,7 @@ func (c *Config) applyEnvOverrides() {
 	envStr("GOCLAW_GROQ_API_KEY", &c.Providers.Groq.APIKey)
 	envStr("GOCLAW_DEEPSEEK_API_KEY", &c.Providers.DeepSeek.APIKey)
 	envStr("GOCLAW_GEMINI_API_KEY", &c.Providers.Gemini.APIKey)
+	// Extra Gemini keys for round-robin rotation (GOCLAW_GEMINI_API_KEY_2, _3, ...)
 	for i := 2; i <= 8; i++ {
 		if v := os.Getenv(fmt.Sprintf("GOCLAW_GEMINI_API_KEY_%d", i)); v != "" {
 			c.Providers.Gemini.APIKeys = appendUnique(c.Providers.Gemini.APIKeys, v)
@@ -368,6 +372,9 @@ func (c *Config) ResolveAgent(agentID string) AgentDefaults {
 		if spec.Sandbox != nil {
 			d.Sandbox = spec.Sandbox
 		}
+		if spec.AgentType != "" {
+			d.AgentType = spec.AgentType
+		}
 	}
 
 	return d
@@ -429,6 +436,7 @@ func ContractHome(path string) string {
 	return path
 }
 
+// appendUnique appends s to slice only if it is not already present.
 func appendUnique(slice []string, s string) []string {
 	for _, v := range slice {
 		if v == s {

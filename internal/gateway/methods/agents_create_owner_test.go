@@ -50,16 +50,10 @@ func (s *createCaptureStore) List(_ context.Context, _ string) ([]store.AgentDat
 func (s *createCaptureStore) GetDefault(_ context.Context) (*store.AgentData, error) {
 	return nil, nil
 }
-func (s *createCaptureStore) ResetStuckSummoning(_ context.Context) (int64, error) {
-	return 0, nil
-}
-func (s *createCaptureStore) CreateShare(_ context.Context, _ store.AgentShareInput) error {
+func (s *createCaptureStore) ShareAgent(_ context.Context, _ uuid.UUID, _, _, _ string) error {
 	return nil
 }
-func (s *createCaptureStore) RevokeShareByUser(_ context.Context, _, _ uuid.UUID) error {
-	return nil
-}
-func (s *createCaptureStore) RevokeShareByTeam(_ context.Context, _, _ uuid.UUID) error {
+func (s *createCaptureStore) RevokeShare(_ context.Context, _ uuid.UUID, _ string) error {
 	return nil
 }
 func (s *createCaptureStore) ListShares(_ context.Context, _ uuid.UUID) ([]store.AgentShareData, error) {
@@ -164,6 +158,7 @@ func TestHandleCreate_UsesProvidedOwnerID(t *testing.T) {
 
 	req := buildCreateRequest(t, map[string]any{
 		"name":       "Test Agent",
+		"agent_type": "predefined",
 		"owner_ids":  []string{"8514594032"},
 	})
 
@@ -185,6 +180,7 @@ func TestHandleCreate_FallsBackToSystem_WhenOwnerIDsAbsent(t *testing.T) {
 
 	req := buildCreateRequest(t, map[string]any{
 		"name":       "Test Agent Two",
+		"agent_type": "predefined",
 		// owner_ids intentionally absent
 	})
 

@@ -35,11 +35,7 @@ export function ChannelFields({ fields, values, onChange, idPrefix, isEdit, cont
         // Conditional visibility: skip field if showWhen condition is not met
         if (field.showWhen) {
           const depValue = allValues[field.showWhen.key] ?? fields.find((f) => f.key === field.showWhen!.key)?.defaultValue;
-          const depStr = depValue !== undefined && depValue !== null ? String(depValue) : "";
-          const match = Array.isArray(field.showWhen.value)
-            ? field.showWhen.value.includes(depStr)
-            : depStr === field.showWhen.value;
-          if (!match) return null;
+          if (String(depValue) !== field.showWhen.value) return null;
         }
         // Check disabledWhen condition
         let disabled = false;

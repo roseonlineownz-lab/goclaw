@@ -13,8 +13,8 @@ import (
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
@@ -28,7 +28,7 @@ const (
 
 func init() {
 	// Set device name shown in WhatsApp's "Linked Devices" screen (once at package init).
-	wastore.DeviceProps.Os = new("GoClaw")
+	wastore.DeviceProps.Os = proto.String("GoClaw")
 }
 
 // Channel connects directly to WhatsApp via go.mau.fi/whatsmeow.
@@ -41,9 +41,7 @@ type Channel struct {
 	mu        sync.Mutex
 	ctx       context.Context
 	cancel    context.CancelFunc
-	parentCtx        context.Context       // stored from Start() for Reauth() context chain
-	audioMgr         *audio.Manager        // unified STT via audio.Manager (nil = no STT)
-	builtinToolStore store.BuiltinToolStore // reads stt settings (whatsapp_enabled) per voice message; nil = opt-out
+	parentCtx context.Context // stored from Start() for Reauth() context chain
 
 	// QR state
 	lastQRMu        sync.RWMutex
@@ -59,6 +57,7 @@ type Channel struct {
 	reauthMu sync.Mutex
 	// pairingService, pairingDebounce, approvedGroups, groupHistory are inherited from channels.BaseChannel.
 }
+
 
 // GetLastQRB64 returns the most recent QR PNG (base64).
 func (c *Channel) GetLastQRB64() string {
@@ -83,12 +82,9 @@ func (c *Channel) cacheQR(pngB64 string) {
 
 // New creates a new WhatsApp channel backed by whatsmeow.
 // dialect must be "pgx" (PostgreSQL) or "sqlite3" (SQLite/desktop).
-// audioMgr is optional (nil = STT disabled).
-// builtinToolStore is optional (nil = STT permanently opt-out regardless of admin toggle).
 func New(cfg config.WhatsAppConfig, msgBus *bus.MessageBus,
 	pairingSvc store.PairingStore, db *sql.DB,
-	pendingStore store.PendingMessageStore, dialect string, audioMgr *audio.Manager,
-	builtinToolStore store.BuiltinToolStore) (*Channel, error) {
+	pendingStore store.PendingMessageStore, dialect string) (*Channel, error) {
 
 	base := channels.NewBaseChannel(channels.TypeWhatsApp, msgBus, cfg.AllowFrom)
 	base.ValidatePolicy(cfg.DMPolicy, cfg.GroupPolicy)
@@ -99,14 +95,12 @@ func New(cfg config.WhatsAppConfig, msgBus *bus.MessageBus,
 	}
 
 	ch := &Channel{
-		BaseChannel:      base,
-		config:           cfg,
-		container:        container,
-		audioMgr:         audioMgr,
-		builtinToolStore: builtinToolStore,
+		BaseChannel: base,
+		config:      cfg,
+		container:   container,
 	}
 	ch.SetPairingService(pairingSvc)
-	ch.SetGroupHistory(channels.MakeHistory("whatsapp", pendingStore))
+	ch.SetGroupHistory(channels.MakeHistory("whatsapp", pendingStore, base.TenantID()))
 	return ch, nil
 }
 
@@ -122,6 +116,7 @@ func (c *Channel) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("whatsapp get device: %w", err)
 	}
+
 
 	c.client = whatsmeow.NewClient(deviceStore, nil)
 	c.client.AddEventHandler(c.handleEvent)

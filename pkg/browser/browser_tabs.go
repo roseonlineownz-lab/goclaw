@@ -8,12 +8,19 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-// ListTabs returns all open tabs.
+// ListTabs returns open tabs filtered by the caller's tenant context.
 func (m *Manager) ListTabs(ctx context.Context) ([]TabInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	b, err := m.browserLocked()
+	if m.browser == nil {
+		return nil, fmt.Errorf("browser not running")
+	}
+
+	tenantID := tenantIDFromCtx(ctx)
+
+	// Use tenant-scoped browser context for page listing
+	b, err := m.tenantBrowserLocked(tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -25,7 +32,8 @@ func (m *Manager) ListTabs(ctx context.Context) ([]TabInfo, error) {
 				return nil, fmt.Errorf("list pages: %w (reconnect also failed: %v)", err, reconnErr)
 			}
 			m.logger.Info("auto-reconnected to remote Chrome")
-			b, err = m.browserLocked()
+			// Re-acquire tenant browser after reconnect (incognito contexts were reset)
+			b, err = m.tenantBrowserLocked(tenantID)
 			if err != nil {
 				return nil, err
 			}
@@ -46,6 +54,9 @@ func (m *Manager) ListTabs(ctx context.Context) ([]TabInfo, error) {
 		}
 		tid := string(p.TargetID)
 		m.pages[tid] = p
+		if tenantID != "" {
+			m.pageTenants[tid] = tenantID
+		}
 		tabs = append(tabs, TabInfo{
 			TargetID: tid,
 			URL:      info.URL,
@@ -56,17 +67,20 @@ func (m *Manager) ListTabs(ctx context.Context) ([]TabInfo, error) {
 }
 
 // OpenTab opens a new tab with the given URL.
-// If maxPages is reached, the oldest idle page is closed first.
+// Pages are created within the tenant's incognito browser context for isolation.
+// If the tenant already has maxPages open, the oldest idle page is closed first.
 func (m *Manager) OpenTab(ctx context.Context, url string) (*TabInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Enforce max pages
+	tenantID := tenantIDFromCtx(ctx)
+
+	// Enforce max pages per tenant
 	if m.maxPages > 0 {
-		m.evictOldestIfOverLimitLocked()
+		m.evictOldestIfOverLimitLocked(tenantID)
 	}
 
-	b, err := m.browserLocked()
+	b, err := m.tenantBrowserLocked(tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -76,20 +90,16 @@ func (m *Manager) OpenTab(ctx context.Context, url string) (*TabInfo, error) {
 		return nil, fmt.Errorf("open tab: %w", err)
 	}
 
-	// Watchdog: close page on ctx cancel to unblock WaitStable CDP call.
-	stopWatchdog := watchPageClose(ctx, page)
 	if err := page.WaitStable(300 * time.Millisecond); err != nil {
-		stopWatchdog()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
 		return nil, fmt.Errorf("wait stable: %w", err)
 	}
-	stopWatchdog()
 	info, _ := page.Info()
 	tid := string(page.TargetID)
 	m.pages[tid] = page
 	m.touchPageLocked(tid)
+	if tenantID != "" {
+		m.pageTenants[tid] = tenantID
+	}
 
 	// Set up console listener
 	m.setupConsoleListener(page, tid)
@@ -102,17 +112,34 @@ func (m *Manager) OpenTab(ctx context.Context, url string) (*TabInfo, error) {
 	return tab, nil
 }
 
-// evictOldestIfOverLimitLocked closes the oldest idle page if at or over maxPages.
+// evictOldestIfOverLimitLocked closes the oldest idle page for a tenant if at or over maxPages.
 // Must be called with mu held.
-func (m *Manager) evictOldestIfOverLimitLocked() {
-	if len(m.pages) < m.maxPages {
+func (m *Manager) evictOldestIfOverLimitLocked(tenantID string) {
+	isMaster := tenantID == "" || tenantID == MasterTenantID
+
+	// Collect targetIDs belonging to this tenant
+	var owned []string
+	for tid := range m.pages {
+		if isMaster {
+			// Master tenant owns pages not in pageTenants
+			if _, hasOwner := m.pageTenants[tid]; !hasOwner {
+				owned = append(owned, tid)
+			}
+		} else {
+			if m.pageTenants[tid] == tenantID {
+				owned = append(owned, tid)
+			}
+		}
+	}
+
+	if len(owned) < m.maxPages {
 		return
 	}
 
 	// Find the oldest page by lastUsed
 	var oldestID string
 	var oldestTime time.Time
-	for tid := range m.pages {
+	for _, tid := range owned {
 		lu, ok := m.pageLastUsed[tid]
 		if !ok {
 			oldestID = tid
@@ -133,17 +160,19 @@ func (m *Manager) evictOldestIfOverLimitLocked() {
 	}
 	delete(m.pages, oldestID)
 	delete(m.console, oldestID)
+	delete(m.pageTenants, oldestID)
 	delete(m.pageLastUsed, oldestID)
 	m.refs.Remove(oldestID)
-	m.logger.Info("evicted oldest page (max pages reached)", "targetId", oldestID)
+	m.logger.Info("evicted oldest page (max pages reached)", "targetId", oldestID, "tenant", tenantID)
 }
 
 // FocusTab activates a tab.
 func (m *Manager) FocusTab(ctx context.Context, targetID string) error {
+	tenantID := tenantIDFromCtx(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	page, err := m.getPage(targetID)
+	page, err := m.getPageForTenant(targetID, tenantID)
 	if err != nil {
 		return err
 	}
@@ -154,16 +183,18 @@ func (m *Manager) FocusTab(ctx context.Context, targetID string) error {
 
 // CloseTab closes a tab.
 func (m *Manager) CloseTab(ctx context.Context, targetID string) error {
+	tenantID := tenantIDFromCtx(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	page, err := m.getPage(targetID)
+	page, err := m.getPageForTenant(targetID, tenantID)
 	if err != nil {
 		return err
 	}
 
 	delete(m.pages, targetID)
 	delete(m.console, targetID)
+	delete(m.pageTenants, targetID)
 	delete(m.pageLastUsed, targetID)
 	m.refs.Remove(targetID)
 	return page.Close()
@@ -171,8 +202,16 @@ func (m *Manager) CloseTab(ctx context.Context, targetID string) error {
 
 // ConsoleMessages returns captured console messages for a tab.
 func (m *Manager) ConsoleMessages(ctx context.Context, targetID string) []ConsoleMessage {
+	tenantID := tenantIDFromCtx(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Validate tenant ownership
+	if tenantID != "" && tenantID != MasterTenantID {
+		if owner, ok := m.pageTenants[targetID]; ok && owner != tenantID {
+			return []ConsoleMessage{}
+		}
+	}
 
 	msgs := m.console[targetID]
 	if msgs == nil {

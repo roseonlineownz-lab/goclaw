@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
@@ -26,11 +28,11 @@ func (l *Loop) pipelineCallbacks(req *RunRequest, bridgeRS *runState) pipelineCa
 		event.TeamID = req.TeamID
 		event.TeamTaskID = req.TeamTaskID
 		event.ParentAgentID = req.ParentAgentID
-		event.SenderID = req.SenderID
 		event.UserID = req.UserID
 		event.Channel = req.Channel
 		event.ChatID = req.ChatID
 		event.SessionKey = req.SessionKey
+		event.TenantID = l.tenantID
 		l.emit(event)
 	}
 	return pipelineCallbackSet{
@@ -45,7 +47,6 @@ func (l *Loop) pipelineCallbacks(req *RunRequest, bridgeRS *runState) pipelineCa
 		buildFilteredTools: l.makeBuildFilteredTools(req),
 		callLLM:            l.makeCallLLM(req, emitRun),
 		pruneMessages:      l.makePruneMessages(),
-		sanitizeHistory:    sanitizeHistory,
 		compactMessages:    l.makeCompactMessages(req),
 		runMemoryFlush:     l.makeRunMemoryFlush(),
 		executeToolCall:    l.makeExecuteToolCall(req, bridgeRS),
@@ -72,8 +73,7 @@ type pipelineCallbackSet struct {
 	injectReminders    func(ctx context.Context, input *pipeline.RunInput, msgs []providers.Message) []providers.Message
 	buildFilteredTools func(state *pipeline.RunState) ([]providers.ToolDefinition, error)
 	callLLM            func(ctx context.Context, state *pipeline.RunState, req providers.ChatRequest) (*providers.ChatResponse, error)
-	pruneMessages      func(msgs []providers.Message, budget int) ([]providers.Message, pipeline.PruneStats)
-	sanitizeHistory    func(msgs []providers.Message) ([]providers.Message, int)
+	pruneMessages      func(msgs []providers.Message, budget int) []providers.Message
 	compactMessages    func(ctx context.Context, msgs []providers.Message, model string) ([]providers.Message, error)
 	runMemoryFlush     func(ctx context.Context, state *pipeline.RunState) error
 	executeToolCall    func(ctx context.Context, state *pipeline.RunState, tc providers.ToolCall) ([]providers.Message, error)
@@ -94,19 +94,15 @@ func (l *Loop) makeResolveWorkspace(req *RunRequest) func(ctx context.Context, i
 		if input.TeamID != "" {
 			teamID = &input.TeamID
 		}
-		// Resolve project binding for workspace routing (same two-source chain as injectContext):
-		//  1. session.project_id — explicit per-session binding
-		//  2. contact default_project_id — channel group default (when contactStore is wired)
-		projectID, projectSlug := l.resolveProjectParams(ctx, input.SessionKey, input.ChannelType, input.ChatID)
 		return resolver.Resolve(ctx, workspace.ResolveParams{
-			AgentID:     l.id,
-			UserID:      input.UserID,
-			ChatID:      input.ChatID,
-			PeerKind:    input.PeerKind,
-			TeamID:      teamID,
-			BaseDir:     l.workspace,
-			ProjectID:   projectID,
-			ProjectSlug: projectSlug,
+			AgentID:   l.id,
+			AgentType: l.agentType,
+			UserID:    input.UserID,
+			ChatID:    input.ChatID,
+			TenantID:  l.tenantID.String(),
+			PeerKind:  input.PeerKind,
+			TeamID:    teamID,
+			BaseDir:   l.workspace,
 		})
 	}
 }
@@ -130,7 +126,7 @@ func (l *Loop) makeBuildMessages() func(ctx context.Context, input *pipeline.Run
 		msgs, _ := l.buildMessages(ctx, history, summary,
 			input.Message, input.ExtraSystemPrompt,
 			input.SessionKey, input.Channel, input.ChannelType,
-			input.ChatTitle, input.ChatID, input.PeerKind, input.UserID,
+			input.ChatTitle, input.PeerKind, input.UserID,
 			input.HistoryLimit, input.SkillFilter, input.LightContext)
 		return msgs, nil
 	}
@@ -195,11 +191,6 @@ func (l *Loop) makeInjectReminders(req *RunRequest) func(ctx context.Context, in
 
 func (l *Loop) makeBuildFilteredTools(req *RunRequest) func(state *pipeline.RunState) ([]providers.ToolDefinition, error) {
 	return func(state *pipeline.RunState) ([]providers.ToolDefinition, error) {
-		// Load per-user MCP tools (Notion, etc.) into registry before filtering.
-		// Servers with require_user_credentials are deferred at startup and
-		// connected per-request here with the actual user's credentials.
-		l.getUserMCPTools(state.Ctx, state.Input.UserID)
-
 		maxIter := l.maxIterations
 		if req.MaxIterations > 0 && req.MaxIterations < maxIter {
 			maxIter = req.MaxIterations
@@ -235,8 +226,11 @@ func (l *Loop) makeCallLLM(req *RunRequest, emitRun func(AgentEvent)) func(ctx c
 		chatReq.Options[providers.OptChannel] = req.Channel
 		chatReq.Options[providers.OptChatID] = req.ChatID
 		chatReq.Options[providers.OptPeerKind] = req.PeerKind
-		chatReq.Options[providers.OptLocalKey] = req.LocalKey
 		chatReq.Options[providers.OptWorkspace] = tools.ToolWorkspaceFromCtx(ctx)
+		if tid := store.TenantIDFromContext(ctx); tid != uuid.Nil {
+			chatReq.Options[providers.OptTenantID] = tid.String()
+		}
+
 		// Reasoning decision: resolve effort level for thinking models (o3, DeepSeek-R1, Kimi).
 		reasoningDecision := providers.ResolveReasoningDecision(
 			provider, model,
@@ -312,11 +306,9 @@ func (l *Loop) makeCallLLM(req *RunRequest, emitRun func(AgentEvent)) func(ctx c
 	}
 }
 
-func (l *Loop) makePruneMessages() func(msgs []providers.Message, budget int) ([]providers.Message, pipeline.PruneStats) {
-	return func(msgs []providers.Message, budget int) ([]providers.Message, pipeline.PruneStats) {
-		var stats pipeline.PruneStats
-		pruned := pruneContextMessages(msgs, budget, l.contextPruningCfg, l.tokenCounter, l.model, &stats)
-		return pruned, stats
+func (l *Loop) makePruneMessages() func(msgs []providers.Message, budget int) []providers.Message {
+	return func(msgs []providers.Message, budget int) []providers.Message {
+		return pruneContextMessages(msgs, budget, l.contextPruningCfg)
 	}
 }
 
@@ -343,21 +335,6 @@ func (l *Loop) makeCompactMessages(req *RunRequest) func(ctx context.Context, ms
 // the web UI code path can read it back via GetSessionMetadata without
 // duplicating the string.
 const SessionMetaKeyLastCompactionAt = "last_compaction_at"
-
-// cacheTouchAt returns the last prune-mutation timestamp for a session.
-// Returns zero time if no touch recorded yet.
-func (l *Loop) cacheTouchAt(sessionKey string) time.Time {
-	if v, ok := l.cacheTouchBySession.Load(sessionKey); ok {
-		return v.(time.Time)
-	}
-	return time.Time{}
-}
-
-// markCacheTouched records the current time as the last prune-mutation timestamp
-// for the given session. Called only after pruning actually mutates messages.
-func (l *Loop) markCacheTouched(sessionKey string) {
-	l.cacheTouchBySession.Store(sessionKey, time.Now())
-}
 
 func (l *Loop) makeRunMemoryFlush() func(ctx context.Context, state *pipeline.RunState) error {
 	return func(ctx context.Context, state *pipeline.RunState) error {

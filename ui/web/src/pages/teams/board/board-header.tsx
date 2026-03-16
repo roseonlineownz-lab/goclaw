@@ -1,14 +1,11 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Clock, Settings, Trash2, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import i18next from "i18next";
 import type { TeamData, TeamMemberData } from "@/types/team";
 import { TeamFeaturesModal } from "../team-features-modal";
 import { TeamAuditLogsModal } from "../team-audit-logs-modal";
-import { InlineEditText } from "@/components/ui/inline-edit-text";
-import { toast } from "@/stores/use-toast-store";
 
 interface BoardHeaderProps {
   team: TeamData;
@@ -17,10 +14,9 @@ interface BoardHeaderProps {
   onDelete: () => void;
   onSettings: () => void;
   onMembers: () => void;
-  onRenameTeam?: (newName: string) => Promise<void>;
 }
 
-export function BoardHeader({ team, members, onBack, onDelete, onSettings, onMembers, onRenameTeam }: BoardHeaderProps) {
+export function BoardHeader({ team, members, onBack, onDelete, onSettings, onMembers }: BoardHeaderProps) {
   const { t } = useTranslation("teams");
   const [featuresOpen, setFeaturesOpen] = useState(false);
   const [auditLogsOpen, setAuditLogsOpen] = useState(false);
@@ -28,11 +24,6 @@ export function BoardHeader({ team, members, onBack, onDelete, onSettings, onMem
   const leadName = leadMember?.display_name || leadMember?.agent_key
     || team.lead_display_name || team.lead_agent_key;
   const memberCount = members.length;
-
-  const handleValidationError = useCallback((err: string) => {
-    if (err === "minLength") toast.error(i18next.t("teams:rename.emptyError"));
-    else if (err === "stale") toast.error(i18next.t("teams:rename.staleError"));
-  }, []);
 
   return (
     <div className="flex items-center gap-3 border-b bg-card px-4 py-2.5 landscape-compact">
@@ -43,19 +34,7 @@ export function BoardHeader({ team, members, onBack, onDelete, onSettings, onMem
       {/* Team info */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          {onRenameTeam ? (
-            <InlineEditText
-              value={team.name}
-              onSave={onRenameTeam}
-              maxLength={255}
-              minLength={1}
-              ariaLabel={t("rename.nameAria")}
-              className="truncate text-base font-semibold sm:text-lg"
-              onValidationError={handleValidationError}
-            />
-          ) : (
-            <h2 className="truncate text-base font-semibold sm:text-lg">{team.name}</h2>
-          )}
+          <h2 className="truncate text-base font-semibold sm:text-lg">{team.name}</h2>
           <Badge variant={team.status === "active" ? "success" : "secondary"} className="text-2xs">
             {team.status}
           </Badge>

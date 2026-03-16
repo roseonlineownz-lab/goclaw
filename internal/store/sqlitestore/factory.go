@@ -35,12 +35,6 @@ func NewSQLiteStores(cfg store.StoreConfig) (*store.Stores, error) {
 		slog.Warn("securecli: encryption key empty, store disabled")
 	}
 
-	users := NewSQLiteUsersStore(db)
-	userSessions := NewSQLiteUserSessionsStore(db)
-	resetTokens := NewSQLitePasswordResetStore(db)
-	users.UseSessions(userSessions)
-	users.UseResetTokens(resetTokens)
-
 	return &store.Stores{
 		DB:                    db,
 		Sessions:              NewSQLiteSessionStore(db),
@@ -50,6 +44,9 @@ func NewSQLiteStores(cfg store.StoreConfig) (*store.Stores, error) {
 		ConfigSecrets:         NewSQLiteConfigSecretsStore(db, cfg.EncryptionKey),
 		BuiltinTools:          NewSQLiteBuiltinToolStore(db),
 		Heartbeats:            NewSQLiteHeartbeatStore(db),
+		Tenants:               NewSQLiteTenantStore(db),
+		BuiltinToolTenantCfgs: NewSQLiteBuiltinToolTenantConfigStore(db),
+		SkillTenantCfgs:       NewSQLiteSkillTenantConfigStore(db),
 		SystemConfigs:         NewSQLiteSystemConfigStore(db),
 		Snapshots:             NewSQLiteSnapshotStore(db),
 		Cron:                  NewSQLiteCronStore(db),
@@ -73,16 +70,5 @@ func NewSQLiteStores(cfg store.StoreConfig) (*store.Stores, error) {
 		EvolutionSuggestions: NewSQLiteEvolutionSuggestionStore(db),
 		KnowledgeGraph:       NewSQLiteKnowledgeGraphStore(db),
 		Vault:                NewSQLiteVaultStore(db),
-		Projects:        NewSQLiteProjectStore(db),
-		ProjectGrants:   NewSQLiteProjectGrantStore(db),
-		TeamUserMembers: NewSQLiteTeamUserMemberStore(db),
-		Users:          users,
-		UserSessions:   userSessions,
-		PasswordReset:  resetTokens,
-		SkillVersions:  NewSQLiteSkillVersionsStore(db),
-		CuratorRuns:    NewSQLiteCuratorRunsStore(db),
-		CuratorEvents:  NewSQLiteCuratorEventsStore(db),
-		UserHookBudget: NewSQLiteUserHookBudgetStore(db),
-		Hooks:          NewSQLiteHookStore(db),
 	}, nil
 }

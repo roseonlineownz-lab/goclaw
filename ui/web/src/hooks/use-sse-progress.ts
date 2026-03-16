@@ -166,8 +166,7 @@ export function useSseProgress(authHeaders: () => Record<string, string>): UseSs
         const res = await fetch(url, { ...init, signal: controller.signal });
         if (!res.ok) {
           const err = await res.json().catch(() => ({ error: res.statusText }));
-          const detail = typeof err.error === "string" ? err.error : err.error?.message ?? res.statusText;
-          setError({ phase: "request", detail, rolled_back: false });
+          setError({ phase: "request", detail: err.error ?? res.statusText, rolled_back: false });
           setStatus("error");
           cleanup();
           return;

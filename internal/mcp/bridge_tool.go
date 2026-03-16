@@ -8,10 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
-	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
@@ -21,16 +19,14 @@ import (
 // safe reconnection without data races.
 type BridgeTool struct {
 	serverName     string
-	serverID       uuid.UUID    // MCP server ID (for grant recheck)
-	toolName       string       // original MCP tool name
-	registeredName string       // may include prefix: "{prefix}__{toolName}"
+	toolName       string // original MCP tool name
+	registeredName string // may include prefix: "{prefix}__{toolName}"
 	description    string
 	inputSchema    map[string]any // JSON Schema for parameters
 	requiredSet    map[string]bool
 	clientPtr      *atomic.Pointer[mcpclient.Client] // shared with serverState for atomic swap on reconnect
 	timeoutSec     int
 	connected      *atomic.Bool
-	grantChecker   GrantChecker // for runtime grant recheck (nil = skip check)
 }
 
 // NewBridgeTool creates a BridgeTool from an MCP Tool definition.
@@ -38,8 +34,7 @@ type BridgeTool struct {
 // If prefix is empty, it is auto-derived from the server name.
 // clientPtr is a shared atomic pointer from serverState — reconnection swaps it
 // atomically, and all BridgeTools see the new client without explicit notification.
-// serverID and grantChecker are optional — pass uuid.Nil and nil for config-path mode.
-func NewBridgeTool(serverName string, mcpTool mcpgo.Tool, clientPtr *atomic.Pointer[mcpclient.Client], prefix string, timeoutSec int, connected *atomic.Bool, serverID uuid.UUID, grantChecker GrantChecker) *BridgeTool {
+func NewBridgeTool(serverName string, mcpTool mcpgo.Tool, clientPtr *atomic.Pointer[mcpclient.Client], prefix string, timeoutSec int, connected *atomic.Bool) *BridgeTool {
 	name := mcpTool.Name
 	effectivePrefix := ensureMCPPrefix(prefix, serverName)
 	registered := effectivePrefix + "__" + name
@@ -57,7 +52,6 @@ func NewBridgeTool(serverName string, mcpTool mcpgo.Tool, clientPtr *atomic.Poin
 
 	return &BridgeTool{
 		serverName:     serverName,
-		serverID:       serverID,
 		toolName:       name,
 		registeredName: registered,
 		description:    mcpTool.Description,
@@ -66,7 +60,6 @@ func NewBridgeTool(serverName string, mcpTool mcpgo.Tool, clientPtr *atomic.Poin
 		clientPtr:      clientPtr,
 		timeoutSec:     timeoutSec,
 		connected:      connected,
-		grantChecker:   grantChecker,
 	}
 }
 
@@ -106,15 +99,6 @@ func (t *BridgeTool) OriginalName() string { return t.toolName }
 func (t *BridgeTool) IsConnected() bool { return t.connected.Load() }
 
 func (t *BridgeTool) Execute(ctx context.Context, args map[string]any) *tools.Result {
-	// Recheck grant before execution — defense against revoked grants
-	if t.grantChecker != nil {
-		agentID := store.AgentIDFromContext(ctx)
-		userID := store.UserIDFromContext(ctx)
-		if !t.grantChecker.IsAllowed(ctx, agentID, userID, t.serverID, t.toolName) {
-			return tools.ErrorResult(fmt.Sprintf("MCP tool %q: grant revoked", t.registeredName))
-		}
-	}
-
 	if !t.connected.Load() {
 		return tools.ErrorResult(fmt.Sprintf("MCP server %q is disconnected", t.serverName))
 	}

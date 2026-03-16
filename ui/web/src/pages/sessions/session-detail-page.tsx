@@ -253,6 +253,7 @@ export function SessionDetailPage({
         onConfirm={async () => {
           await onDelete(session.key);
           setConfirmDelete(false);
+          onBack();
         }}
       />
 

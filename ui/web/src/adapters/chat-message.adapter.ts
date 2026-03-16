@@ -33,7 +33,6 @@ export function transformHistoryMessages(
         mimeType: ref.mime_type,
         fileName: (ref.path?.split("?")[0]?.split("/").pop()) ?? ref.id,
         kind: (ref.kind as MediaItem["kind"]) || "document",
-        prompt: ref.prompt || undefined,
       }));
     }
 

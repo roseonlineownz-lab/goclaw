@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 
-	"github.com/google/uuid"
-	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
 	"github.com/nextlevelbuilder/goclaw/internal/memory"
 	"github.com/nextlevelbuilder/goclaw/internal/pipeline"
@@ -52,14 +50,12 @@ func (l *Loop) buildPipelineDeps(req *RunRequest, bridgeRS *runState) pipeline.P
 	return pipeline.PipelineDeps{
 		TokenCounter: tokencount.NewTiktokenCounter(),
 		EventBus:     l.domainBus,
-		Hooks:        l.hookDispatcher,
 		Config: pipeline.PipelineConfig{
 			MaxIterations:      maxIter,
 			MaxToolCalls:       l.maxToolCalls,
 			CheckpointInterval: 5,
 			ContextWindow:      l.contextWindow,
 			MaxTokens:          l.effectiveMaxTokens(),
-			ReserveTokens:      l.resolveReserveTokens(),
 			Compaction:         l.compactionCfg,
 			// V3 memory/retrieval flags removed — always true at runtime.
 		},
@@ -115,21 +111,7 @@ func (l *Loop) buildPipelineDeps(req *RunRequest, bridgeRS *runState) pipeline.P
 
 		// Prune callbacks
 		PruneMessages:   cb.pruneMessages,
-		SanitizeHistory: cb.sanitizeHistory,
 		CompactMessages: cb.compactMessages,
-
-		// Cache-TTL gate callbacks
-		GetProviderCaps: func() providers.ProviderCapabilities {
-			if ca, ok := l.provider.(providers.CapabilitiesAware); ok {
-				return ca.Capabilities()
-			}
-			return providers.ProviderCapabilities{}
-		},
-		GetPruningConfig: func() *config.ContextPruningConfig {
-			return l.contextPruningCfg
-		},
-		GetCacheTouch:    l.cacheTouchAt,
-		MarkCacheTouched: l.markCacheTouched,
 
 		// Memory flush
 		RunMemoryFlush: cb.runMemoryFlush,
@@ -161,7 +143,6 @@ func (l *Loop) buildPipelineDeps(req *RunRequest, bridgeRS *runState) pipeline.P
 
 		// Checkpoint + Finalize
 		FlushMessages:          cb.flushMessages,
-		PersistAssistantImages: persistAssistantImages,
 		SkillPostscript:        l.makeSkillPostscript(),
 		SanitizeContent:        cb.sanitizeContent,
 		StripMessageDirectives: StripMessageDirectives,
@@ -176,26 +157,19 @@ func (l *Loop) buildPipelineDeps(req *RunRequest, bridgeRS *runState) pipeline.P
 				if compactionCount > 0 {
 					summary = l.sessions.GetSummary(ctx, sessionKey)
 				}
-				scPayload := &eventbus.SessionCompletedPayload{
-					SessionKey:      sessionKey,
-					MessageCount:    msgCount,
-					TokensUsed:      tokensUsed,
-					CompactionCount: compactionCount,
-					Summary:         summary,
-					TeamID:          req.TeamID,
-				}
-				if cid := store.ContactIDFromContext(ctx); cid != uuid.Nil {
-					scPayload.ContactID = cid.String()
-				}
-				if pid := store.ProjectIDFromContext(ctx); pid != uuid.Nil {
-					scPayload.ProjectID = pid.String()
-				}
 				l.domainBus.Publish(eventbus.DomainEvent{
 					Type:     eventbus.EventSessionCompleted,
+					TenantID: l.tenantID.String(),
 					AgentID:  l.agentUUID.String(),
 					UserID:   req.UserID,
 					SourceID: sessionKey,
-					Payload:  scPayload,
+					Payload: &eventbus.SessionCompletedPayload{
+						SessionKey:      sessionKey,
+						MessageCount:    msgCount,
+						TokensUsed:      tokensUsed,
+						CompactionCount: compactionCount,
+						Summary:         summary,
+					},
 				})
 			}
 		},
@@ -254,7 +228,6 @@ func convertRunResult(pr *pipeline.RunResult) *RunResult {
 			ContentType: m.ContentType,
 			Size:        m.Size,
 			AsVoice:     m.AsVoice,
-			Prompt:      m.Prompt,
 		}
 	}
 	return &RunResult{
@@ -282,7 +255,8 @@ func (l *Loop) makeAutoInjectCallback(req *RunRequest) func(ctx context.Context,
 	return func(ctx context.Context, userMessage, userID, recentContext string) (string, error) {
 		result, err := l.autoInjector.Inject(ctx, memory.InjectParams{
 			AgentID:       l.agentUUID.String(),
-			UserID:        store.MemoryUserID(ctx),
+			UserID:        userID,
+			TenantID:      store.TenantIDFromContext(ctx).String(),
 			UserMessage:   userMessage,
 			RecentContext: recentContext,
 		})

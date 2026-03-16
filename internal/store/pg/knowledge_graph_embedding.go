@@ -87,7 +87,7 @@ func (s *PGKnowledgeGraphStore) BackfillKGEmbeddings(ctx context.Context) (int, 
 			}
 			vecStr := vectorToString(emb)
 			if _, err := s.db.ExecContext(ctx,
-				`UPDATE kg_entities SET embedding = $1::halfvec WHERE id = $2`,
+				`UPDATE kg_entities SET embedding = $1::vector WHERE id = $2`,
 				vecStr, pending[i].id,
 			); err != nil {
 				slog.Warn("kg entity embedding update failed", "entity_id", pending[i].id, "error", err)
@@ -113,14 +113,6 @@ func (s *PGKnowledgeGraphStore) EmbedEntity(ctx context.Context, entityID, name,
 	if s.embProvider == nil {
 		return
 	}
-	// Fail fast on a bad entity UUID so the UPDATE never degrades into a
-	// silent no-op WHERE id = uuid.Nil. Callers today pass a freshly minted
-	// UUID, but the error path guards against future drift.
-	eid, err := parseUUID(entityID)
-	if err != nil {
-		slog.Warn("kg entity embedding: invalid UUID", "entity_id", entityID, "error", err)
-		return
-	}
 	text := name + " " + description
 	embeddings, err := s.embProvider.Embed(ctx, []string{text})
 	if err != nil || len(embeddings) == 0 || len(embeddings[0]) == 0 {
@@ -128,8 +120,8 @@ func (s *PGKnowledgeGraphStore) EmbedEntity(ctx context.Context, entityID, name,
 	}
 	vecStr := vectorToString(embeddings[0])
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE kg_entities SET embedding = $1::halfvec WHERE id = $2`,
-		vecStr, eid,
+		`UPDATE kg_entities SET embedding = $1::vector WHERE id = $2`,
+		vecStr, mustParseUUID(entityID),
 	); err != nil {
 		slog.Warn("kg entity embedding failed", "entity_id", entityID, "error", err)
 	}

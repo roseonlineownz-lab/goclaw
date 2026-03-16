@@ -86,8 +86,8 @@ export function CronAdvancedDialog({ open, onOpenChange, job, onUpdate }: CronAd
     if (!open) return;
     reset(deriveDefaults(job));
     fetchTargets();
-     
-  }, [open, job, reset, fetchTargets]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const handleSave = async () => {
     if (!onUpdate) {

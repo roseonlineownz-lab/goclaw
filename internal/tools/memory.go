@@ -117,10 +117,6 @@ func (t *MemorySearchTool) Execute(ctx context.Context, args map[string]any) *Re
 			searchOpts.MinScore = mc.MinScore
 		}
 	}
-	// Build 5D scope filter so search only returns chunks from the same scope bucket.
-	// Mirrors the pattern used by episodic auto-inject to prevent cross-team leaks.
-	searchOpts.Scope = memorySearchScope(ctx)
-
 	agentStr := agentID.String()
 	results, err := t.memStore.Search(ctx, query, agentStr, userID, searchOpts)
 	if err != nil {
@@ -184,9 +180,9 @@ func (t *MemorySearchTool) Execute(ctx context.Context, args map[string]any) *Re
 
 	// Record retrieval metric non-blocking (best-effort).
 	t.recordRetrievalMetric(ctx, len(combined), episodicResults)
-	// Update per-episode recall signals for dreaming weighted scoring.
-	// Fire-and-forget — recall tracking must never block the hot search
-	// path or surface errors to the agent loop.
+	// Phase 10: update per-episode recall signals for dreaming weighted
+	// scoring. Fire-and-forget — recall tracking must never block the hot
+	// search path or surface errors to the agent loop.
 	t.recordEpisodicRecall(ctx, episodicResults)
 
 	return NewResult(string(data))
@@ -197,6 +193,10 @@ func (t *MemorySearchTool) Execute(ctx context.Context, args map[string]any) *Re
 // background goroutine bounded by a 5s timeout so slow DBs can't leak.
 func (t *MemorySearchTool) recordEpisodicRecall(ctx context.Context, episodic []store.EpisodicSearchResult) {
 	if t.episodicStore == nil || len(episodic) == 0 {
+		return
+	}
+	tenantID := store.TenantIDFromContext(ctx)
+	if tenantID == uuid.Nil {
 		return
 	}
 	// Snapshot hits so the goroutine doesn't observe caller mutations.
@@ -211,7 +211,7 @@ func (t *MemorySearchTool) recordEpisodicRecall(ctx context.Context, episodic []
 		return
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bgCtx, cancel := context.WithTimeout(store.WithTenantID(context.Background(), tenantID), 5*time.Second)
 		defer cancel()
 		for _, r := range hits {
 			if err := t.episodicStore.RecordRecall(bgCtx, r.EpisodicID, r.Score); err != nil {
@@ -226,6 +226,10 @@ func (t *MemorySearchTool) recordRetrievalMetric(ctx context.Context, resultCoun
 	if t.metricsStore == nil {
 		return
 	}
+	tenantID := store.TenantIDFromContext(ctx)
+	if tenantID == uuid.Nil {
+		return
+	}
 	agentID := store.AgentIDFromContext(ctx)
 	var topScore float64
 	for _, r := range episodic {
@@ -234,7 +238,7 @@ func (t *MemorySearchTool) recordRetrievalMetric(ctx context.Context, resultCoun
 		}
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bgCtx, cancel := context.WithTimeout(store.WithTenantID(context.Background(), tenantID), 5*time.Second)
 		defer cancel()
 		value, _ := json.Marshal(map[string]any{
 			"result_count":  resultCount,
@@ -243,6 +247,7 @@ func (t *MemorySearchTool) recordRetrievalMetric(ctx context.Context, resultCoun
 		})
 		if err := t.metricsStore.RecordMetric(bgCtx, store.EvolutionMetric{
 			ID:         uuid.New(),
+			TenantID:   tenantID,
 			AgentID:    agentID,
 			MetricType: store.MetricRetrieval,
 			MetricKey:  "memory_search",
@@ -345,30 +350,6 @@ func (t *MemoryGetTool) Execute(ctx context.Context, args map[string]any) *Resul
 		"text": text,
 	}, "", "  ")
 	return NewResult(string(data))
-}
-
-// memorySearchScope builds a MemoryScope from the current request context.
-// Returns nil when no 5D scope dimensions are active (agent-broad search is fine).
-// Mirrors the episodic auto-inject scope logic so both memory tiers apply the same bucket filter.
-func memorySearchScope(ctx context.Context) *store.MemoryScope {
-	teamID := store.TeamIDFromContext(ctx)
-	contactID := store.ContactIDFromContext(ctx)
-	projectID := store.ProjectIDFromContext(ctx)
-
-	if teamID == uuid.Nil && contactID == uuid.Nil && projectID == uuid.Nil {
-		return nil
-	}
-	scope := &store.MemoryScope{}
-	if teamID != uuid.Nil {
-		scope.TeamID = &teamID
-	}
-	if contactID != uuid.Nil {
-		scope.ContactID = &contactID
-	}
-	if projectID != uuid.Nil {
-		scope.ProjectID = &projectID
-	}
-	return scope
 }
 
 // extractLines extracts a range of lines from content.

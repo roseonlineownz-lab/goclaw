@@ -12,12 +12,10 @@ export interface BuiltinToolData {
   description: string;
   category: string;
   enabled: boolean;
+  tenant_enabled: boolean | null;
   settings: Record<string, unknown>;
   requires: string[];
   metadata: Record<string, unknown>;
-  // Boolean status map for tool API keys. Raw values are never returned.
-  // Key format: "tools.web.<provider>.api_key". Present only for tools with secrets.
-  secrets_set?: Record<string, boolean>;
   created_at: string;
   updated_at: string;
 }
@@ -59,10 +57,36 @@ export function useBuiltinTools() {
     [http, invalidate],
   );
 
-  return {
-    tools,
-    loading,
-    refresh: invalidate,
-    updateTool,
-  };
+  const setTenantConfig = useCallback(
+    async (name: string, enabled: boolean) => {
+      try {
+        queryClient.setQueryData<BuiltinToolData[]>(queryKeys.builtinTools.all, (old) =>
+          old?.map((t) => (t.name === name ? { ...t, tenant_enabled: enabled } : t)),
+        );
+        await http.put(`/v1/tools/builtin/${name}/tenant-config`, { enabled });
+        await invalidate();
+        toast.success(i18next.t("tools:builtin.settingsDialog.toast.saved"));
+      } catch (err) {
+        toast.error(i18next.t("tools:builtin.settingsDialog.toast.failed"), userFriendlyError(err));
+        throw err;
+      }
+    },
+    [http, invalidate],
+  );
+
+  const deleteTenantConfig = useCallback(
+    async (name: string) => {
+      try {
+        await http.delete(`/v1/tools/builtin/${name}/tenant-config`);
+        await invalidate();
+        toast.success(i18next.t("tools:builtin.settingsDialog.toast.saved"));
+      } catch (err) {
+        toast.error(i18next.t("tools:builtin.settingsDialog.toast.failed"), userFriendlyError(err));
+        throw err;
+      }
+    },
+    [http, invalidate],
+  );
+
+  return { tools, loading, refresh: invalidate, updateTool, setTenantConfig, deleteTenantConfig };
 }

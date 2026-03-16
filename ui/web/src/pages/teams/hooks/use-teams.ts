@@ -256,10 +256,10 @@ export function useTeams() {
     [ws],
   );
 
-  const updateTeam = useCallback(
-    async (teamId: string, patch: { name?: string; description?: string; settings?: TeamAccessSettings }) => {
+  const updateTeamSettings = useCallback(
+    async (teamId: string, settings: TeamAccessSettings) => {
       try {
-        await ws.call(Methods.TEAMS_UPDATE, { teamId, ...patch });
+        await ws.call(Methods.TEAMS_UPDATE, { teamId, settings });
         toast.success(i18next.t("teams:toast.updated"));
       } catch (err) {
         toast.error(i18next.t("teams:toast.failedUpdate"), userFriendlyError(err));
@@ -273,6 +273,6 @@ export function useTeams() {
     teams, loading, load, createTeam, deleteTeam, getTeam, getTeamTasks, getTeamScopes,
     getTaskDetail, getTaskLight, approveTask, rejectTask, addTaskComment, getTaskComments, getTaskEvents,
     createTask, deleteTask, deleteTasksBulk, assignTask,
-    addMember, removeMember, updateTeam,
+    addMember, removeMember, updateTeamSettings,
   };
 }

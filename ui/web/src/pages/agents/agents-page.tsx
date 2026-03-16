@@ -31,12 +31,13 @@ export function AgentsPage() {
   const { t } = useTranslation("agents");
   const { id: detailId } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { agents, loading, createAgent, deleteAgent, refresh, resummonAgent, cancelSummonAgent } = useAgents();
+  const { agents, loading, createAgent, deleteAgent, refresh, resummonAgent } = useAgents();
   const showSkeleton = useDeferredLoading(loading && agents.length === 0);
 
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState<"card" | "list">("card");
   const [ownerFilter, setOwnerFilter] = useState<string | undefined>();
+  const [typeFilter, setTypeFilter] = useState<string | undefined>();
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [summoningAgent, setSummoningAgent] = useState<{ id: string; name: string } | null>(null);
@@ -44,19 +45,6 @@ export function AgentsPage() {
   // Collect unique owner IDs for filter + contact resolution
   const ownerIDs = useMemo(() => [...new Set(agents.map((a) => a.owner_id).filter(Boolean))], [agents]);
   const { resolve } = useContactResolver(ownerIDs);
-
-  const filtered = useMemo(() => agents.filter((a) => {
-    if (ownerFilter && a.owner_id !== ownerFilter) return false;
-    const q = search.toLowerCase();
-    return (
-      a.agent_key.toLowerCase().includes(q) ||
-      (a.display_name ?? "").toLowerCase().includes(q)
-    );
-  }), [agents, ownerFilter, search]);
-
-  const { pageItems, pagination, setPage, setPageSize, resetPage } = usePagination(filtered);
-
-  useEffect(() => { resetPage(); }, [search, ownerFilter, resetPage]);
 
   const handleResummon = async (agent: { id: string; display_name?: string; agent_key: string }) => {
     try {
@@ -76,6 +64,20 @@ export function AgentsPage() {
       />
     );
   }
+
+  const filtered = agents.filter((a) => {
+    if (ownerFilter && a.owner_id !== ownerFilter) return false;
+    if (typeFilter && a.agent_type !== typeFilter) return false;
+    const q = search.toLowerCase();
+    return (
+      a.agent_key.toLowerCase().includes(q) ||
+      (a.display_name ?? "").toLowerCase().includes(q)
+    );
+  });
+
+  const { pageItems, pagination, setPage, setPageSize, resetPage } = usePagination(filtered);
+
+  useEffect(() => { resetPage(); }, [search, ownerFilter, typeFilter, resetPage]);
 
   const resolveOwnerName = (id: string) => {
     const contact = resolve(id);
@@ -115,6 +117,21 @@ export function AgentsPage() {
           placeholder={t("searchPlaceholder")}
           className="max-w-sm"
         />
+
+        {/* Type filter */}
+        <Select
+          value={typeFilter ?? "__all__"}
+          onValueChange={(v) => setTypeFilter(v === "__all__" ? undefined : v)}
+        >
+          <SelectTrigger className="h-9 w-36 text-xs">
+            <SelectValue placeholder={t("allTypes", "All Types")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">{t("allTypes", "All Types")}</SelectItem>
+            <SelectItem value="open">{t("typeOpen", "Open")}</SelectItem>
+            <SelectItem value="predefined">{t("typePredefined", "Predefined")}</SelectItem>
+          </SelectContent>
+        </Select>
 
         {/* Creator filter */}
         {ownerIDs.length > 0 && (
@@ -179,9 +196,9 @@ export function AgentsPage() {
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={Bot}
-            title={search || ownerFilter ? t("noMatchTitle") : t("emptyTitle")}
+            title={search || ownerFilter || typeFilter ? t("noMatchTitle") : t("emptyTitle")}
             description={
-              search || ownerFilter
+              search || ownerFilter || typeFilter
                 ? t("noMatchDescription")
                 : t("emptyDescription")
             }
@@ -271,7 +288,6 @@ export function AgentsPage() {
           agentName={summoningAgent.name}
           onCompleted={refresh}
           onResummon={resummonAgent}
-          onCancel={cancelSummonAgent}
         />
       )}
     </div>

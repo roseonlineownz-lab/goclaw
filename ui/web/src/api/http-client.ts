@@ -1,14 +1,7 @@
 import { ApiError } from "./errors";
 
-export type RefreshFn = () => Promise<{ accessToken: string }>;
-export type BootstrapHandler = (err: ApiError) => boolean;
-
 export class HttpClient {
   onAuthFailure: (() => void) | null = null;
-  /** When set, 401 responses trigger a single-flight refresh before failing. */
-  refreshTokens: RefreshFn | null = null;
-  /** When set, every error is offered to the bootstrap handler before being thrown. */
-  onBootstrapRequired: BootstrapHandler | null = null;
 
   constructor(
     private baseUrl: string,
@@ -97,7 +90,7 @@ export class HttpClient {
       throw new ApiError(code, message);
     }
 
-    return this.readJson<T>(res);
+    return res.json() as Promise<T>;
   }
 
   private buildUrl(path: string, params?: Record<string, string>): string {
@@ -124,6 +117,9 @@ export class HttpClient {
     if (userId) h["X-GoClaw-User-Id"] = userId;
     const senderID = this.getSenderID();
     if (senderID) h["X-GoClaw-Sender-Id"] = senderID;
+    // Tenant scope: narrow cross-tenant admin to a specific tenant
+    const tenantScope = localStorage.getItem("goclaw:tenant_id");
+    if (tenantScope) h["X-GoClaw-Tenant-Id"] = tenantScope;
     return h;
   }
 
@@ -131,7 +127,7 @@ export class HttpClient {
     return { "Content-Type": "application/json", ...this.authHeaders() };
   }
 
-  private async request<T>(url: string, init: RequestInit, retried = false): Promise<T> {
+  private async request<T>(url: string, init: RequestInit): Promise<T> {
     let res: Response;
     try {
       res = await fetch(url, {
@@ -145,46 +141,15 @@ export class HttpClient {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       // Backend wraps errors as { "error": { "code": "...", "message": "..." } }
-      // OR flat { "error": "string", "message": "..." } (e.g., bootstrap_required, rate_limit_exceeded)
       const nested = typeof err.error === "object" && err.error !== null ? err.error : null;
       const code = nested?.code ?? err.code ?? "HTTP_ERROR";
       const message = nested?.message ?? (typeof err.error === "string" ? err.error : null) ?? err.message ?? res.statusText;
-      const apiErr = new ApiError(code, message);
-
-      // 503 + bootstrap_required → redirect to /bootstrap.
-      if (res.status === 503 && this.onBootstrapRequired?.(apiErr)) {
-        throw apiErr;
-      }
-
-      // 401 → single-flight refresh, then retry once.
-      if (res.status === 401 && !retried && this.refreshTokens) {
-        try {
-          await this.refreshTokens();
-          return this.request<T>(url, init, true);
-        } catch {
-          // Refresh failed — fall through to onAuthFailure below.
-        }
-      }
-
-      if (res.status === 401) {
+      if (res.status === 401 || code === "TENANT_ACCESS_REVOKED") {
         this.onAuthFailure?.();
       }
-      throw apiErr;
+      throw new ApiError(code, message);
     }
 
-    return this.readJson<T>(res);
-  }
-
-  private async readJson<T>(res: Response): Promise<T> {
-    if (res.status === 204 || res.headers.get("content-length") === "0") {
-      return undefined as T;
-    }
-
-    const text = await res.text();
-    if (text.trim().length === 0) {
-      return undefined as T;
-    }
-
-    return JSON.parse(text) as T;
+    return res.json() as Promise<T>;
   }
 }

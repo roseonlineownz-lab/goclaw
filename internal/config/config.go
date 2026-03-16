@@ -42,7 +42,6 @@ func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 // Config is the root configuration for the GoClaw Gateway.
 type Config struct {
 	DataDir   string          `json:"data_dir,omitempty"` // persistent data directory (default: ~/.goclaw/data)
-	WebURL    string          `json:"web_url,omitempty"`  // base URL the web UI is served from; embedded in password-reset / invite emails
 	Agents    AgentsConfig    `json:"agents"`
 	Channels  ChannelsConfig  `json:"channels"`
 	Providers ProvidersConfig `json:"providers"`
@@ -51,30 +50,11 @@ type Config struct {
 	Sessions  SessionsConfig  `json:"sessions"`
 	Database  DatabaseConfig  `json:"database"`
 	Tts       TtsConfig       `json:"tts"`
-	Audio     *AudioConfig    `json:"audio,omitempty"` // optional STT/Music defaults (Phase 3/4)
 	Cron      CronConfig      `json:"cron"`
 	Telemetry TelemetryConfig `json:"telemetry"`
 	Tailscale TailscaleConfig `json:"tailscale"`
 	Bindings  []AgentBinding  `json:"bindings,omitempty"`
-	Hooks     HooksConfig     `json:"hooks"`
 	mu        sync.RWMutex
-}
-
-// HooksConfig tunes the script-hook runtime caps. All zero-valued fields fall
-// back to the handlers package defaults (see handlers.NewScriptHandler).
-//
-// ScriptConcurrency bounds the total concurrent script executions per process.
-// ScriptPerTenantConcurrency bounds a single tenant's share of that pool so a
-// runaway tenant cannot starve global slots. ScriptCacheSize caps the LRU of
-// compiled goja programs keyed by (hookID, version).
-//
-// BuiltinDisable names builtin hook IDs (from builtins.yaml) that the
-// operator wants force-disabled at startup — per-deployment escape hatch.
-type HooksConfig struct {
-	ScriptConcurrency          int      `json:"script_concurrency,omitempty"`
-	ScriptPerTenantConcurrency int      `json:"script_per_tenant_concurrency,omitempty"`
-	ScriptCacheSize            int      `json:"script_cache_size,omitempty"`
-	BuiltinDisable             []string `json:"builtin_disable,omitempty"`
 }
 
 // TailscaleConfig configures the optional Tailscale tsnet listener.
@@ -131,7 +111,6 @@ type AgentsConfig struct {
 // AgentDefaults are default settings for all agents.
 type AgentDefaults struct {
 	Workspace           string                `json:"workspace"`
-	AllowedPaths        []string              `json:"allowed_paths,omitempty"` // extra paths agents can access (cross-drive on Windows)
 	RestrictToWorkspace bool                  `json:"restrict_to_workspace"`
 	Provider            string                `json:"provider"`
 	Model               string                `json:"model"`
@@ -140,6 +119,7 @@ type AgentDefaults struct {
 	MaxToolIterations   int                   `json:"max_tool_iterations"`
 	ContextWindow       int                   `json:"context_window"`
 	MaxToolCalls        int                   `json:"max_tool_calls,omitempty"` // max total tool calls per run (0 = unlimited, default 25)
+	AgentType           string                `json:"agent_type,omitempty"`     // "open" (default) or "predefined"
 	Subagents           *SubagentsConfig      `json:"subagents,omitempty"`
 	Sandbox             *SandboxConfig        `json:"sandbox,omitempty"`
 	Memory              *MemoryConfig         `json:"memory,omitempty"`
@@ -169,15 +149,10 @@ type MemoryFlushConfig struct {
 }
 
 // ContextPruningConfig configures in-memory context pruning of old tool results.
-// Matches TS openclaw/src/agents/pi-hooks/context-pruning/settings.ts.
-//
-// Mode "" (default) or "off" → pruning disabled, zero overhead.
-// Mode "cache-ttl" → prune eligible tool results when ratio exceeds softTrimRatio,
-//
-//	gated by provider prompt-cache TTL (see PruneStage).
+// Matching TS src/agents/pi-extensions/context-pruning/settings.ts.
+// Mode "cache-ttl": prune when context exceeds softTrimRatio of context window.
 type ContextPruningConfig struct {
-	Mode                 string                   `json:"mode,omitempty"`                 // "" (default off), "off", "cache-ttl"
-	TTL                  string                   `json:"ttl,omitempty"`                  // cache TTL gate duration (default "5m"), Go duration string e.g. "5m", "30s"
+	Mode                 string                   `json:"mode,omitempty"`                 // "off" (default), "cache-ttl"
 	KeepLastAssistants   int                      `json:"keepLastAssistants,omitempty"`   // protect last N assistant msgs (default 3)
 	SoftTrimRatio        float64                  `json:"softTrimRatio,omitempty"`        // start soft trim at this % of window (default 0.3)
 	HardClearRatio       float64                  `json:"hardClearRatio,omitempty"`       // start hard clear at this % (default 0.5)
@@ -204,7 +179,7 @@ type ContextPruningHardClear struct {
 type MemoryConfig struct {
 	Enabled           *bool   `json:"enabled,omitempty"`            // default true (nil = enabled)
 	EmbeddingProvider string  `json:"embedding_provider,omitempty"` // "openai", "gemini", "openrouter", "" (auto-select)
-	EmbeddingModel    string  `json:"embedding_model,omitempty"`    // default "text-embedding-3-large" (3072 dims)
+	EmbeddingModel    string  `json:"embedding_model,omitempty"`    // default "text-embedding-3-small"
 	EmbeddingAPIBase  string  `json:"embedding_api_base,omitempty"` // custom endpoint URL
 	MaxResults        int     `json:"max_results,omitempty"`        // default 6
 	MaxChunkLen       int     `json:"max_chunk_len,omitempty"`      // default 1000
@@ -354,13 +329,13 @@ type ModelPricing struct {
 // When enabled, spans are exported to an OTLP-compatible backend (Jaeger, Tempo, Datadog, etc.)
 // in addition to PostgreSQL storage.
 type TelemetryConfig struct {
-	Enabled      bool                     `json:"enabled,omitempty"`       // enable OTLP export (default false)
-	Endpoint     string                   `json:"endpoint,omitempty"`      // OTLP endpoint (e.g. "localhost:4317", "https://otel.example.com:4318")
-	Protocol     string                   `json:"protocol,omitempty"`      // "grpc" (default) or "http"
-	Insecure     bool                     `json:"insecure,omitempty"`      // skip TLS verification (default false, set true for local dev)
-	ServiceName  string                   `json:"service_name,omitempty"`  // OTEL service name (default "goclaw-gateway")
-	Headers      map[string]string        `json:"headers,omitempty"`       // extra headers (e.g. auth tokens for cloud backends)
-	ModelPricing map[string]*ModelPricing `json:"model_pricing,omitempty"` // cost per model, key = "provider/model" or just "model"
+	Enabled      bool                       `json:"enabled,omitempty"`       // enable OTLP export (default false)
+	Endpoint     string                     `json:"endpoint,omitempty"`      // OTLP endpoint (e.g. "localhost:4317", "https://otel.example.com:4318")
+	Protocol     string                     `json:"protocol,omitempty"`      // "grpc" (default) or "http"
+	Insecure     bool                       `json:"insecure,omitempty"`      // skip TLS verification (default false, set true for local dev)
+	ServiceName  string                     `json:"service_name,omitempty"`  // OTEL service name (default "goclaw-gateway")
+	Headers      map[string]string          `json:"headers,omitempty"`       // extra headers (e.g. auth tokens for cloud backends)
+	ModelPricing map[string]*ModelPricing    `json:"model_pricing,omitempty"` // cost per model, key = "provider/model" or just "model"
 }
 
 // CronConfig configures the cron job system.
@@ -428,6 +403,7 @@ type AgentSpec struct {
 	MaxToolIterations int             `json:"max_tool_iterations,omitempty"`
 	ContextWindow     int             `json:"context_window,omitempty"`
 	MaxToolCalls      int             `json:"max_tool_calls,omitempty"` // per-agent override
+	AgentType         string          `json:"agent_type,omitempty"`     // "open" or "predefined"
 	Skills            []string        `json:"skills,omitempty"`         // nil = all skills allowed
 	Tools             *ToolPolicySpec `json:"tools,omitempty"`          // per-agent tool policy
 	Workspace         string          `json:"workspace,omitempty"`

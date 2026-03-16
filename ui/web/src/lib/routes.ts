@@ -1,7 +1,5 @@
 export const ROUTES = {
   LOGIN: "/login",
-  BOOTSTRAP: "/bootstrap",
-  PROFILE: "/profile",
   OVERVIEW: "/overview",
   CHAT: "/chat",
   CHAT_PATTERN: "/chat/:sessionKey?",
@@ -42,7 +40,9 @@ export const ROUTES = {
   ACTIVITY: "/activity",
   API_KEYS: "/api-keys",
   PACKAGES: "/packages",
+  TENANTS: "/admin/tenants",
+  TENANT_DETAIL: "/admin/tenants/:id",
+  SETUP: "/setup",
   BACKUP_RESTORE: "/backup-restore",
-  HOOKS: "/hooks",
-  HOOK_DETAIL: "/hooks/:id",
+  SELECT_TENANT: "/select-tenant",
 } as const;

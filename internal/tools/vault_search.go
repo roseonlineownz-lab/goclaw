@@ -27,25 +27,7 @@ func (t *VaultSearchTool) SetSearchService(svc *vault.VaultSearchService) {
 func (t *VaultSearchTool) Name() string { return "vault_search" }
 
 func (t *VaultSearchTool) Description() string {
-	return "Primary discovery tool: search across ALL knowledge sources (vault docs, memory, knowledge graph). Each result carries a source-specific id field (doc_id / entity_id / episodic_id) that matches the input param of its follow-up tool — pass doc_id to vault_read, entity_id to knowledge_graph_search, episodic_id to memory_expand. Narrow the search with types=\"context,note\" or types=\"kg\" when relevant."
-}
-
-// sourceIDField returns the (field-name, follow-up-hint) pair for a result
-// source. Field names intentionally match the input param of the follow-up
-// tool so the LLM cannot misroute an id: `doc_id` is vault_read's param,
-// `entity_id` is knowledge_graph_search's param, `episodic_id` pairs with
-// memory_expand's `id` param (kept distinct to signal namespace).
-func sourceIDField(source string) (field, hint string) {
-	switch source {
-	case "vault":
-		return "doc_id", " → vault_read(doc_id)"
-	case "kg":
-		return "entity_id", " → knowledge_graph_search(entity_id) — NOT vault_read"
-	case "episodic":
-		return "episodic_id", " → memory_expand(id=episodic_id) — NOT vault_read"
-	default:
-		return "id", ""
-	}
+	return "Primary discovery tool: search across ALL knowledge sources (vault docs, memory, knowledge graph). Returns ranked results with source attribution. Use memory_search for memory-only queries, kg_search for relationship traversal."
 }
 
 func (t *VaultSearchTool) Parameters() map[string]any {
@@ -62,7 +44,7 @@ func (t *VaultSearchTool) Parameters() map[string]any {
 			},
 			"types": map[string]any{
 				"type":        "string",
-				"description": "Comma-separated doc types: context, memory, note, skill, episodic, kg (default: all sources)",
+				"description": "Comma-separated doc types: context, memory, note, skill, episodic (default: all)",
 			},
 			"maxResults": map[string]any{
 				"type":        "number",
@@ -80,25 +62,21 @@ func (t *VaultSearchTool) Execute(ctx context.Context, args map[string]any) *Res
 	}
 
 	agentID := store.AgentIDFromContext(ctx)
+	tenantID := store.TenantIDFromContext(ctx)
 	if t.searchSvc == nil || agentID == uuid.Nil {
 		return ErrorResult("vault search not available")
 	}
 
 	userID := store.MemoryUserID(ctx)
 	opts := vault.UnifiedSearchOptions{
-		Query:   query,
-		AgentID: agentID.String(),
-		UserID:  userID,
+		Query:    query,
+		AgentID:  agentID.String(),
+		UserID:   userID,
+		TenantID: tenantID.String(),
 	}
-	// Team + chat context from RunContext — cannot be spoofed via tool args.
+	// Team context from RunContext — cannot be spoofed via tool args.
 	if rc := store.RunContextFromCtx(ctx); rc != nil && rc.TeamID != "" {
 		opts.TeamID = &rc.TeamID
-		if rc.TeamIsolated {
-			opts.TeamIsolated = true
-			if chatID := WorkspaceChatIDFromCtx(ctx); chatID != "" {
-				opts.ChatID = &chatID
-			}
-		}
 	}
 
 	if scope, ok := args["scope"].(string); ok && scope != "" {
@@ -130,13 +108,6 @@ func (t *VaultSearchTool) Execute(ctx context.Context, args map[string]any) *Res
 			sb.WriteString(fmt.Sprintf(" (%s)", r.Path))
 		}
 		sb.WriteString(fmt.Sprintf(" — score: %.2f", r.Score))
-		field, hint := sourceIDField(r.Source)
-		if r.ID != "" {
-			sb.WriteString(fmt.Sprintf(" — %s: %s", field, r.ID))
-		}
-		if hint != "" {
-			sb.WriteString(hint)
-		}
 		if r.Snippet != "" {
 			sb.WriteString(fmt.Sprintf("\n   %s", r.Snippet))
 		}

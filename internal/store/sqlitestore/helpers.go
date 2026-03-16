@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/store/base"
 )
 
@@ -40,15 +41,6 @@ var validColumnName = base.ValidColumnName
 var tableHasUpdatedAt = base.TableHasUpdatedAt
 
 // --- SQLite-specific helpers ---
-
-// uuidPtrStr converts *uuid.UUID to its string representation for SQLite storage.
-// Returns nil when the pointer is nil (stores NULL in the DB).
-func uuidPtrStr(id *uuid.UUID) any {
-	if id == nil {
-		return nil
-	}
-	return id.String()
-}
 
 // jsonStringArray converts a Go string slice to a JSON array string for SQLite storage.
 // SQLite stores arrays as JSON text (no native array type).
@@ -105,4 +97,33 @@ func execMapUpdate(ctx context.Context, db *sql.DB, table string, id uuid.UUID, 
 	}
 	_, err = db.ExecContext(ctx, query, args...)
 	return err
+}
+
+// execMapUpdateWhereTenant builds and runs a dynamic UPDATE with ? placeholders,
+// adding both id and tenant_id to the WHERE clause for tenant-scoped updates.
+func execMapUpdateWhereTenant(ctx context.Context, db *sql.DB, table string, updates map[string]any, id, tenantID uuid.UUID) error {
+	query, args, err := base.BuildMapUpdateWhereTenant(sqliteDialect, table, updates, id, tenantID)
+	if err != nil {
+		slog.Warn("security.invalid_column_name", "table", table, "error", err)
+		return err
+	}
+	if query == "" {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, query, args...)
+	return err
+}
+
+// --- Tenant filter helpers ---
+
+func tenantIDForInsert(ctx context.Context) uuid.UUID {
+	return base.TenantIDForInsert(store.TenantIDFromContext(ctx), store.MasterTenantID)
+}
+
+func requireTenantID(ctx context.Context) (uuid.UUID, error) {
+	tid := store.TenantIDFromContext(ctx)
+	if err := base.RequireTenantID(tid); err != nil {
+		return uuid.Nil, err
+	}
+	return tid, nil
 }

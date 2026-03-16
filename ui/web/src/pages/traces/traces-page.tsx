@@ -24,11 +24,8 @@ import { useDeferredLoading } from "@/hooks/use-deferred-loading";
 import { useUiStore } from "@/stores/use-ui-store";
 import { useAgents } from "@/pages/agents/hooks/use-agents";
 import { useChannelInstances } from "@/pages/channels/hooks/use-channel-instances";
-import { useQueryClient } from "@tanstack/react-query";
 import { useWs } from "@/hooks/use-ws";
-import { useWsEvent } from "@/hooks/use-ws-event";
-import { Methods, Events } from "@/api/protocol";
-import { queryKeys } from "@/lib/query-keys";
+import { Methods } from "@/api/protocol";
 import { toast } from "@/stores/use-toast-store";
 
 /** Strip media placeholder tags like <media:image> from preview text */
@@ -62,24 +59,13 @@ export function TracesPage() {
   const { t } = useTranslation("traces");
   const { t: tc } = useTranslation("common");
   const tz = useUiStore((s) => s.timezone);
-  const globalPageSize = useUiStore((s) => s.pageSize);
-  const setGlobalPageSize = useUiStore((s) => s.setPageSize);
   const [agentFilter, setAgentFilter] = useState<string>();
   const [channelFilter, setChannelFilter] = useState<string>();
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSizeRaw] = useState(globalPageSize);
-  const setPageSize = (size: number) => { setPageSizeRaw(size); setPage(1); setGlobalPageSize(size); };
+  const [pageSize, setPageSize] = useState(20);
 
   const ws = useWs();
-  const queryClient = useQueryClient();
-
-  // Invalidate traces list on immediate status events (no need to wait for 5s flush).
-  useWsEvent(Events.TRACE_STATUS, useCallback(
-    () => queryClient.invalidateQueries({ queryKey: queryKeys.traces.all }),
-    [queryClient],
-  ));
-
   const { agents } = useAgents();
   const { instances: channels } = useChannelInstances();
 
@@ -115,33 +101,16 @@ export function TracesPage() {
         const res = await ws.call(Methods.CHAT_ABORT, {
           sessionKey: trace.session_key,
           runId: trace.run_id,
-        }) as {
-          aborted?: boolean;
-          stopped?: boolean;
-          forced?: boolean;
-          alreadyAborting?: boolean;
-          notFound?: boolean;
-          unauthorized?: boolean;
-        };
-        if (res?.stopped) {
-          toast.success(t("toast.abortStopped"));
-        } else if (res?.forced) {
-          toast.warning(t("toast.abortForced"));
-        } else if (res?.alreadyAborting) {
-          toast.info(t("toast.abortAlreadyAborting"));
-        } else if (res?.unauthorized) {
-          toast.error(t("toast.abortUnauthorized"));
-        } else if (res?.notFound) {
-          toast.info(t("toast.abortNotFound"));
+        }) as { aborted?: boolean };
+        if (res?.aborted) {
+          toast.success(t("toast.abortSent"));
+          refresh();
         } else {
-          toast.error(t("toast.abortFailed"));
+          toast.info(t("toast.abortNotFound"));
         }
-        refresh();
       } catch {
         toast.error(t("toast.abortFailed"));
       } finally {
-        // Auto re-enable within 5s max (3s grace + 2s buffer) in case WS event is delayed.
-        setTimeout(() => setAbortingRunId(null), 5000);
         setAbortingRunId(null);
       }
     },

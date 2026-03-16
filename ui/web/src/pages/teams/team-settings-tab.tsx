@@ -47,7 +47,7 @@ function deriveDefaults(team: TeamData): TeamSettingsFormData {
 
 export function TeamSettingsTab({ teamId, team, onSaved }: TeamSettingsTabProps) {
   const { t } = useTranslation("teams");
-  const { updateTeam } = useTeams();
+  const { updateTeamSettings } = useTeams();
 
   // UI-only state
   const [saving, setSaving] = useState(false);
@@ -94,8 +94,6 @@ export function TeamSettingsTab({ teamId, team, onSaved }: TeamSettingsTabProps)
     try {
       const data = form.getValues();
       const settings: TeamAccessSettings = {};
-      // Preserve version from existing settings to prevent v2→v1 downgrade
-      if (initial.version !== undefined) settings.version = initial.version;
       if (data.allowUserIds.length > 0) settings.allow_user_ids = data.allowUserIds;
       if (data.denyUserIds.length > 0) settings.deny_user_ids = data.denyUserIds;
       if (data.allowChannels.length > 0) settings.allow_channels = data.allowChannels;
@@ -111,22 +109,24 @@ export function TeamSettingsTab({ teamId, team, onSaved }: TeamSettingsTabProps)
         new_task: data.notifyNewTask,
       };
       settings.notifications = notifications;
-      settings.member_requests = { enabled: data.memberRequestsEnabled, auto_dispatch: data.memberRequestsAutoDispatch };
+      if (data.memberRequestsEnabled) {
+        settings.member_requests = { enabled: true, auto_dispatch: data.memberRequestsAutoDispatch };
+      }
       if (escalationMode) {
         settings.escalation_mode = escalationMode;
         if (escalationActions.length > 0) settings.escalation_actions = escalationActions;
       }
       settings.blocker_escalation = { enabled: data.blockerEscalationEnabled };
-      settings.followup_interval_minutes = data.followupInterval;
-      settings.followup_max_reminders = data.followupMaxReminders;
+      if (data.followupInterval !== 30) settings.followup_interval_minutes = data.followupInterval;
+      if (data.followupMaxReminders !== 0) settings.followup_max_reminders = data.followupMaxReminders;
       settings.workspace_scope = data.workspaceScope || "isolated";
-      await updateTeam(teamId, { settings });
+      await updateTeamSettings(teamId, settings);
       onSaved();
     } catch { // toast shown by hook
     } finally {
       setSaving(false);
     }
-  }, [teamId, form, initial, escalationMode, escalationActions, updateTeam, onSaved]);
+  }, [teamId, form, escalationMode, escalationActions, updateTeamSettings, onSaved]);
 
   const channelOptions = CHANNEL_TYPES.map((c) => ({ value: c.value, label: c.label }));
 

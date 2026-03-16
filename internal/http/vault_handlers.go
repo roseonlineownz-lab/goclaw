@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/vault"
@@ -40,15 +41,11 @@ type VaultHandler struct {
 	workspace      string
 	eventBus       eventbus.DomainEventBus
 	enrichProgress *vault.EnrichProgress // nil = enrichment progress SSE disabled
-	enrichWorker   *vault.EnrichWorker   // nil = stop not available
-	rescanMu       sync.Map              // key: scopeKey → struct{}, per-scope concurrency guard
+	rescanMu       sync.Map              // key: tenantID → struct{}, per-tenant concurrency guard
 }
 
 // SetEnrichProgress injects the enrichment progress tracker for SSE streaming.
 func (h *VaultHandler) SetEnrichProgress(p *vault.EnrichProgress) { h.enrichProgress = p }
-
-// SetEnrichWorker injects the enrichment worker for stop functionality.
-func (h *VaultHandler) SetEnrichWorker(w *vault.EnrichWorker) { h.enrichWorker = w }
 
 func NewVaultHandler(s store.VaultStore, ta store.TeamAccessStore, workspace string, bus eventbus.DomainEventBus, agents AgentLister, teams TeamLister) *VaultHandler {
 	return &VaultHandler{store: s, teamAccess: ta, agents: agents, teams: teams, workspace: workspace, eventBus: bus}
@@ -57,7 +54,7 @@ func NewVaultHandler(s store.VaultStore, ta store.TeamAccessStore, workspace str
 // validateTeamMembership checks that the requesting user belongs to the given team.
 // Owner role bypasses this check. Returns false and writes 403 if unauthorized.
 func (h *VaultHandler) validateTeamMembership(ctx context.Context, w http.ResponseWriter, teamID string) bool {
-	if store.IsRootRole(ctx) {
+	if store.IsOwnerRole(ctx) {
 		return true
 	}
 	if h.teamAccess == nil {
@@ -122,10 +119,8 @@ func (h *VaultHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/vault/links/batch", h.auth(h.handleBatchGetLinks))
 	mux.HandleFunc("POST /v1/vault/upload", h.auth(h.handleUpload))
 	mux.HandleFunc("POST /v1/vault/rescan", h.auth(h.handleRescan))
-	mux.HandleFunc("GET /v1/vault/tree", h.auth(h.handleVaultTree))
 	mux.HandleFunc("POST /v1/vault/search", h.auth(h.handleSearchAll))
 	mux.HandleFunc("GET /v1/vault/enrichment/status", h.auth(h.handleEnrichmentStatus))
-	mux.HandleFunc("POST /v1/vault/enrichment/stop", h.auth(h.handleEnrichmentStop))
 	// Per-agent endpoints (backward compat — same handlers, agentID from path).
 	mux.HandleFunc("GET /v1/agents/{agentID}/vault/documents", h.auth(h.handleListDocuments))
 	mux.HandleFunc("GET /v1/agents/{agentID}/vault/documents/{docID}", h.auth(h.handleGetDocument))
@@ -166,13 +161,14 @@ func (h *VaultHandler) parseListOpts(r *http.Request) store.VaultListOptions {
 // handleRescan walks the entire tenant workspace and registers missing/changed files in vault.
 // Infers agent/team ownership from directory structure: agents/{key}/, teams/{uuid}/, or root shared.
 func (h *VaultHandler) handleRescan(w http.ResponseWriter, r *http.Request) {
-	// Rescan concurrency guard — only one rescan at a time.
-	const rescanKey = "rescan"
-	if _, loaded := h.rescanMu.LoadOrStore(rescanKey, struct{}{}); loaded {
+	tenantID := store.TenantIDFromContext(r.Context()).String()
+
+	// Per-tenant concurrency guard.
+	if _, loaded := h.rescanMu.LoadOrStore(tenantID, struct{}{}); loaded {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "rescan already in progress"})
 		return
 	}
-	defer h.rescanMu.Delete(rescanKey)
+	defer h.rescanMu.Delete(tenantID)
 
 	wsPath := h.resolveTenantWorkspace(r.Context())
 	if wsPath == "" {
@@ -187,49 +183,33 @@ func (h *VaultHandler) handleRescan(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result, err := vault.RescanWorkspace(ctx, vault.RescanParams{
+		TenantID:  tenantID,
 		Workspace: wsPath,
 		AgentMap:  agentMap,
 		TeamSet:   teamSet,
 	}, h.store, h.eventBus)
 	if err != nil {
-		slog.Warn("vault.rescan failed", "error", err)
+		slog.Warn("vault.rescan failed", "tenant", tenantID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	// Start progress BEFORE publishing events so workers see running=true
-	// and AddDone calls are not dropped by the !running guard.
-	total := result.New + result.Updated
-
-	// Always re-enqueue docs that lack summaries (failed previous enrichment).
-	// Worker-level dedup (DocID+ContentHash) prevents double-processing docs
-	// that are also in PendingEvents from the current scan.
-	if h.enrichWorker != nil {
-		enqueued, err := h.enrichWorker.EnqueueUnenriched(ctx, wsPath, h.eventBus, 0)
-		if err != nil {
-			slog.Warn("vault.rescan: enqueue_unenriched failed", "error", err)
-		} else if enqueued > 0 {
-			total += enqueued
-			result.Reenqueued = enqueued
-			slog.Info("vault.rescan: re-enqueued unenriched docs", "count", enqueued)
-		}
-	}
-
-	if h.enrichProgress != nil && total > 0 {
-		h.enrichProgress.Start(total)
-	}
-
-	// Now publish enrichment events — workers will call AddDone after Start.
-	for _, event := range result.PendingEvents {
-		h.eventBus.Publish(event)
+	// Signal enrichment progress so WS subscribers see running=true immediately.
+	if h.enrichProgress != nil && (result.New+result.Updated) > 0 {
+		h.enrichProgress.Start(result.New+result.Updated, store.TenantIDFromContext(r.Context()))
 	}
 
 	writeJSON(w, http.StatusOK, result)
 }
 
-// resolveTenantWorkspace returns the workspace root. v4 single-tenant: no per-tenant scoping.
-func (h *VaultHandler) resolveTenantWorkspace(_ context.Context) string {
-	return h.workspace
+// resolveTenantWorkspace returns the tenant-scoped workspace root.
+func (h *VaultHandler) resolveTenantWorkspace(ctx context.Context) string {
+	if h.workspace == "" {
+		return ""
+	}
+	tenantID := store.TenantIDFromContext(ctx)
+	slug := store.TenantSlugFromContext(ctx)
+	return config.TenantWorkspace(h.workspace, tenantID, slug)
 }
 
 // buildRescanMaps pre-loads agent_key→UUID and team UUID sets for the current tenant.
@@ -263,20 +243,6 @@ func (h *VaultHandler) handleEnrichmentStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, h.enrichProgress.Status())
-}
-
-// handleEnrichmentStop stops the current enrichment process for the tenant.
-func (h *VaultHandler) handleEnrichmentStop(w http.ResponseWriter, r *http.Request) {
-	if h.enrichWorker == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "enrichment worker not available"})
-		return
-	}
-	if !h.enrichWorker.IsRunning() {
-		writeJSON(w, http.StatusOK, map[string]any{"stopped": false, "message": "no enrichment running"})
-		return
-	}
-	h.enrichWorker.Stop()
-	writeJSON(w, http.StatusOK, map[string]any{"stopped": true})
 }
 
 var allowedDocTypes = map[string]bool{"context": true, "memory": true, "note": true, "skill": true, "episodic": true, "media": true}

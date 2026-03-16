@@ -28,7 +28,7 @@ func NewPGChannelInstanceStore(db *sql.DB, encryptionKey string) *PGChannelInsta
 }
 
 const channelInstanceSelectCols = `id, name, display_name, channel_type, agent_id,
- credentials, config, enabled, created_by, metadata, created_at, updated_at`
+ credentials, config, enabled, created_by, created_at, updated_at, tenant_id`
 
 func (s *PGChannelInstanceStore) Create(ctx context.Context, inst *store.ChannelInstanceData) error {
 	if err := store.ValidateUserID(inst.CreatedBy); err != nil {
@@ -38,6 +38,7 @@ func (s *PGChannelInstanceStore) Create(ctx context.Context, inst *store.Channel
 		inst.ID = store.GenNewID()
 	}
 
+	// Encrypt credentials if provided
 	var credsBytes []byte
 	if len(inst.Credentials) > 0 && s.encKey != "" {
 		encrypted, err := crypto.Encrypt(string(inst.Credentials), s.encKey)
@@ -53,30 +54,49 @@ func (s *PGChannelInstanceStore) Create(ctx context.Context, inst *store.Channel
 	inst.CreatedAt = now
 	inst.UpdatedAt = now
 
-	meta := inst.Metadata
-	if len(meta) == 0 {
-		meta = []byte("{}")
+	tenantID := store.TenantIDFromContext(ctx)
+	if tenantID == uuid.Nil {
+		tenantID = store.MasterTenantID
 	}
+
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO channel_instances (id, name, display_name, channel_type, agent_id,
-		 credentials, config, enabled, created_by, metadata, created_at, updated_at)
+		 credentials, config, enabled, created_by, created_at, updated_at, tenant_id)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		inst.ID, inst.Name, inst.DisplayName, inst.ChannelType, inst.AgentID,
 		credsBytes, jsonOrEmpty(inst.Config),
-		inst.Enabled, inst.CreatedBy, meta, now, now,
+		inst.Enabled, inst.CreatedBy, now, now, tenantID,
 	)
 	return err
 }
 
 func (s *PGChannelInstanceStore) Get(ctx context.Context, id uuid.UUID) (*store.ChannelInstanceData, error) {
+	if store.IsCrossTenant(ctx) {
+		row := s.db.QueryRowContext(ctx,
+			`SELECT `+channelInstanceSelectCols+` FROM channel_instances WHERE id = $1`, id)
+		return s.scanInstance(row)
+	}
+	tenantID := store.TenantIDFromContext(ctx)
+	if tenantID == uuid.Nil {
+		return nil, sql.ErrNoRows
+	}
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+channelInstanceSelectCols+` FROM channel_instances WHERE id = $1`, id)
+		`SELECT `+channelInstanceSelectCols+` FROM channel_instances WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	return s.scanInstance(row)
 }
 
 func (s *PGChannelInstanceStore) GetByName(ctx context.Context, name string) (*store.ChannelInstanceData, error) {
+	if store.IsCrossTenant(ctx) {
+		row := s.db.QueryRowContext(ctx,
+			`SELECT `+channelInstanceSelectCols+` FROM channel_instances WHERE name = $1`, name)
+		return s.scanInstance(row)
+	}
+	tenantID := store.TenantIDFromContext(ctx)
+	if tenantID == uuid.Nil {
+		return nil, sql.ErrNoRows
+	}
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+channelInstanceSelectCols+` FROM channel_instances WHERE name = $1`, name)
+		`SELECT `+channelInstanceSelectCols+` FROM channel_instances WHERE name = $1 AND tenant_id = $2`, name, tenantID)
 	return s.scanInstance(row)
 }
 
@@ -86,11 +106,10 @@ func (s *PGChannelInstanceStore) scanInstance(row *sql.Row) (*store.ChannelInsta
 	var creds []byte
 	var config *[]byte
 
-	var meta *[]byte
 	err := row.Scan(
 		&inst.ID, &inst.Name, &displayName, &inst.ChannelType, &inst.AgentID,
 		&creds, &config,
-		&inst.Enabled, &inst.CreatedBy, &meta, &inst.CreatedAt, &inst.UpdatedAt,
+		&inst.Enabled, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt, &inst.TenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -100,10 +119,8 @@ func (s *PGChannelInstanceStore) scanInstance(row *sql.Row) (*store.ChannelInsta
 	if config != nil {
 		inst.Config = *config
 	}
-	if meta != nil {
-		inst.Metadata = *meta
-	}
 
+	// Decrypt credentials
 	if len(creds) > 0 && s.encKey != "" {
 		decrypted, err := crypto.Decrypt(string(creds), s.encKey)
 		if err != nil {
@@ -125,12 +142,12 @@ func (s *PGChannelInstanceStore) scanInstances(rows *sql.Rows) ([]store.ChannelI
 		var inst store.ChannelInstanceData
 		var displayName *string
 		var creds []byte
-		var config, meta *[]byte
+		var config *[]byte
 
 		if err := rows.Scan(
 			&inst.ID, &inst.Name, &displayName, &inst.ChannelType, &inst.AgentID,
 			&creds, &config,
-			&inst.Enabled, &inst.CreatedBy, &meta, &inst.CreatedAt, &inst.UpdatedAt,
+			&inst.Enabled, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt, &inst.TenantID,
 		); err != nil {
 			continue
 		}
@@ -138,9 +155,6 @@ func (s *PGChannelInstanceStore) scanInstances(rows *sql.Rows) ([]store.ChannelI
 		inst.DisplayName = derefStr(displayName)
 		if config != nil {
 			inst.Config = *config
-		}
-		if meta != nil {
-			inst.Metadata = *meta
 		}
 		if len(creds) > 0 && s.encKey != "" {
 			if decrypted, err := crypto.Decrypt(string(creds), s.encKey); err == nil {
@@ -156,6 +170,7 @@ func (s *PGChannelInstanceStore) scanInstances(rows *sql.Rows) ([]store.ChannelI
 }
 
 func (s *PGChannelInstanceStore) Update(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	// Merge and encrypt credentials if present
 	if credsVal, ok := updates["credentials"]; ok && credsVal != nil {
 		var newCreds map[string]any
 		switch v := credsVal.(type) {
@@ -180,6 +195,7 @@ func (s *PGChannelInstanceStore) Update(ctx context.Context, id uuid.UUID, updat
 			}
 		}
 
+		// Merge with existing credentials so partial updates don't wipe other fields
 		if len(newCreds) > 0 {
 			existing, err := s.loadExistingCreds(ctx, id)
 			if err != nil {
@@ -203,7 +219,14 @@ func (s *PGChannelInstanceStore) Update(ctx context.Context, id uuid.UUID, updat
 		updates["credentials"] = credsBytes
 	}
 	updates["updated_at"] = time.Now()
-	return execMapUpdate(ctx, s.db, "channel_instances", id, updates)
+	if store.IsCrossTenant(ctx) {
+		return execMapUpdate(ctx, s.db, "channel_instances", id, updates)
+	}
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		return fmt.Errorf("tenant_id required for update")
+	}
+	return execMapUpdateWhereTenant(ctx, s.db, "channel_instances", updates, id, tid)
 }
 
 // loadExistingCreds reads and decrypts the current credentials for merging.
@@ -229,13 +252,31 @@ func (s *PGChannelInstanceStore) loadExistingCreds(ctx context.Context, id uuid.
 }
 
 func (s *PGChannelInstanceStore) Delete(ctx context.Context, id uuid.UUID) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM channel_instances WHERE id = $1", id)
+	if store.IsCrossTenant(ctx) {
+		_, err := s.db.ExecContext(ctx, "DELETE FROM channel_instances WHERE id = $1", id)
+		return err
+	}
+	tid := store.TenantIDFromContext(ctx)
+	if tid == uuid.Nil {
+		return fmt.Errorf("tenant_id required")
+	}
+	_, err := s.db.ExecContext(ctx, "DELETE FROM channel_instances WHERE id = $1 AND tenant_id = $2", id, tid)
 	return err
 }
 
 func (s *PGChannelInstanceStore) ListEnabled(ctx context.Context) ([]store.ChannelInstanceData, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+channelInstanceSelectCols+` FROM channel_instances WHERE enabled = true ORDER BY name`)
+	query := `SELECT ` + channelInstanceSelectCols + ` FROM channel_instances WHERE enabled = true`
+	var qArgs []any
+	if !store.IsCrossTenant(ctx) {
+		tenantID := store.TenantIDFromContext(ctx)
+		if tenantID == uuid.Nil {
+			return nil, nil
+		}
+		query += ` AND tenant_id = $1`
+		qArgs = append(qArgs, tenantID)
+	}
+	query += ` ORDER BY name`
+	rows, err := s.db.QueryContext(ctx, query, qArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -243,18 +284,37 @@ func (s *PGChannelInstanceStore) ListEnabled(ctx context.Context) ([]store.Chann
 }
 
 func (s *PGChannelInstanceStore) ListAll(ctx context.Context) ([]store.ChannelInstanceData, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+channelInstanceSelectCols+` FROM channel_instances ORDER BY name`)
+	query := `SELECT ` + channelInstanceSelectCols + ` FROM channel_instances`
+	var qArgs []any
+	if !store.IsCrossTenant(ctx) {
+		tenantID := store.TenantIDFromContext(ctx)
+		if tenantID == uuid.Nil {
+			return nil, nil
+		}
+		query += ` WHERE tenant_id = $1`
+		qArgs = append(qArgs, tenantID)
+	}
+	query += ` ORDER BY name`
+	rows, err := s.db.QueryContext(ctx, query, qArgs...)
 	if err != nil {
 		return nil, err
 	}
 	return s.scanInstances(rows)
 }
 
-func buildChannelInstanceWhere(_ context.Context, opts store.ChannelInstanceListOpts) (string, []any) {
+func buildChannelInstanceWhere(ctx context.Context, opts store.ChannelInstanceListOpts) (string, []any) {
 	var conditions []string
 	var args []any
 	argIdx := 1
+
+	if !store.IsCrossTenant(ctx) {
+		tenantID := store.TenantIDFromContext(ctx)
+		if tenantID != uuid.Nil {
+			conditions = append(conditions, fmt.Sprintf("tenant_id = $%d", argIdx))
+			args = append(args, tenantID)
+			argIdx++
+		}
+	}
 
 	if opts.Search != "" {
 		conditions = append(conditions, fmt.Sprintf("(name ILIKE $%d ESCAPE '\\' OR display_name ILIKE $%d ESCAPE '\\' OR channel_type ILIKE $%d ESCAPE '\\')", argIdx, argIdx, argIdx))

@@ -18,6 +18,7 @@ type AutoInjector interface {
 type InjectParams struct {
 	AgentID     string
 	UserID      string
+	TenantID    string
 	UserMessage string
 
 	// RecentContext carries a short snippet of recent conversation (typically
@@ -34,15 +35,6 @@ type InjectParams struct {
 	MaxEntries  int     // default 5
 	MaxTokens   int     // default 200
 	Threshold   float64 // relevance threshold (default 0.3)
-
-	// TeamID, ContactID, ProjectID scope the search to the caller's session
-	// scope. These must be populated from the active session context so that
-	// auto-inject only surfaces memories belonging to the same scope bucket
-	// (prevents cross-team/cross-project memory leaks).
-	// Empty string means the dimension is not bound (agent-broad search).
-	TeamID    string
-	ContactID string
-	ProjectID string
 }
 
 // InjectResult contains the injection output + observability data.

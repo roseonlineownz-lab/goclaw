@@ -14,16 +14,20 @@ export function ConnectionStatus({ collapsed }: { collapsed?: boolean }) {
   const { t } = useTranslation("common");
   const connected = useAuthStore((s) => s.connected);
   const serverVersion = useAuthStore((s) => s.serverInfo?.version);
+  const tenantName = useAuthStore((s) => s.tenantName);
   const role = useAuthStore((s) => s.role);
 
   return (
     <div className="space-y-1.5">
-      {/* Role badge (expanded only) */}
-      {!collapsed && role && (
-        <div className="flex items-center justify-end gap-1.5 text-xs overflow-hidden">
-          <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-2xs font-medium", ROLE_STYLES[role] ?? ROLE_STYLES.viewer)}>
-            {role}
-          </span>
+      {/* Tenant + role (expanded only) */}
+      {!collapsed && tenantName && (
+        <div className="flex items-center justify-between gap-1.5 text-xs overflow-hidden">
+          <span className="truncate font-medium text-foreground/80">{tenantName}</span>
+          {role && (
+            <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-2xs font-medium", ROLE_STYLES[role] ?? ROLE_STYLES.viewer)}>
+              {role}
+            </span>
+          )}
         </div>
       )}
 

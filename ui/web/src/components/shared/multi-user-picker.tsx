@@ -9,8 +9,8 @@ interface MultiUserPickerProps {
   value: string[];
   onChange: (values: string[]) => void;
   placeholder?: string;
-  /** Filter contacts by source. Currently only "contact" is supported. */
-  source?: "contact";
+  /** Filter by source: "contact" | "tenant_user" | undefined (both). */
+  source?: "contact" | "tenant_user";
   /** Filter contacts by peer_kind. */
   peerKind?: "direct" | "group";
   /** Allow typing custom values not in the list. Default true. */

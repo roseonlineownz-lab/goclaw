@@ -3,11 +3,8 @@ package cmd
 import (
 	"context"
 	"log/slog"
-	"time"
 
-	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
-	"github.com/nextlevelbuilder/goclaw/internal/gateway/methods"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/media"
@@ -30,7 +27,6 @@ type httpHandlers struct {
 	secureCLI        *httpapi.SecureCLIHandler
 	secureCLIGrant   *httpapi.SecureCLIGrantHandler
 	mcpUserCreds     *httpapi.MCPUserCredentialsHandler
-	curatorRuns      *httpapi.CuratorRunsHandler
 }
 
 // wireHTTPHandlersOnServer registers all HTTP handler objects onto the gateway server.
@@ -68,13 +64,6 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 	if h.channelInstances != nil {
 		d.server.SetChannelInstancesHandler(h.channelInstances)
 	}
-	// Atomic merge-contact endpoint — single TX across channel_contacts +
-	// agent_sessions + user_context_files + memory_documents (Findings 7+10).
-	if d.pgStores != nil && d.pgStores.Contacts != nil && d.pgStores.Users != nil {
-		d.server.SetContactMergeHandler(
-			httpapi.NewContactMergeHandler(d.pgStores.Contacts, d.pgStores.Users, d.msgBus),
-		)
-	}
 	if h.providers != nil {
 		d.server.SetProvidersHandler(h.providers)
 	}
@@ -102,9 +91,6 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 	if h.secureCLIGrant != nil {
 		d.server.SetSecureCLIGrantHandler(h.secureCLIGrant)
 	}
-	if h.curatorRuns != nil {
-		d.server.SetCuratorRunsHandler(h.curatorRuns)
-	}
 
 	// Activity audit log API
 	if d.pgStores.Activity != nil {
@@ -117,9 +103,12 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 
 		// Refresh in-memory config when system_configs change via HTTP API
 		d.msgBus.Subscribe(bus.TopicSystemConfigChanged, func(evt bus.Event) {
+			// Use tenant context from the request that triggered the change
 			ctx := context.Background()
 			if reqCtx, ok := evt.Payload.(context.Context); ok {
 				ctx = reqCtx
+			} else {
+				ctx = store.WithTenantID(ctx, store.MasterTenantID)
 			}
 			if sysConfigs, err := d.pgStores.SystemConfigs.List(ctx); err == nil && len(sysConfigs) > 0 {
 				d.cfg.ApplySystemConfigs(sysConfigs)
@@ -129,8 +118,6 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 						pgMem.UpdateChunkConfig(mem.MaxChunkLen, mem.ChunkOverlap)
 					}
 				}
-				// Note: vault enrichment provider is resolved per-tenant at runtime,
-				// no hot-reload needed here
 				slog.Debug("system_configs refreshed to in-memory config", "keys", len(sysConfigs))
 			}
 		})
@@ -141,8 +128,7 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 		d.server.SetUsageHandler(httpapi.NewUsageHandler(d.pgStores.Snapshots, d.pgStores.DB))
 	}
 
-	// Runtime package management (install/uninstall system/pip/npm/github packages)
-	initGitHubInstaller()
+	// Runtime package management (install/uninstall system/pip/npm packages)
 	d.server.SetPackagesHandler(httpapi.NewPackagesHandler())
 
 	// API documentation (OpenAPI spec + Swagger UI at /docs)
@@ -155,16 +141,6 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 		d.server.SetAPIKeysHandler(httpapi.NewAPIKeysHandler(d.pgStores.APIKeys, d.msgBus))
 		d.server.SetAPIKeyStore(d.pgStores.APIKeys)
 		httpapi.InitAPIKeyCache(d.pgStores.APIKeys, d.msgBus)
-	}
-
-	// Bootstrap + password-auth endpoints (JWT + opaque refresh).
-	// Fatal on misconfig at fresh install — without JWT keyset, /v1/bootstrap/init
-	// would not register, leaving the operator unable to bootstrap.
-	if d.pgStores != nil && d.pgStores.Users != nil && d.pgStores.UserSessions != nil {
-		if err := d.wireAuthBootstrap(context.Background()); err != nil {
-			slog.Error("auth.bootstrap_wiring_failed", "err", err)
-			panic(err)
-		}
 	}
 
 	// Allow browser-paired users to access HTTP APIs
@@ -191,6 +167,9 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 		if d.pgStores.Agents != nil {
 			evoOpts = append(evoOpts, httpapi.WithAgentStore(d.pgStores.Agents))
 		}
+		if d.pgStores.BuiltinToolTenantCfgs != nil {
+			evoOpts = append(evoOpts, httpapi.WithToolTenantCfgs(d.pgStores.BuiltinToolTenantCfgs))
+		}
 		d.server.SetEvolutionHandler(httpapi.NewEvolutionHandler(d.pgStores.EvolutionMetrics, d.pgStores.EvolutionSuggestions, evoOpts...))
 	}
 
@@ -198,18 +177,7 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 	if d.pgStores != nil && d.pgStores.Vault != nil {
 		vh := httpapi.NewVaultHandler(d.pgStores.Vault, d.pgStores.Teams, d.workspace, d.domainBus, d.pgStores.Agents, d.pgStores.Teams)
 		vh.SetEnrichProgress(d.enrichProgress)
-		vh.SetEnrichWorker(d.enrichWorker)
 		d.server.SetVaultHandler(vh)
-
-		// Lightweight graph visualization endpoints (vault + KG).
-		var kgGraph store.KGGraphStore
-		if d.pgStores.KnowledgeGraph != nil {
-			kgGraph = newKGGraphStore(d.pgStores.DB)
-		}
-		vgHandler := httpapi.NewVaultGraphHandler(
-			newVaultGraphStore(d.pgStores.DB), kgGraph, d.pgStores.Teams,
-		)
-		d.server.SetVaultGraphHandler(vgHandler)
 	}
 
 	// V3: Episodic memory summaries API
@@ -239,45 +207,6 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 	// Media serve endpoint — serves persisted media files by ID for WS/web clients.
 	if mediaStore != nil {
 		d.server.SetMediaServeHandler(httpapi.NewMediaServeHandler(mediaStore))
-	}
-
-	// ElevenLabs voice list + refresh endpoints (GET /v1/voices, POST /v1/voices/refresh).
-	// VoiceCache is shared between the HTTP handler and the WS voices.list method.
-	// TTL 1h.
-	{
-		voiceCache := audio.NewVoiceCache(1 * time.Hour)
-		var secretStore store.ConfigSecretsStore
-		if d.pgStores != nil && d.pgStores.ConfigSecrets != nil {
-			secretStore = d.pgStores.ConfigSecrets
-		}
-		voicesH := httpapi.NewVoicesHandler(voiceCache, secretStore)
-		d.server.SetVoicesHandler(voicesH)
-		// Wire WS method — provider nil means each request resolves key via secretStore at HTTP layer.
-		// For WS, use same cache. Provider is resolved via secretStore at WS level in a future phase.
-		methods.NewVoicesMethods(voiceCache, nil).Register(d.server.Router())
-	}
-
-	// TTS synthesize endpoint — shares audio.Manager with setupTTS.
-	if d.audioMgr != nil {
-		ttsH := httpapi.NewTTSHandler(d.audioMgr)
-		// Reuse the server's rate limiter (per-IP/token; NOT per-user).
-		// Server.RateLimiter() is non-nil by construction (server.go:104).
-		if rl := d.server.RateLimiter(); rl != nil && rl.Enabled() {
-			ttsH.SetRateLimiter(rl.Allow)
-		}
-		// Wire stores for per-tenant TTS config lookup at synthesis time.
-		if d.pgStores.SystemConfigs != nil && d.pgStores.ConfigSecrets != nil {
-			ttsH.SetStores(d.pgStores.SystemConfigs, d.pgStores.ConfigSecrets)
-			// Wire tenant resolver for channels TTS auto-apply
-			d.audioMgr.SetTenantResolver(httpapi.NewTenantTTSResolver(d.pgStores.SystemConfigs, d.pgStores.ConfigSecrets))
-		}
-		d.server.SetTTSHandler(ttsH)
-		d.ttsHandler = ttsH // store for hot-reload
-	}
-
-	// Per-tenant TTS config endpoint — allows tenant admins to configure TTS.
-	if d.pgStores.SystemConfigs != nil && d.pgStores.ConfigSecrets != nil {
-		d.server.SetTTSConfigHandler(httpapi.NewTTSConfigHandler(d.pgStores.SystemConfigs, d.pgStores.ConfigSecrets))
 	}
 
 	// Seed + apply builtin tool disables

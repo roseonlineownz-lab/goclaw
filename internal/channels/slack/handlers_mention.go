@@ -11,10 +11,12 @@ import (
 	"github.com/slack-go/slack/slackevents"
 
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 func (c *Channel) handleAppMention(ev *slackevents.AppMentionEvent) {
 	ctx := context.Background()
+	ctx = store.WithTenantID(ctx, c.TenantID())
 	if ev.User == c.botUserID || ev.User == "" {
 		return
 	}

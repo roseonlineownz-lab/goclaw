@@ -1,14 +1,16 @@
 package heartbeat
 
 import (
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 )
 
-// ProviderResolver resolves LLM providers by name.
+// ProviderResolver resolves LLM providers by tenant and name.
 // Abstracts *providers.Registry for testability.
 type ProviderResolver interface {
-	GetByName(name string) (providers.Provider, error)
+	GetForTenant(tenantID uuid.UUID, name string) (providers.Provider, error)
 }
 
 // EventPublisher publishes outbound messages.

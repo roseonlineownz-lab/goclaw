@@ -7,13 +7,6 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 )
 
-// testRegistry creates a Registry with the given provider registered.
-func testRegistry(p providers.Provider) *providers.Registry {
-	r := providers.NewRegistry()
-	r.Register(p)
-	return r
-}
-
 // mockExtractor implements EntityExtractor for testing.
 type mockExtractor struct {
 	result *knowledgegraph.ExtractionResult

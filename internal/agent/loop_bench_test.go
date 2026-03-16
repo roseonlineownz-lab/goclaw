@@ -91,7 +91,7 @@ func BenchmarkSanitizeHistory_WithToolCalls(b *testing.B) {
 	}
 
 	// Repeat to make it longer
-	for range 20 {
+	for i := 0; i < 20; i++ {
 		msgs = append(msgs, msgs[:7]...)
 	}
 
@@ -118,7 +118,7 @@ func BenchmarkSanitizeHistory_WithMissingToolResults(b *testing.B) {
 	}
 
 	// Repeat to make it longer
-	for range 25 {
+	for i := 0; i < 25; i++ {
 		msgs = append(msgs, msgs[:5]...)
 	}
 
@@ -144,7 +144,7 @@ func BenchmarkSanitizeHistory_ConsecutiveSameRole(b *testing.B) {
 	}
 
 	// Repeat to make it longer
-	for range 30 {
+	for i := 0; i < 30; i++ {
 		msgs = append(msgs, msgs[:8]...)
 	}
 
@@ -161,7 +161,7 @@ func makeHistoryMessages(pairs int) []providers.Message {
 	msgs := make([]providers.Message, 0, pairs*2)
 	content := strings.Repeat("message content ", 10)
 
-	for i := range pairs {
+	for i := 0; i < pairs; i++ {
 		// Add user message
 		msgs = append(msgs, providers.Message{
 			Role:    "user",

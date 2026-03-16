@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -33,6 +35,10 @@ func buildSessionFilter(opts store.SessionListOpts, tableAlias string) (string, 
 		conditions = append(conditions, prefix+"user_id = ?")
 		args = append(args, opts.UserID)
 	}
+	if opts.TenantID != uuid.Nil {
+		conditions = append(conditions, prefix+"tenant_id = ?")
+		args = append(args, opts.TenantID)
+	}
 
 	if len(conditions) == 0 {
 		return "", nil
@@ -48,6 +54,13 @@ func (s *SQLiteSessionStore) List(ctx context.Context, agentID string) []store.S
 		conditions = append(conditions, "session_key LIKE ?")
 		args = append(args, "agent:"+agentID+":%")
 	}
+	if !store.IsCrossTenant(ctx) {
+		tid := store.TenantIDFromContext(ctx)
+		if tid != uuid.Nil {
+			conditions = append(conditions, "tenant_id = ?")
+			args = append(args, tid)
+		}
+	}
 
 	where := ""
 	if len(conditions) > 0 {
@@ -55,7 +68,7 @@ func (s *SQLiteSessionStore) List(ctx context.Context, agentID string) []store.S
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT session_key, messages, created_at, updated_at, label, channel, user_id, COALESCE(metadata, '{}') FROM agent_sessions"+where+" ORDER BY updated_at DESC",
+		"SELECT session_key, messages, created_at, updated_at, label, channel, user_id, COALESCE(metadata, '{}') FROM sessions"+where+" ORDER BY updated_at DESC",
 		args...)
 	if err != nil {
 		return nil
@@ -102,14 +115,14 @@ func (s *SQLiteSessionStore) ListPaged(ctx context.Context, opts store.SessionLi
 	where, whereArgs := buildSessionFilter(opts, "")
 
 	var total int
-	countQ := "SELECT COUNT(*) FROM agent_sessions" + where
+	countQ := "SELECT COUNT(*) FROM sessions" + where
 	if err := s.db.QueryRowContext(ctx, countQ, whereArgs...).Scan(&total); err != nil {
 		return store.SessionListResult{Sessions: []store.SessionInfo{}, Total: 0}
 	}
 
 	// Use json_array_length (SQLite built-in) instead of jsonb_array_length.
 	selectQ := fmt.Sprintf(`SELECT session_key, json_array_length(messages), created_at, updated_at, label, channel, user_id, COALESCE(metadata, '{}')
-		FROM agent_sessions%s ORDER BY updated_at DESC LIMIT ? OFFSET ?`, where)
+		FROM sessions%s ORDER BY updated_at DESC LIMIT ? OFFSET ?`, where)
 	selectArgs := append(append([]any{}, whereArgs...), limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, selectQ, selectArgs...)
@@ -160,7 +173,7 @@ func (s *SQLiteSessionStore) ListPagedRich(ctx context.Context, opts store.Sessi
 	where, whereArgs := buildSessionFilter(opts, "s")
 
 	var total int
-	countQ := "SELECT COUNT(*) FROM agent_sessions s" + where
+	countQ := "SELECT COUNT(*) FROM sessions s" + where
 	if err := s.db.QueryRowContext(ctx, countQ, whereArgs...).Scan(&total); err != nil {
 		return store.SessionListRichResult{Sessions: []store.SessionInfoRich{}, Total: 0}
 	}
@@ -170,15 +183,12 @@ func (s *SQLiteSessionStore) ListPagedRich(ctx context.Context, opts store.Sessi
 		s.label, s.channel, s.user_id, COALESCE(s.metadata, '{}'),
 		s.model, s.provider, s.input_tokens, s.output_tokens,
 		COALESCE(a.display_name, ''),
-		COALESCE(
-		  CAST(json_extract(s.metadata, '$.last_prompt_tokens') AS INTEGER),
-		  length(s.messages) / 4 + 12000
-		),
+		length(s.messages) / 4 + 12000,
 		COALESCE(a.context_window, 200000),
 		s.compaction_count`
 
 	selectQ := fmt.Sprintf(`SELECT %s
-		FROM agent_sessions s LEFT JOIN agents a ON s.agent_id = a.id
+		FROM sessions s LEFT JOIN agents a ON s.agent_id = a.id
 		%s ORDER BY s.updated_at DESC LIMIT ? OFFSET ?`, richCols, where)
 	selectArgs := append(append([]any{}, whereArgs...), limit, offset)
 

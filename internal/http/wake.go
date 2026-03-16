@@ -10,7 +10,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
-	sessions "github.com/nextlevelbuilder/goclaw/internal/agentsessions"
+	"github.com/nextlevelbuilder/goclaw/internal/sessions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
@@ -65,7 +65,7 @@ func (h *WakeHandler) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": i18n.T(locale, i18n.MsgUnauthorized)})
 		return
 	}
-	if !permissions.HasMinRole(auth.Role, permissions.RoleMember) {
+	if !permissions.HasMinRole(auth.Role, permissions.RoleOperator) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": i18n.T(locale, i18n.MsgPermissionDenied, r.URL.Path)})
 		return
 	}
