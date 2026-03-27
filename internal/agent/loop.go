@@ -90,7 +90,13 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			}
 		}
 		if deferToReadImageTool {
-			// File-ref mode: skip base64 encoding entirely — images accessible via read_image(path=...).
+			// File-ref mode: images primarily accessed via read_image(path=...).
+			// Still load into context as fallback — if LLM omits the path param,
+			// read_image can fall back to context images. This costs Go memory
+			// but NOT LLM tokens (base64 is in Go context, not sent to provider).
+			if images := loadImages(imageFiles); len(images) > 0 {
+				ctx = tools.WithMediaImages(ctx, images)
+			}
 			slog.Info("vision: file-ref mode, images accessible via read_image tool",
 				"count", len(imageFiles), "agent", l.id)
 		} else if images := loadImages(imageFiles); len(images) > 0 {
@@ -101,9 +107,10 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		}
 	}
 
-	// 2a. In inline mode, also load historical images into context for read_image tool.
-	// In file-ref mode (deferToReadImageTool), images are accessed via path — no base64 needed.
-	if !deferToReadImageTool && l.mediaStore != nil {
+	// 2a. Load historical images into context for read_image tool.
+	// Both modes need this: inline mode for main LLM, file-ref mode as fallback
+	// when LLM calls read_image without the path param.
+	if l.mediaStore != nil {
 		ctx = l.loadHistoricalImagesForTool(ctx, mediaRefs, messages)
 	}
 
