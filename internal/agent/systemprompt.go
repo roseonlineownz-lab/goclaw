@@ -97,9 +97,9 @@ var coreToolSummaries = map[string]string{
 	"session_status":   "Show session status (model, tokens, compaction count)",
 	"sessions_history": "Fetch message history for a session",
 	"sessions_send":    "Send a message into another session",
-	"read_image":       "Analyze images attached to the conversation. Call this when you see <media:image> tags",
-	"read_audio":       "Analyze audio files attached to the conversation. Call this when you see <media:audio> tags",
-	"read_video":       "Analyze video files attached to the conversation. Call this when you see <media:video> tags",
+	"read_image":       "REQUIRED when you see <media:image> tags — call this tool with the path attribute to analyze the image. You CAN see images through this tool. Never say you cannot see images",
+	"read_audio":       "REQUIRED when you see <media:audio> tags — call this tool to transcribe or analyze audio content",
+	"read_video":       "REQUIRED when you see <media:video> tags — call this tool to analyze video content",
 	"create_video":     "Generate videos from text descriptions using AI",
 	"read_document":    "Analyze documents (PDF, DOCX, etc.) attached to the conversation. Call this when you see <media:document> tags. If this tool fails, use a relevant skill instead (e.g. pdf skill with exec tool). The path attribute in <media:document path=\"...\"> is a directly accessible file in your workspace — use it directly, no need to copy",
 	"create_image":            "Generate images from text descriptions using AI",
@@ -351,6 +351,27 @@ func buildToolingSection(toolNames []string, hasSandbox bool, shellDenyGroups ma
 			"You can install packages at runtime with `pip3 install <pkg>` or `npm install -g <pkg>` — no sudo needed.",
 		)
 	}
+	// Add media capabilities section when media tools are available.
+	hasMediaTools := false
+	for _, name := range toolNames {
+		if name == "read_image" || name == "read_video" || name == "read_audio" || name == "read_document" {
+			hasMediaTools = true
+			break
+		}
+	}
+	if hasMediaTools {
+		lines = append(lines,
+			"",
+			"### Media Files",
+			"When users send images, videos, audio, or documents, you see tags like:",
+			`  <media:image id="..." path="...">`,
+			`  <media:video id="...">, <media:audio id="...">, <media:document path="...">`,
+			"You MUST use the corresponding read_* tool (with the path or media_id) to analyze them.",
+			"You have full vision/audio/video capabilities through these tools.",
+			"NEVER say you cannot see images or files — always use the tools.",
+		)
+	}
+
 	lines = append(lines,
 		"",
 		"IMPORTANT: write_file content longer than ~12000 characters may be truncated by the API.",
