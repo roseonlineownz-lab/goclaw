@@ -231,7 +231,7 @@ export function InputBar({ onSend, onStop, disabled, isRunning, placeholder }: I
 
         {/* Input container */}
         <div className={[
-          'flex items-center gap-0 bg-surface-secondary rounded-2xl border transition-colors',
+          'flex items-end gap-0 bg-surface-secondary rounded-2xl border transition-colors',
           dragging ? 'border-accent/50' : 'border-border focus-within:border-accent/40',
         ].join(' ')}>
           {/* Attach button */}
@@ -256,7 +256,7 @@ export function InputBar({ onSend, onStop, disabled, isRunning, placeholder }: I
             placeholder={placeholder ?? t('sendMessage')}
             disabled={disabled}
             rows={1}
-            className="flex-1 bg-transparent text-text-primary text-base md:text-sm py-3 px-0 focus:outline-none placeholder:text-text-muted resize-none overflow-hidden"
+            className="flex-1 bg-transparent text-text-primary text-base md:text-sm py-3 px-0 focus:outline-none placeholder:text-text-muted resize-none overflow-y-auto"
             style={{ maxHeight: 160 }}
           />
 
