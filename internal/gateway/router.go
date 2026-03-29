@@ -138,7 +138,7 @@ func (r *MethodRouter) handleConnect(ctx context.Context, client *Client, req *p
 				"sender_id":    client.id,
 				"server": map[string]interface{}{
 					"name":    "goclaw",
-					"version": "0.2.0",
+					"version": r.server.version,
 				},
 			}))
 			return
@@ -159,7 +159,7 @@ func (r *MethodRouter) sendConnectResponse(client *Client, reqID string) {
 		"user_id":  client.userID,
 		"server": map[string]interface{}{
 			"name":    "goclaw",
-			"version": "0.2.0",
+			"version": r.server.version,
 		},
 	}))
 }
