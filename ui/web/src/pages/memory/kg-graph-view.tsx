@@ -179,9 +179,10 @@ function KGGraphViewInner({ entities: allEntities, relations: allRelations, onEn
   useEffect(() => {
     if (dataKey === layoutKey) {
       // Theme change only — update node colors without re-layout
+      const freshMap = new Map(rawNodes.map((r) => [r.id, r.data]));
       setNodes((prev) => prev.map((n) => {
-        const fresh = rawNodes.find((r) => r.id === n.id);
-        return fresh ? { ...n, data: fresh.data } : n;
+        const data = freshMap.get(n.id);
+        return data ? { ...n, data } : n;
       }));
       return;
     }
@@ -207,7 +208,7 @@ function KGGraphViewInner({ entities: allEntities, relations: allRelations, onEn
     if (!selectedNodeId) {
       setEdges((eds) => eds.map((e) => ({
         ...e, label: undefined, animated: false,
-        style: { stroke: "#334155", strokeWidth: 1, opacity: 0.4 },
+        style: { stroke: "#64748b", strokeWidth: 2, opacity: 0.6 },
         labelStyle: undefined, labelBgStyle: undefined, labelBgPadding: undefined, labelShowBg: undefined,
       })));
       return;
@@ -261,7 +262,7 @@ function KGGraphViewInner({ entities: allEntities, relations: allRelations, onEn
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onNodeClick={handleNodeClick} onPaneClick={handlePaneClick}
           nodeTypes={nodeTypes} colorMode={colorMode}
-          fitView minZoom={0.1} maxZoom={3}
+          minZoom={0.1} maxZoom={3}
           nodesConnectable={false} nodesDraggable={true} elementsSelectable={true}
           proOptions={{ hideAttribution: true }}
         >
