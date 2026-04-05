@@ -41,3 +41,6 @@ release-manifest.json
 
 # Test credentials (never commit)
 tests/**/creds.json
+
+# Runtime records
+records/
