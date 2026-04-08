@@ -14,7 +14,10 @@
     },
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "REPLACE_WITH_GITHUB_TOKEN"
       }
@@ -29,22 +32,34 @@
     },
     "memory": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"]
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
     },
     "puppeteer": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-puppeteer"
+      ]
     },
     "brave-search": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
       "env": {
-        "BRAVE_SEARCH_API_KEY": "REPLACE_WITH_BRAVE_KEY"
+        "BRAVE_SEARCH_API_KEY": "BSAw8CtfER8DXkHuUL1YgVEAUOLUBef"
       }
     },
     "web-scraper": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-playwright"]
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-playwright"
+      ]
     }
   }
 }
