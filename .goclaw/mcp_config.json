@@ -2,64 +2,61 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/home/faramix",
-        "/home/faramix/NovaMaster",
-        "/home/faramix/Mark-XXX",
-        "/home/faramix/goclaw",
-        "/home/faramix/Deep-Live-Cam"
-      ]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/faramix", "/home/faramix/NovaMaster", "/home/faramix/Mark-XXX", "/home/faramix/goclaw"]
     },
     "github": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "REPLACE_WITH_GITHUB_TOKEN"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
     },
     "postgres": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-postgres",
-        "postgresql://nova:novamaster123@postgres:5432/novamaster"
-      ]
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://goclaw:goclaw@postgres:5432/goclaw?sslmode=disable"]
     },
     "memory": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-memory"
-      ]
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
     },
     "puppeteer": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-puppeteer"
-      ]
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
     },
     "brave-search": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-brave-search"
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
       "env": {
-        "BRAVE_SEARCH_API_KEY": "BSAw8CtfER8DXkHuUL1YgVEAUOLUBef"
+        "BRAVE_SEARCH_API_KEY": "${BRAVE_API_KEY}"
       }
     },
     "web-scraper": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-playwright"
-      ]
+      "args": ["-y", "@modelcontextprotocol/server-playwright"]
+    },
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"]
+    },
+    "google-drive": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-gdrive"]
+    },
+    "google-maps": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-google-maps"]
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    },
+    "redis": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-redis", "redis://localhost:6379"]
     }
   }
 }
