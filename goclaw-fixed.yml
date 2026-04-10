@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  goclaw:
+    image: ghcr.io/peva3/smarterrouter:latest
+    container_name: goclaw
+    ports:
+      - "18790:18790"
+    environment:
+      - ROUTER_PROVIDER=ollama
+      - ROUTER_OLLAMA_URL=http://172.17.0.1:11434
+    restart: unless-stopped
+    networks:
+      - novamaster
+
+networks:
+  novamaster:
+    external: true

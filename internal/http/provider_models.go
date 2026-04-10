@@ -163,6 +163,7 @@ func bailianModels() []ModelInfo {
 	return []ModelInfo{
 		{ID: "qwen3.5-plus", Name: "Qwen 3.5 Plus"},
 		{ID: "kimi-k2.5", Name: "Kimi K2.5"},
+		{ID: "GLM-5.1", Name: "GLM-5.1 (202K ctx, thinking+tools)"},
 		{ID: "GLM-5", Name: "GLM-5"},
 		{ID: "MiniMax-M2.5", Name: "MiniMax M2.5"},
 		{ID: "qwen3-max-2026-01-23", Name: "Qwen 3 Max (2026-01-23)"},
