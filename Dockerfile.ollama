@@ -1,0 +1,9 @@
+# GoClaw with Ollama configuration
+FROM goclaw-goclaw:latest
+
+# Override the auto-onboard to use Ollama
+ENV GOCLAW_SKIP_PROVIDER_VERIFY=1
+ENV GOCLAW_DEFAULT_PROVIDER=ollama
+ENV GOCLAW_DEFAULT_MODEL=glm-5:cloud
+
+CMD ["./goclaw", "--provider", "ollama", "--model", "glm-5:cloud"]
