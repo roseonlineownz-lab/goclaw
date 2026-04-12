@@ -50,9 +50,19 @@ func registerProviders(registry *providers.Registry, cfg *config.Config) {
 		slog.Info("registered provider", "name", "deepseek")
 	}
 
-	if cfg.Providers.Gemini.APIKey != "" {
-		registry.Register(providers.NewOpenAIProvider("gemini", cfg.Providers.Gemini.APIKey, "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash"))
-		slog.Info("registered provider", "name", "gemini")
+	if keys := cfg.Providers.Gemini.AllAPIKeys(); len(keys) > 0 {
+		const geminiBase = "https://generativelanguage.googleapis.com/v1beta/openai"
+		const geminiModel = "gemini-2.0-flash"
+		if len(keys) == 1 {
+			registry.Register(providers.NewOpenAIProvider("gemini", keys[0], geminiBase, geminiModel))
+		} else {
+			backends := make([]providers.Provider, len(keys))
+			for i, k := range keys {
+				backends[i] = providers.NewOpenAIProvider("gemini", k, geminiBase, geminiModel)
+			}
+			registry.Register(providers.NewRoundRobinProvider("gemini", backends))
+		}
+		slog.Info("registered provider", "name", "gemini", "keys", len(keys))
 	}
 
 	if cfg.Providers.Mistral.APIKey != "" {

@@ -103,6 +103,12 @@ func (c *Config) applyEnvOverrides() {
 	envStr("GOCLAW_GROQ_API_KEY", &c.Providers.Groq.APIKey)
 	envStr("GOCLAW_DEEPSEEK_API_KEY", &c.Providers.DeepSeek.APIKey)
 	envStr("GOCLAW_GEMINI_API_KEY", &c.Providers.Gemini.APIKey)
+	// Extra Gemini keys for round-robin rotation (GOCLAW_GEMINI_API_KEY_2, _3, ...)
+	for i := 2; i <= 8; i++ {
+		if v := os.Getenv(fmt.Sprintf("GOCLAW_GEMINI_API_KEY_%d", i)); v != "" {
+			c.Providers.Gemini.APIKeys = appendUnique(c.Providers.Gemini.APIKeys, v)
+		}
+	}
 	envStr("GOCLAW_MISTRAL_API_KEY", &c.Providers.Mistral.APIKey)
 	envStr("GOCLAW_XAI_API_KEY", &c.Providers.XAI.APIKey)
 	envStr("GOCLAW_MINIMAX_API_KEY", &c.Providers.MiniMax.APIKey)
@@ -402,4 +408,14 @@ func ContractHome(path string) string {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+// appendUnique appends s to slice only if it is not already present.
+func appendUnique(slice []string, s string) []string {
+	for _, v := range slice {
+		if v == s {
+			return slice
+		}
+	}
+	return append(slice, s)
 }
