@@ -286,7 +286,6 @@ func (c *Config) applyEnvOverrides() {
 	}
 }
 
-
 // Save writes the config to a JSON file.
 func Save(path string, cfg *Config) error {
 	cfg.mu.RLock()
