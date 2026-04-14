@@ -1,6 +1,6 @@
 module github.com/nextlevelbuilder/goclaw
 
-go 1.26.0
+go 1.26
 
 require (
 	github.com/adhocore/gronx v1.19.6
