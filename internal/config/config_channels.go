@@ -246,8 +246,22 @@ type ACPConfig struct {
 }
 
 type ProviderConfig struct {
-	APIKey  string `json:"api_key"`
-	APIBase string `json:"api_base,omitempty"`
+	APIKey  string   `json:"api_key"`
+	APIKeys []string `json:"api_keys,omitempty"` // extra keys for round-robin rotation
+	APIBase string   `json:"api_base,omitempty"`
+}
+
+// AllAPIKeys returns a deduplicated list: primary APIKey first, then APIKeys.
+func (p ProviderConfig) AllAPIKeys() []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, k := range append([]string{p.APIKey}, p.APIKeys...) {
+		if k != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // APIBaseForType returns the config-level api_base for a given provider type.

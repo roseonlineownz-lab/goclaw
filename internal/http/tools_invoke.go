@@ -1,9 +1,15 @@
 package http
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
@@ -57,6 +63,27 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Inject tenant, role, user, and locale into context for downstream stores/tools.
 	r = r.WithContext(enrichContext(r.Context(), r, auth))
+
+	// ClawSec HMAC validation — only enforced when CLAWSEC_SECRET is set.
+	clawSecSecret := os.Getenv("CLAWSEC_SECRET")
+	if clawSecSecret != "" {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "could not read body"})
+			return
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+
+		signature := r.Header.Get("X-Claw-Signature")
+		mac := hmac.New(sha256.New, []byte(clawSecSecret))
+		mac.Write(bodyBytes)
+		expected := hex.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(signature), []byte(expected)) {
+			slog.Warn("security.hmac: invalid signature on tools invoke", "remote", r.RemoteAddr)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid signature"})
+			return
+		}
+	}
 
 	var req toolsInvokeRequest
 	if !bindJSON(w, r, locale, &req) {
