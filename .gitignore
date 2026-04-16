@@ -61,6 +61,7 @@ k8s-*/*
 
 # Test credentials (never commit)
 tests/**/creds.json
+<<<<<<< HEAD
 ui/simple-saas
 *.tar
 # SQLite database files
@@ -88,3 +89,8 @@ compose.d/*
 /mise.*.toml
 /mise
 /.mise
+=======
+
+# Runtime records
+records/
+>>>>>>> origin/main

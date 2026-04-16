@@ -247,11 +247,19 @@ type ACPConfig struct {
 
 type ProviderConfig struct {
 	APIKey  string   `json:"api_key"`
+<<<<<<< HEAD
 	APIKeys []string `json:"api_keys,omitempty"` // extra keys for round-robin rotation
 	APIBase string   `json:"api_base,omitempty"`
 }
 
 // AllAPIKeys returns a deduplicated list: primary APIKey first, then APIKeys.
+=======
+	APIKeys []string `json:"api_keys,omitempty"` // additional keys for round-robin rotation
+	APIBase string   `json:"api_base,omitempty"`
+}
+
+// AllAPIKeys returns a deduplicated list of keys: primary APIKey first, then APIKeys.
+>>>>>>> origin/main
 func (p ProviderConfig) AllAPIKeys() []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -262,6 +270,7 @@ func (p ProviderConfig) AllAPIKeys() []string {
 		}
 	}
 	return out
+<<<<<<< HEAD
 }
 
 // APIBaseForType returns the config-level api_base for a given provider type.
@@ -309,6 +318,8 @@ func (p *ProvidersConfig) APIBaseForType(providerType string) string {
 	default:
 		return ""
 	}
+=======
+>>>>>>> origin/main
 }
 
 // HasAnyProvider returns true if at least one provider has an API key or CLI configured.
