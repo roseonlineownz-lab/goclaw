@@ -11,6 +11,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg18
+    mem_limit: 4g
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:
