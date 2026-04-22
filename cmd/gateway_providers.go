@@ -63,19 +63,11 @@ func registerProviders(registry *providers.Registry, cfg *config.Config, modelRe
 		const geminiBase = "https://generativelanguage.googleapis.com/v1beta/openai"
 		const geminiModel = "gemini-2.0-flash"
 		if len(keys) == 1 {
-<<<<<<< HEAD
 			registry.Register(providers.NewOpenAIProvider("gemini", keys[0], geminiBase, geminiModel).WithRegistry(modelReg))
 		} else {
 			backends := make([]providers.Provider, len(keys))
 			for i, k := range keys {
 				backends[i] = providers.NewOpenAIProvider("gemini", k, geminiBase, geminiModel).WithRegistry(modelReg)
-=======
-			registry.Register(providers.NewOpenAIProvider("gemini", keys[0], geminiBase, geminiModel))
-		} else {
-			backends := make([]providers.Provider, len(keys))
-			for i, k := range keys {
-				backends[i] = providers.NewOpenAIProvider("gemini", k, geminiBase, geminiModel)
->>>>>>> origin/main
 			}
 			registry.Register(providers.NewRoundRobinProvider("gemini", backends))
 		}

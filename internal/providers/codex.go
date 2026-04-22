@@ -48,6 +48,24 @@ func (p *CodexProvider) Name() string          { return p.name }
 func (p *CodexProvider) DefaultModel() string   { return p.defaultModel }
 func (p *CodexProvider) SupportsThinking() bool { return true }
 
+// CodexRoutingDefaults describes provider-level defaults for ChatGPT OAuth routing.
+type CodexRoutingDefaults struct {
+	Strategy           string
+	ExtraProviderNames []string
+}
+
+// RoutingDefaults returns the configured ChatGPT OAuth routing defaults, or nil
+// when no defaults are set. The OAuth pool feature is not fully wired in this
+// build; this stub keeps the consumer contract stable.
+func (p *CodexProvider) RoutingDefaults() *CodexRoutingDefaults { return nil }
+
+// WithRoutingDefaults is a no-op in this build because the ChatGPT OAuth pool
+// feature is not fully wired. The method exists so callers can compile and will
+// be replaced when the OAuth pool feature is restored.
+func (p *CodexProvider) WithRoutingDefaults(strategy string, extraProviderNames []string) *CodexProvider {
+	return p
+}
+
 func (p *CodexProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	// Codex Responses API requires stream=true; delegate to ChatStream with no chunk handler.
 	return p.ChatStream(ctx, req, nil)
