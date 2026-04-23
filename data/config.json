@@ -2,16 +2,38 @@
   "providers": {
     "ollama": {
       "base_url": "http://host.docker.internal:11434",
-      "models": ["glm-5.1:cloud", "glm-5:cloud", "deepseek-v3.2:cloud", "qwen3-coder:480b-cloud", "llama3.2:3b", "qwen2.5-coder:7b", "all-minilm", "nomic-embed-text"]
-    },
-    "anthropic": {
-      "base_url": "https://api.anthropic.com",
-      "api_key": "${ANTHROPIC_API_KEY}",
-      "models": ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001"]
+      "models": [
+        "glm-5.1:cloud",
+        "glm-5:cloud",
+        "glm-4.7:cloud",
+        "glm-4.6:cloud",
+        "deepseek-v3.2:cloud",
+        "qwen3-coder:480b-cloud",
+        "qwen3-coder-next:cloud",
+        "qwen3.5:cloud",
+        "qwen2.5-coder:7b",
+        "qwen2.5-coder:latest",
+        "gemma4:31b-cloud",
+        "kimi-k2-thinking:cloud",
+        "kimi-k2.5:cloud",
+        "gemini-3-flash-preview:cloud",
+        "nemotron-3-super:cloud",
+        "minimax-m2.5:cloud",
+        "minimax-m2.7:cloud",
+        "gpt-oss:120b-cloud",
+        "devstral-small-2:24b-cloud",
+        "all-minilm",
+        "nomic-embed-text"
+      ]
     },
     "gemini": {
       "api_key": "${GEMINI_API_KEY}",
-      "models": ["gemini-2.5-pro-preview-05-06", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+      "models": [
+        "gemini-2.5-pro-preview-05-06",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
+      ]
     }
   },
   "database": {
@@ -28,5 +50,9 @@
     }
   },
   "default_provider": "ollama",
-  "default_model": "glm-5.1:cloud"
+  "default_model": "glm-5.1:cloud",
+  "summarization": {
+    "provider": "ollama",
+    "model": "glm-5.1:cloud"
+  }
 }
