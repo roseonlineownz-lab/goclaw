@@ -39,7 +39,7 @@ services:
       - "${GOCLAW_PORT:-18790}:18790"
     env_file:
       - path: .env
-        required: false
+        required: true
     environment:
       - GOCLAW_HOST=0.0.0.0
       - GOCLAW_PORT=18790
