@@ -54,6 +54,7 @@ services:
       - goclaw-workspace:/app/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "postgres:172.23.0.2"
     security_opt:
       - no-new-privileges:true
     init: true
