@@ -15,12 +15,13 @@ import (
 // used with ChatGPT subscription via OAuth (Codex flow).
 // Wire format: POST /codex/responses on chatgpt.com backend.
 type CodexProvider struct {
-	name         string
-	apiBase      string // e.g. "https://api.openai.com/v1" or "https://chatgpt.com/backend-api"
-	defaultModel string
-	client       *http.Client
-	retryConfig  RetryConfig
-	tokenSource  TokenSource
+	name            string
+	apiBase         string // e.g. "https://api.openai.com/v1" or "https://chatgpt.com/backend-api"
+	defaultModel    string
+	client          *http.Client
+	retryConfig     RetryConfig
+	tokenSource     TokenSource
+	routingDefaults *CodexRoutingDefaults
 }
 
 // NewCodexProvider creates a provider for the OpenAI Responses API with OAuth token.
@@ -31,7 +32,7 @@ func NewCodexProvider(name string, tokenSource TokenSource, apiBase, defaultMode
 	apiBase = strings.TrimRight(apiBase, "/")
 
 	if defaultModel == "" {
-		defaultModel = "gpt-5.4-codex"
+		defaultModel = "gpt-5.4"
 	}
 
 	return &CodexProvider{
@@ -55,15 +56,62 @@ type CodexRoutingDefaults struct {
 }
 
 // RoutingDefaults returns the configured ChatGPT OAuth routing defaults, or nil
-// when no defaults are set. The OAuth pool feature is not fully wired in this
-// build; this stub keeps the consumer contract stable.
-func (p *CodexProvider) RoutingDefaults() *CodexRoutingDefaults { return nil }
+// when no defaults are set.
+func (p *CodexProvider) RoutingDefaults() *CodexRoutingDefaults {
+	if p == nil || p.routingDefaults == nil {
+		return nil
+	}
+	return &CodexRoutingDefaults{
+		Strategy:           p.routingDefaults.Strategy,
+		ExtraProviderNames: append([]string(nil), p.routingDefaults.ExtraProviderNames...),
+	}
+}
 
-// WithRoutingDefaults is a no-op in this build because the ChatGPT OAuth pool
-// feature is not fully wired. The method exists so callers can compile and will
-// be replaced when the OAuth pool feature is restored.
 func (p *CodexProvider) WithRoutingDefaults(strategy string, extraProviderNames []string) *CodexProvider {
+	if p == nil {
+		return nil
+	}
+	strategy = strings.TrimSpace(strategy)
+	switch strategy {
+	case "", "manual":
+		strategy = chatGPTOAuthStrategyPriorityOrder
+	case chatGPTOAuthStrategyRoundRobin, chatGPTOAuthStrategyPriorityOrder:
+	default:
+		strategy = chatGPTOAuthStrategyPriorityOrder
+	}
+	names := make([]string, 0, len(extraProviderNames))
+	seen := make(map[string]bool, len(extraProviderNames))
+	for _, name := range extraProviderNames {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) == 0 && strategy == chatGPTOAuthStrategyPriorityOrder {
+		p.routingDefaults = nil
+		return p
+	}
+	p.routingDefaults = &CodexRoutingDefaults{
+		Strategy:           strategy,
+		ExtraProviderNames: names,
+	}
 	return p
+}
+
+func (p *CodexProvider) RouteEligibility(ctx context.Context) RouteEligibility {
+	if p == nil || p.tokenSource == nil {
+		return RouteEligibility{Class: RouteEligibilityUnknown, Reason: "missing_token_source"}
+	}
+	if aware, ok := p.tokenSource.(RouteEligibilityAware); ok {
+		eligibility := aware.RouteEligibility(ctx)
+		if eligibility.Class == "" {
+			eligibility.Class = RouteEligibilityUnknown
+		}
+		return eligibility
+	}
+	return RouteEligibility{Class: RouteEligibilityHealthy}
 }
 
 func (p *CodexProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
@@ -84,6 +132,7 @@ func (p *CodexProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk
 
 	result := &ChatResponse{FinishReason: "stop"}
 	toolCalls := make(map[string]*codexToolCallAcc) // keyed by item_id
+	messageState := newCodexMessageStreamState()
 
 	scanner := bufio.NewScanner(respBody)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -103,7 +152,7 @@ func (p *CodexProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk
 			continue
 		}
 
-		p.processSSEEvent(&event, result, toolCalls, onChunk)
+		p.processSSEEvent(&event, result, toolCalls, messageState, onChunk)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -136,13 +185,34 @@ func (p *CodexProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk
 }
 
 // processSSEEvent handles a single SSE event during streaming.
-func (p *CodexProvider) processSSEEvent(event *codexSSEEvent, result *ChatResponse, toolCalls map[string]*codexToolCallAcc, onChunk func(StreamChunk)) {
+func (p *CodexProvider) processSSEEvent(event *codexSSEEvent, result *ChatResponse, toolCalls map[string]*codexToolCallAcc, messageState *codexMessageStreamState, onChunk func(StreamChunk)) {
 	switch event.Type {
+	case "response.output_item.added":
+		if messageState != nil && event.Item != nil {
+			messageState.registerMessageItem(codexEventItemKey(event.ItemID, event.Item), event.OutputIndex, event.Item)
+			messageState.updateResultPhase(result)
+		}
+
 	case "response.output_text.delta":
-		if event.Delta != "" {
-			result.Content += event.Delta
-			if onChunk != nil {
-				onChunk(StreamChunk{Content: event.Delta})
+		if messageState != nil {
+			messageState.recordTextDelta(event.ItemID, event.OutputIndex, event.ContentIndex, event.Delta, result, onChunk)
+		} else if event.Delta != "" {
+			appendCodexContent(result, event.Delta, onChunk)
+		}
+
+	case "response.output_text.done":
+		if messageState != nil {
+			messageState.recordFinalText(event.ItemID, event.OutputIndex, event.ContentIndex, event.Text, result, onChunk)
+		} else if event.Text != "" {
+			appendCodexContent(result, event.Text, onChunk)
+		}
+
+	case "response.content_part.done":
+		if event.Part != nil && event.Part.Type == "output_text" {
+			if messageState != nil {
+				messageState.recordFinalText(event.ItemID, event.OutputIndex, event.ContentIndex, event.Part.Text, result, onChunk)
+			} else if event.Part.Text != "" {
+				appendCodexContent(result, event.Part.Text, onChunk)
 			}
 		}
 
@@ -160,6 +230,11 @@ func (p *CodexProvider) processSSEEvent(event *codexSSEEvent, result *ChatRespon
 		if event.Item != nil {
 			switch event.Item.Type {
 			case "message":
+				if messageState != nil {
+					messageState.registerMessageItem(codexEventItemKey(event.ItemID, event.Item), event.OutputIndex, event.Item)
+					messageState.flushMessage(codexEventItemKey(event.ItemID, event.Item), result, onChunk)
+					messageState.updateResultPhase(result)
+				}
 				if event.Item.Phase != "" {
 					result.Phase = event.Item.Phase
 				}
@@ -201,6 +276,11 @@ func (p *CodexProvider) processSSEEvent(event *codexSSEEvent, result *ChatRespon
 			}
 			if event.Response.Status == "incomplete" {
 				result.FinishReason = "length"
+			}
+			if messageState != nil {
+				messageState.ingestCompletedResponse(event.Response)
+				messageState.flushCompletedResponse(result, onChunk)
+				messageState.updateResultPhase(result)
 			}
 		}
 	}
