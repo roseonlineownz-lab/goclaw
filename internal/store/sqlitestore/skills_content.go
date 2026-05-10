@@ -17,17 +17,9 @@ func (s *SQLiteSkillStore) LoadSkill(ctx context.Context, name string) (string, 
 	var slug string
 	var version int
 	var filePath *string
-	q := "SELECT slug, version, file_path FROM skills WHERE slug = ? AND status = 'active'"
-	args := []any{name}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			tid = store.MasterTenantID
-		}
-		q += " AND (is_system = 1 OR tenant_id = ?)"
-		args = append(args, tid)
-	}
-	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&slug, &version, &filePath); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT slug, version, file_path FROM skills WHERE slug = ? AND status = 'active'", name,
+	).Scan(&slug, &version, &filePath); err != nil {
 		return "", false
 	}
 	info := buildSkillInfo("", "", slug, nil, version, s.baseDir, filePath)
@@ -85,29 +77,21 @@ func (s *SQLiteSkillStore) BuildSummary(ctx context.Context, allowList []string)
 
 func (s *SQLiteSkillStore) GetSkill(ctx context.Context, name string) (*store.SkillInfo, bool) {
 	var id uuid.UUID
-	var skillName, slug, visibility string
+	var skillName, slug, visibility, source string
 	var desc *string
 	var tagsJSON []byte
 	var version int
-	var isSystem bool
 	var filePath *string
-	q := "SELECT id, name, slug, description, visibility, tags, version, is_system, file_path FROM skills WHERE slug = ? AND status = 'active'"
-	args := []any{name}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			tid = store.MasterTenantID
-		}
-		q += " AND (is_system = 1 OR tenant_id = ?)"
-		args = append(args, tid)
-	}
-	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&id, &skillName, &slug, &desc, &visibility, &tagsJSON, &version, &isSystem, &filePath); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT id, name, slug, description, visibility, tags, version, source, file_path FROM skills WHERE slug = ? AND status = 'active'",
+		name,
+	).Scan(&id, &skillName, &slug, &desc, &visibility, &tagsJSON, &version, &source, &filePath); err != nil {
 		return nil, false
 	}
 	info := buildSkillInfo(id.String(), skillName, slug, desc, version, s.baseDir, filePath)
 	info.Visibility = visibility
 	scanJSONStringArray(tagsJSON, &info.Tags)
-	info.IsSystem = isSystem
+	info.Source = source
 	return &info, true
 }
 
@@ -139,31 +123,23 @@ func (s *SQLiteSkillStore) FilterSkills(ctx context.Context, allowList []string)
 
 // GetSkillByID returns a SkillInfo for any skill by UUID regardless of status.
 func (s *SQLiteSkillStore) GetSkillByID(ctx context.Context, id uuid.UUID) (store.SkillInfo, bool) {
-	var name, slug, visibility, status string
+	var name, slug, visibility, status, source string
 	var desc *string
 	var tagsJSON, depsRaw []byte
 	var version int
-	var isSystem, enabled bool
+	var enabled bool
 	var filePath *string
-	q := `SELECT name, slug, description, visibility, tags, version, is_system, status, enabled, deps, file_path
-		 FROM skills WHERE id = ?`
-	args := []any{id}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			tid = store.MasterTenantID
-		}
-		q += " AND (is_system = 1 OR tenant_id = ?)"
-		args = append(args, tid)
-	}
-	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&name, &slug, &desc, &visibility, &tagsJSON,
-		&version, &isSystem, &status, &enabled, &depsRaw, &filePath); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT name, slug, description, visibility, tags, version, source, status, enabled, deps, file_path
+		 FROM skills WHERE id = ?`, id,
+	).Scan(&name, &slug, &desc, &visibility, &tagsJSON,
+		&version, &source, &status, &enabled, &depsRaw, &filePath); err != nil {
 		return store.SkillInfo{}, false
 	}
 	info := buildSkillInfo(id.String(), name, slug, desc, version, s.baseDir, filePath)
 	info.Visibility = visibility
 	scanJSONStringArray(tagsJSON, &info.Tags)
-	info.IsSystem = isSystem
+	info.Source = source
 	info.Status = status
 	info.Enabled = enabled
 	info.MissingDeps = parseDepsColumn(depsRaw)
@@ -171,36 +147,20 @@ func (s *SQLiteSkillStore) GetSkillByID(ctx context.Context, id uuid.UUID) (stor
 }
 
 func (s *SQLiteSkillStore) GetSkillOwnerID(ctx context.Context, id uuid.UUID) (string, bool) {
-	q := "SELECT owner_id FROM skills WHERE id = ?"
-	args := []any{id}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			tid = store.MasterTenantID
-		}
-		q += " AND (is_system = 1 OR tenant_id = ?)"
-		args = append(args, tid)
-	}
 	var ownerID string
-	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&ownerID); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT owner_id FROM skills WHERE id = ?", id,
+	).Scan(&ownerID); err != nil {
 		return "", false
 	}
 	return ownerID, true
 }
 
 func (s *SQLiteSkillStore) GetSkillOwnerIDBySlug(ctx context.Context, slug string) (string, bool) {
-	q := "SELECT owner_id FROM skills WHERE slug = ? AND status = 'active'"
-	args := []any{slug}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			tid = store.MasterTenantID
-		}
-		q += " AND (is_system = 1 OR tenant_id = ?)"
-		args = append(args, tid)
-	}
 	var ownerID string
-	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&ownerID); err != nil {
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT owner_id FROM skills WHERE slug = ? AND status = 'active'", slug,
+	).Scan(&ownerID); err != nil {
 		return "", false
 	}
 	return ownerID, true
@@ -230,7 +190,7 @@ func (s *SQLiteSkillStore) UpsertSystemSkill(ctx context.Context, p store.SkillC
 		fmJSON := marshalFrontmatter(p.Frontmatter)
 		_, err = s.db.ExecContext(ctx,
 			`UPDATE skills SET name = ?, description = ?, version = ?, frontmatter = ?,
-			 file_path = ?, file_size = ?, file_hash = ?, is_system = 1,
+			 file_path = ?, file_size = ?, file_hash = ?, source = 'builtin',
 			 visibility = 'public', status = ?, updated_at = ?
 			 WHERE id = ?`,
 			p.Name, p.Description, p.Version, fmJSON,
@@ -248,10 +208,10 @@ func (s *SQLiteSkillStore) UpsertSystemSkill(ctx context.Context, p store.SkillC
 	now := time.Now().UTC()
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO skills (id, name, slug, description, owner_id, visibility, version, status,
-		 is_system, frontmatter, file_path, file_size, file_hash, tenant_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, 'system', 'public', ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+		 source, frontmatter, file_path, file_size, file_hash, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'system', 'public', ?, ?, 'builtin', ?, ?, ?, ?, ?, ?)`,
 		id, p.Name, p.Slug, p.Description, p.Version, p.Status,
-		fmJSON, p.FilePath, p.FileSize, p.FileHash, store.MasterTenantID, now, now,
+		fmJSON, p.FilePath, p.FileSize, p.FileHash, now, now,
 	)
 	if err != nil {
 		return uuid.Nil, false, "", fmt.Errorf("insert system skill: %w", err)
@@ -260,10 +220,10 @@ func (s *SQLiteSkillStore) UpsertSystemSkill(ctx context.Context, p store.SkillC
 	return id, true, p.FilePath, nil
 }
 
-// ListSystemSkillDirs returns slug->file_path map for all enabled system skills.
+// ListSystemSkillDirs returns slug->file_path map for all enabled builtin skills.
 func (s *SQLiteSkillStore) ListSystemSkillDirs(ctx context.Context) map[string]string {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT slug, file_path FROM skills WHERE is_system = 1 AND enabled = 1`)
+		`SELECT slug, file_path FROM skills WHERE source = 'builtin' AND enabled = 1`)
 	if err != nil {
 		return nil
 	}
@@ -282,10 +242,10 @@ func (s *SQLiteSkillStore) ListSystemSkillDirs(ctx context.Context) map[string]s
 	return dirs
 }
 
-// IsSystemSkill checks if a skill slug belongs to a system skill.
+// IsSystemSkill returns true if the skill slug has source='builtin'.
 func (s *SQLiteSkillStore) IsSystemSkill(slug string) bool {
-	var isSystem bool
-	err := s.db.QueryRow("SELECT is_system FROM skills WHERE slug = ?", slug).Scan(&isSystem)
-	return err == nil && isSystem
+	var source string
+	err := s.db.QueryRow("SELECT source FROM skills WHERE slug = ? AND source = 'builtin'", slug).Scan(&source)
+	return err == nil
 }
 

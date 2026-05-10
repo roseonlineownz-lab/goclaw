@@ -13,7 +13,7 @@ func TestSOULEchoForGPT(t *testing.T) {
 	files := []bootstrap.ContextFile{{
 		Path: "SOUL.md", Content: "# Fox\n## Style\nPlayful, curious",
 	}}
-	reminder := buildPersonaReminder(files, "predefined", "openai")
+	reminder := buildPersonaReminder(files, "openai")
 	joined := strings.Join(reminder, "\n")
 	if !strings.Contains(joined, "SOUL echo") {
 		t.Error("GPT provider should have SOUL echo")
@@ -25,7 +25,7 @@ func TestNoSOULEchoForAnthropic(t *testing.T) {
 	files := []bootstrap.ContextFile{{
 		Path: "SOUL.md", Content: "# Fox\n## Style\nPlayful",
 	}}
-	reminder := buildPersonaReminder(files, "predefined", "anthropic")
+	reminder := buildPersonaReminder(files, "anthropic")
 	joined := strings.Join(reminder, "\n")
 	if strings.Contains(joined, "SOUL echo") {
 		t.Error("Anthropic should not have SOUL echo")

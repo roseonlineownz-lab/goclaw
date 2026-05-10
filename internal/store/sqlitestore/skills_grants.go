@@ -28,10 +28,10 @@ func (s *SQLiteSkillStore) GrantToAgent(ctx context.Context, skillID, agentID uu
 	// Upsert grant.
 	id := store.GenNewID()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO skill_agent_grants (id, skill_id, agent_id, pinned_version, granted_by, created_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO skill_agent_grants (id, skill_id, agent_id, pinned_version, granted_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (skill_id, agent_id) DO UPDATE SET pinned_version = excluded.pinned_version`,
-		id, skillID, agentID, version, grantedBy, time.Now().UTC(), tenantIDForInsert(ctx),
+		id, skillID, agentID, version, grantedBy, time.Now().UTC(),
 	)
 	if err != nil {
 		return err
@@ -51,13 +51,8 @@ func (s *SQLiteSkillStore) GrantToAgent(ctx context.Context, skillID, agentID uu
 
 // RevokeFromAgent revokes a skill grant from an agent.
 func (s *SQLiteSkillStore) RevokeFromAgent(ctx context.Context, skillID, agentID uuid.UUID) error {
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx,
-		"DELETE FROM skill_agent_grants WHERE skill_id = ? AND agent_id = ?"+tClause,
-		append([]any{skillID, agentID}, tArgs...)...)
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM skill_agent_grants WHERE skill_id = ? AND agent_id = ?", skillID, agentID)
 	if err != nil {
 		return err
 	}
@@ -78,13 +73,8 @@ func (s *SQLiteSkillStore) RevokeFromAgent(ctx context.Context, skillID, agentID
 
 // ListAgentGrants returns all skill grants for an agent.
 func (s *SQLiteSkillStore) ListAgentGrants(ctx context.Context, agentID uuid.UUID) ([]SkillGrantInfo, error) {
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT skill_id, pinned_version, granted_by FROM skill_agent_grants WHERE agent_id = ?"+tClause,
-		append([]any{agentID}, tArgs...)...)
+		"SELECT skill_id, pinned_version, granted_by FROM skill_agent_grants WHERE agent_id = ?", agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -112,62 +102,41 @@ func (s *SQLiteSkillStore) GrantToUser(ctx context.Context, skillID uuid.UUID, u
 	}
 	id := store.GenNewID()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO skill_user_grants (id, skill_id, user_id, granted_by, created_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO skill_user_grants (id, skill_id, user_id, granted_by, created_at)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT (skill_id, user_id) DO NOTHING`,
-		id, skillID, userID, grantedBy, time.Now().UTC(), tenantIDForInsert(ctx),
+		id, skillID, userID, grantedBy, time.Now().UTC(),
 	)
 	return err
 }
 
 // RevokeFromUser revokes a skill grant from a user.
 func (s *SQLiteSkillStore) RevokeFromUser(ctx context.Context, skillID uuid.UUID, userID string) error {
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx,
-		"DELETE FROM skill_user_grants WHERE skill_id = ? AND user_id = ?"+tClause,
-		append([]any{skillID, userID}, tArgs...)...)
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM skill_user_grants WHERE skill_id = ? AND user_id = ?", skillID, userID)
 	return err
 }
 
 // ListAccessible returns skills accessible to a given agent+user combination.
+// See PGSkillStore.ListAccessible for the ACTOR-vs-SCOPE dual-match rationale.
 func (s *SQLiteSkillStore) ListAccessible(ctx context.Context, agentID uuid.UUID, userID string) ([]store.SkillInfo, error) {
-	tClause, tArgs, err := scopeClauseAlias(ctx, "s")
-	if err != nil {
-		return nil, err
+	actorID := store.ActorIDFromContext(ctx)
+	if actorID == "" {
+		actorID = userID
 	}
-	tenantCond := ""
-	stcJoin := ""
-	stcFilter := ""
-	if len(tArgs) > 0 {
-		tenantCond = " AND (s.is_system = 1 OR s.tenant_id = ?)"
-		stcJoin = " LEFT JOIN skill_tenant_configs stc ON s.id = stc.skill_id AND stc.tenant_id = ?"
-		stcFilter = " AND (stc.enabled IS NULL OR stc.enabled = 1)"
-	}
-
-	// Build args: agentID, userID, [tenantID for tenant cond, tenantID for stc join]
-	queryArgs := []any{agentID, userID}
-	if len(tArgs) > 0 {
-		queryArgs = append(queryArgs, tArgs...) // tenant cond
-		queryArgs = append(queryArgs, tArgs...) // stc join
-	}
-	// Remove tClause (aliased scope) — we handle it manually above.
-	_ = tClause
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT s.name, s.slug, s.description, s.version, s.file_path FROM skills s
 		LEFT JOIN skill_agent_grants sag ON s.id = sag.skill_id AND sag.agent_id = ?
-		LEFT JOIN skill_user_grants sug ON s.id = sug.skill_id AND sug.user_id = ?`+stcJoin+`
-		WHERE s.status = 'active'`+tenantCond+stcFilter+` AND (
-			s.is_system = 1
+		LEFT JOIN skill_user_grants sug ON s.id = sug.skill_id AND (sug.user_id = ? OR sug.user_id = ?)
+		WHERE s.status = 'active' AND (
+			s.source = 'builtin'
 			OR s.visibility = 'public'
-			OR (s.visibility = 'private' AND s.owner_id = ?)
+			OR (s.visibility = 'private' AND (s.owner_id = ? OR s.owner_id = ?))
 			OR (s.visibility = 'internal' AND (sag.id IS NOT NULL OR sug.id IS NOT NULL))
 		)
 		ORDER BY s.name`,
-		append(queryArgs, userID)...,
+		agentID, userID, actorID, userID, actorID,
 	)
 	if err != nil {
 		return nil, err
@@ -191,30 +160,15 @@ func (s *SQLiteSkillStore) ListAccessible(ctx context.Context, agentID uuid.UUID
 
 // ListWithGrantStatus returns all active skills with grant status for a specific agent.
 func (s *SQLiteSkillStore) ListWithGrantStatus(ctx context.Context, agentID uuid.UUID) ([]store.SkillWithGrantStatus, error) {
-	tClause, tArgs, err := scopeClauseAlias(ctx, "s")
-	if err != nil {
-		return nil, err
-	}
-	tenantCond := ""
-	if len(tArgs) > 0 {
-		tenantCond = " AND (s.is_system = 1 OR s.tenant_id = ?)"
-	}
-	_ = tClause
-
-	queryArgs := []any{agentID}
-	if len(tArgs) > 0 {
-		queryArgs = append(queryArgs, tArgs...)
-	}
-
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.name, s.slug, COALESCE(s.description, ''), s.visibility, s.version,
 		        (sag.id IS NOT NULL) AS granted,
 		        sag.pinned_version,
-		        s.is_system
+		        s.source
 		 FROM skills s
 		 LEFT JOIN skill_agent_grants sag ON s.id = sag.skill_id AND sag.agent_id = ?
-		 WHERE s.status = 'active'`+tenantCond+`
-		 ORDER BY s.name`, queryArgs...)
+		 WHERE s.status = 'active'
+		 ORDER BY s.name`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +178,7 @@ func (s *SQLiteSkillStore) ListWithGrantStatus(ctx context.Context, agentID uuid
 	for rows.Next() {
 		var r store.SkillWithGrantStatus
 		if err := rows.Scan(&r.ID, &r.Name, &r.Slug, &r.Description, &r.Visibility,
-			&r.Version, &r.Granted, &r.PinnedVer, &r.IsSystem); err != nil {
+			&r.Version, &r.Granted, &r.PinnedVer, &r.Source); err != nil {
 			slog.Warn("skill_grants: scan error in ListWithGrantStatus", "error", err)
 			continue
 		}

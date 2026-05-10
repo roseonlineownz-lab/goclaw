@@ -8,13 +8,13 @@ import (
 )
 
 // ResolveConfiguredProvider resolves the provider an agent should actually use.
-// It applies ChatGPT OAuth routing from agent other_config when present.
+// It applies ChatGPT OAuth routing from the promoted agent routing field when present.
 func ResolveConfiguredProvider(registry *providers.Registry, agent *store.AgentData) (providers.Provider, error) {
 	if registry == nil || agent == nil {
 		return nil, fmt.Errorf("provider registry unavailable")
 	}
 
-	baseProvider, baseErr := registry.GetForTenant(agent.TenantID, agent.Provider)
+	baseProvider, baseErr := registry.GetByName(agent.Provider)
 	if baseErr == nil {
 		if _, ok := baseProvider.(*providers.CodexProvider); !ok {
 			return baseProvider, nil
@@ -31,17 +31,14 @@ func ResolveConfiguredProvider(registry *providers.Registry, agent *store.AgentD
 		}
 	}
 	if routing := store.ResolveEffectiveChatGPTOAuthRouting(providerDefaults, agent.ParseChatGPTOAuthRouting()); routing != nil {
-		if routing.Strategy != store.ChatGPTOAuthStrategyPrimaryFirst || len(routing.ExtraProviderNames) > 0 {
-			router := providers.NewChatGPTOAuthRouter(
-				agent.TenantID,
-				registry,
-				agent.Provider,
-				routing.Strategy,
-				routing.ExtraProviderNames,
-			)
-			if router != nil && router.HasRegisteredProviders() {
-				return router, nil
-			}
+		router := providers.NewChatGPTOAuthRouter(
+			registry,
+			agent.Provider,
+			routing.Strategy,
+			routing.ExtraProviderNames,
+		)
+		if router != nil && router.HasRegisteredProviders() {
+			return router, nil
 		}
 	}
 

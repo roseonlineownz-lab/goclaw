@@ -15,7 +15,6 @@ func baseAgent() *store.AgentData {
 	return &store.AgentData{
 		BaseModel: store.BaseModel{ID: uuid.New()},
 		AgentKey:  "test-agent",
-		AgentType: store.AgentTypePredefined,
 		Workspace: "/workspace",
 	}
 }

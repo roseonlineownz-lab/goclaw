@@ -13,13 +13,12 @@ import (
 
 // MCPUserCredentialsHandler handles per-user MCP credential endpoints.
 type MCPUserCredentialsHandler struct {
-	store       store.MCPServerStore
-	tenantStore store.TenantStore
+	store store.MCPServerStore
 }
 
 // NewMCPUserCredentialsHandler creates a handler for MCP user credential endpoints.
-func NewMCPUserCredentialsHandler(s store.MCPServerStore, ts store.TenantStore) *MCPUserCredentialsHandler {
-	return &MCPUserCredentialsHandler{store: s, tenantStore: ts}
+func NewMCPUserCredentialsHandler(s store.MCPServerStore) *MCPUserCredentialsHandler {
+	return &MCPUserCredentialsHandler{store: s}
 }
 
 // RegisterRoutes registers MCP user credential routes.
@@ -35,7 +34,7 @@ func (h *MCPUserCredentialsHandler) auth(next http.HandlerFunc) http.HandlerFunc
 
 // resolveTargetUserID returns the effective user ID for credential operations.
 // If ?user_id is absent or same as caller, returns callerID (self-service).
-// If ?user_id targets another user, checks that caller is system admin or tenant admin/owner.
+// Targeting another user requires system admin role.
 func (h *MCPUserCredentialsHandler) resolveTargetUserID(r *http.Request, callerID string) (string, int) {
 	targetID := r.URL.Query().Get("user_id")
 	if targetID == "" || targetID == callerID {
@@ -46,24 +45,9 @@ func (h *MCPUserCredentialsHandler) resolveTargetUserID(r *http.Request, callerI
 		return "", http.StatusBadRequest
 	}
 
-	// System admin can always target another user.
 	role := permissions.Role(store.RoleFromContext(r.Context()))
 	if permissions.HasMinRole(role, permissions.RoleAdmin) {
 		return targetID, 0
-	}
-
-	// Tenant admin/owner can target users within their tenant.
-	if h.tenantStore != nil {
-		tid := store.TenantIDFromContext(r.Context())
-		if tid != uuid.Nil {
-			callerTenantRole, err := h.tenantStore.GetUserRole(r.Context(), tid, callerID)
-			if err == nil && (callerTenantRole == store.TenantRoleOwner || callerTenantRole == store.TenantRoleAdmin) {
-				// Verify target user belongs to the same tenant.
-				if _, err := h.tenantStore.GetUserRole(r.Context(), tid, targetID); err == nil {
-					return targetID, 0
-				}
-			}
-		}
 	}
 
 	slog.Warn("security.mcp_credentials_forbidden",

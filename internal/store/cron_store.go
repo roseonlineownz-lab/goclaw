@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/adhocore/gronx"
-	"github.com/google/uuid"
 )
 
 var (
@@ -18,9 +17,8 @@ var (
 
 // CronJob represents a scheduled job.
 type CronJob struct {
-	ID             string       `json:"id" db:"id"`
-	TenantID       uuid.UUID    `json:"tenantId,omitempty" db:"tenant_id"`
-	Name           string       `json:"name" db:"name"`
+	ID   string `json:"id" db:"id"`
+	Name string `json:"name" db:"name"`
 	AgentID        string       `json:"agentId,omitempty" db:"agent_id"`
 	UserID         string       `json:"userId,omitempty" db:"user_id"`
 	Enabled        bool         `json:"enabled" db:"enabled"`

@@ -14,7 +14,6 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/media"
-	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 const emptyMessageSentinel = "[empty message]"
@@ -22,7 +21,6 @@ const emptyMessageSentinel = "[empty message]"
 // handleIncomingMessage processes an incoming WhatsApp message.
 func (c *Channel) handleIncomingMessage(evt *events.Message) {
 	ctx := context.Background()
-	ctx = store.WithTenantID(ctx, c.TenantID())
 
 	if evt.Info.IsFromMe {
 		return
@@ -111,6 +109,21 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		metadata["user_name"] = evt.Info.PushName
 	}
 
+	// STT: transcribe audio items (opt-in via builtin_tools[stt].settings.whatsapp_enabled,
+	// default false per Decision 6 — enabling breaks E2E encryption for voice messages).
+	waSttSettings := c.loadSTTSettings(ctx)
+	locale := "" // i18n.T falls back to English when locale is empty
+	for i := range mediaList {
+		m := &mediaList[i]
+		if m.Type == media.TypeAudio || m.Type == media.TypeVoice {
+			mimeType := m.ContentType
+			if mimeType == "" {
+				mimeType = "audio/ogg"
+			}
+			m.Transcript = c.transcribeVoice(ctx, m.FilePath, mimeType, locale, waSttSettings)
+		}
+	}
+
 	// Build media tags and bus.MediaFile list.
 	var mediaFiles []bus.MediaFile
 	if len(mediaList) > 0 {
@@ -125,7 +138,7 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		for _, m := range mediaList {
 			if m.FilePath != "" {
 				mediaFiles = append(mediaFiles, bus.MediaFile{
-					Path: m.FilePath, MimeType: m.ContentType,
+					Path: m.FilePath, MimeType: m.ContentType, Filename: m.FileName,
 				})
 			}
 		}
@@ -167,7 +180,6 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		PeerKind: peerKind,
 		UserID:   userID,
 		AgentID:  c.AgentID(),
-		TenantID: c.TenantID(),
 		Metadata: metadata,
 	})
 

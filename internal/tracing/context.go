@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 type contextKey string
@@ -104,6 +105,15 @@ func TraceTeamIDFromContext(ctx context.Context) uuid.UUID {
 // Returns nil if not set (non-team run).
 func TraceTeamIDPtrFromContext(ctx context.Context) *uuid.UUID {
 	if v, ok := ctx.Value(traceTeamIDKey).(uuid.UUID); ok && v != uuid.Nil {
+		return &v
+	}
+	return nil
+}
+
+// TraceContactIDPtrFromContext returns *uuid.UUID for setting on SpanData.ContactID.
+// Returns nil when the invocation is not channel-originated (no contact bound).
+func TraceContactIDPtrFromContext(ctx context.Context) *uuid.UUID {
+	if v := store.ContactIDFromContext(ctx); v != uuid.Nil {
 		return &v
 	}
 	return nil

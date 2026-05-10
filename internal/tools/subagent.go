@@ -55,13 +55,15 @@ type SubagentTask struct {
 	OriginPeerKind   string `json:"originPeerKind,omitempty"`  // "direct" or "group" (for session key building)
 	OriginLocalKey   string `json:"originLocalKey,omitempty"`  // composite key with topic/thread suffix for routing
 	OriginUserID     string `json:"originUserId,omitempty"`    // parent's userID for per-user scoping propagation
+	OriginSenderID   string `json:"originSenderId,omitempty"`  // real acting sender; preserves permission attribution in announce re-ingress (#915)
+	OriginRole       string `json:"originRole,omitempty"`      // parent's RBAC role; bypasses per-user grants for admin/operator/owner in re-ingress (#915)
 	OriginSessionKey string `json:"originSessionKey,omitempty"` // exact parent session key for announce routing (WS uses non-standard format)
 	CreatedAt        int64  `json:"createdAt"`
 	CompletedAt      int64  `json:"completedAt,omitempty"`
 	Media            []bus.MediaFile `json:"-"` // media files from tool results
-	OriginTenantID   uuid.UUID `json:"-"` // parent's tenant for announce routing
-	OriginTraceID    uuid.UUID `json:"-"` // parent trace for announce linking
-	OriginRootSpanID uuid.UUID `json:"-"` // parent agent's root span ID
+	OriginTraceID    uuid.UUID  `json:"-"` // parent trace for announce linking
+	OriginRootSpanID uuid.UUID  `json:"-"` // parent agent's root span ID
+	ProjectID        *uuid.UUID `json:"project_id,omitempty"` // project scope inherited from parent agent
 	cancelFunc       context.CancelFunc `json:"-"` // per-task context cancel
 	spawnConfig      SubagentConfig `json:"-"` // resolved config at spawn time (per-agent override merged)
 	dbID             uuid.UUID `json:"-"` // persistent DB UUID (zero if not persisted)

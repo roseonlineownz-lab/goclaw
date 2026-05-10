@@ -39,7 +39,6 @@ type pendingOAuthFlow struct {
 	login        *oauth.PendingLogin
 	cancel       context.CancelFunc
 	flowKey      string
-	tenantID     uuid.UUID
 	userID       string
 	providerName string
 	displayName  string
@@ -80,13 +79,6 @@ func (h *OAuthHandler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return requireAuth(permissions.RoleAdmin, next)
 }
 
-func oauthTenantID(ctx context.Context) uuid.UUID {
-	if tid := store.TenantIDFromContext(ctx); tid != uuid.Nil {
-		return tid
-	}
-	return store.MasterTenantID
-}
-
 func oauthProviderName(r *http.Request) string {
 	if provider := r.PathValue("provider"); provider != "" {
 		return provider
@@ -95,12 +87,11 @@ func oauthProviderName(r *http.Request) string {
 }
 
 func oauthFlowKey(ctx context.Context, providerName string) string {
-	return oauthTenantID(ctx).String() + ":" + store.UserIDFromContext(ctx) + ":" + providerName
+	return store.UserIDFromContext(ctx) + ":" + providerName
 }
 
 func (h *OAuthHandler) newTokenSource(ctx context.Context, providerName, displayName, apiBase string) *oauth.DBTokenSource {
 	return oauth.NewDBTokenSource(h.provStore, h.secretStore, providerName).
-		WithTenantID(oauthTenantID(ctx)).
 		WithProviderMeta(displayName, apiBase)
 }
 
@@ -228,7 +219,6 @@ func (h *OAuthHandler) handleStart(w http.ResponseWriter, r *http.Request) {
 		login:        pending,
 		cancel:       cancel,
 		flowKey:      flowKey,
-		tenantID:     oauthTenantID(r.Context()),
 		userID:       store.UserIDFromContext(r.Context()),
 		providerName: providerName,
 		displayName:  body.DisplayName,
@@ -269,8 +259,7 @@ func (h *OAuthHandler) waitForCallback(ctx context.Context, flow *pendingOAuthFl
 		return
 	}
 
-	saveCtx := store.WithTenantID(context.Background(), flow.tenantID)
-	if _, err := h.saveAndRegister(saveCtx, flow.providerName, flow.displayName, flow.apiBase, tokenResp); err != nil {
+	if _, err := h.saveAndRegister(context.Background(), flow.providerName, flow.displayName, flow.apiBase, tokenResp); err != nil {
 		slog.Error("oauth.save_token", "error", err)
 		return
 	}
@@ -305,7 +294,7 @@ func (h *OAuthHandler) handleManualCallback(w http.ResponseWriter, r *http.Reque
 	pending := h.pending[oauthFlowKey(r.Context(), providerName)]
 	h.mu.Unlock()
 
-	if pending == nil || pending.providerName != providerName || pending.tenantID != oauthTenantID(r.Context()) || pending.userID != store.UserIDFromContext(r.Context()) {
+	if pending == nil || pending.providerName != providerName || pending.userID != store.UserIDFromContext(r.Context()) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgNoPendingOAuth)})
 		return
 	}
@@ -366,11 +355,7 @@ func (h *OAuthHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.providerReg != nil {
-		tid := store.TenantIDFromContext(r.Context())
-		if tid == uuid.Nil {
-			tid = store.MasterTenantID
-		}
-		h.providerReg.UnregisterForTenant(tid, providerName)
+		h.providerReg.Unregister(providerName)
 	}
 
 	emitAudit(h.msgBus, r, "oauth.logout", "oauth", "openai")
@@ -387,11 +372,10 @@ func (h *OAuthHandler) saveAndRegister(ctx context.Context, providerName, displa
 
 	// Register CodexProvider in-memory for immediate use
 	if h.providerReg != nil {
-		tid := oauthTenantID(ctx)
 		providerAPIBase := apiBase
 		codex := providers.NewCodexProvider(providerName, ts, providerAPIBase, "")
 		if h.provStore != nil {
-			providerCtx := store.WithTenantID(ctx, tid)
+			providerCtx := ctx
 			if providerData, err := h.provStore.GetProviderByName(providerCtx, providerName); err == nil {
 				if providerData.APIBase != "" {
 					providerAPIBase = providerData.APIBase
@@ -402,7 +386,7 @@ func (h *OAuthHandler) saveAndRegister(ctx context.Context, providerName, displa
 				}
 			}
 		}
-		h.providerReg.RegisterForTenant(tid, codex)
+		h.providerReg.Register(codex)
 	}
 
 	return providerID, nil

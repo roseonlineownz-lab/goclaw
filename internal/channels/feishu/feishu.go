@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
+	"github.com/nextlevelbuilder/goclaw/internal/safego"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -121,7 +121,8 @@ type senderCacheEntry struct {
 }
 
 // New creates a new Feishu/Lark channel.
-func New(cfg config.FeishuConfig, msgBus *bus.MessageBus, pairingSvc store.PairingStore, pendingStore store.PendingMessageStore) (*Channel, error) {
+// audioMgr is optional (nil = STT disabled).
+func New(cfg config.FeishuConfig, msgBus *bus.MessageBus, pairingSvc store.PairingStore, pendingStore store.PendingMessageStore, audioMgr *audio.Manager, opts ...Option) (*Channel, error) {
 	if cfg.AppID == "" || cfg.AppSecret == "" {
 		return nil, fmt.Errorf("feishu app_id and app_secret are required")
 	}
@@ -143,12 +144,17 @@ func New(cfg config.FeishuConfig, msgBus *bus.MessageBus, pairingSvc store.Pairi
 		BaseChannel:    base,
 		cfg:            cfg,
 		client:         client,
+		docCache:       newDocCache(larkDocCacheSize, larkDocCacheTTL),
 		groupAllowList: cfg.GroupAllowFrom,
 		stopCh:         make(chan struct{}),
+		audioMgr:       audioMgr,
 	}
 	ch.SetPairingService(pairingSvc)
-	ch.SetGroupHistory(channels.MakeHistory(channels.TypeFeishu, pendingStore, base.TenantID()))
+	ch.SetGroupHistory(channels.MakeHistory(channels.TypeFeishu, pendingStore))
 	ch.SetHistoryLimit(historyLimit)
+	for _, opt := range opts {
+		opt(ch)
+	}
 	return ch, nil
 }
 
@@ -189,13 +195,6 @@ func (c *Channel) SetPendingCompaction(cfg *channels.CompactionConfig) {
 	}
 }
 
-// SetPendingHistoryTenantID propagates tenant_id to the pending history for DB operations.
-func (c *Channel) SetPendingHistoryTenantID(id uuid.UUID) {
-	if gh := c.GroupHistory(); gh != nil {
-		gh.SetTenantID(id)
-	}
-}
-
 // Stop shuts down the Feishu channel.
 func (c *Channel) Stop(_ context.Context) error {
 	c.GroupHistory().StopFlusher()
@@ -228,6 +227,13 @@ func (c *Channel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	// Determine receive_id_type
 	receiveIDType := resolveReceiveIDType(chatID)
 
+	// Thread reply: when the inbound message was inside a Lark thread, the
+	// Feishu inbound handler stamps metadata["feishu_reply_target_id"] with
+	// the triggering message ID so responses land back inside the same thread
+	// via POST /open-apis/im/v1/messages/{id}/reply with reply_in_thread=true.
+	// Absent on non-thread messages — Send falls back to the new-message path.
+	replyTargetID := msg.Metadata["feishu_reply_target_id"]
+
 	// Send text content
 	text := msg.Content
 	if text != "" {
@@ -251,19 +257,19 @@ func (c *Channel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 		}
 
 		if useCard {
-			if err := c.sendMarkdownCard(ctx, chatID, receiveIDType, text, nil); err != nil {
+			if err := c.sendMarkdownCard(ctx, chatID, receiveIDType, text, replyTargetID, nil); err != nil {
 				return err
 			}
 		} else {
-			if err := c.sendChunkedText(ctx, chatID, receiveIDType, text, chunkLimit); err != nil {
+			if err := c.sendChunkedText(ctx, chatID, receiveIDType, text, chunkLimit, replyTargetID); err != nil {
 				return err
 			}
 		}
 	}
 
-	// Send media attachments
+	// Send media attachments — same thread routing applies as text.
 	for _, media := range msg.Media {
-		if err := c.sendMediaAttachment(ctx, chatID, receiveIDType, media); err != nil {
+		if err := c.sendMediaAttachment(ctx, chatID, receiveIDType, media, replyTargetID); err != nil {
 			slog.Warn("feishu send media failed", "url", media.URL, "error", err)
 		}
 	}
@@ -297,6 +303,7 @@ func (c *Channel) startWebSocket(ctx context.Context) error {
 	c.wsClient = NewWSClient(c.cfg.AppID, c.cfg.AppSecret, domain, &wsEventAdapter{ch: c})
 
 	go func() {
+		defer safego.Recover(nil, "component", "feishu_ws", "channel", c.Name())
 		if err := c.wsClient.Start(ctx); err != nil {
 			slog.Error("feishu websocket error", "error", err)
 		}
@@ -324,7 +331,7 @@ func (c *Channel) WebhookHandler() (string, http.Handler) {
 	}
 
 	handler := NewWebhookHandler(c.cfg.VerificationToken, c.cfg.EncryptKey, func(event *MessageEvent) {
-		ctx := store.WithTenantID(context.Background(), c.TenantID())
+		ctx := context.Background()
 		c.handleMessageEvent(ctx, event)
 	})
 
@@ -345,7 +352,7 @@ func (c *Channel) startWebhook(ctx context.Context) error {
 	slog.Info("feishu: starting Webhook server", "port", port, "path", path)
 
 	handler := NewWebhookHandler(c.cfg.VerificationToken, c.cfg.EncryptKey, func(event *MessageEvent) {
-		ctx := store.WithTenantID(context.Background(), c.TenantID())
+		ctx := context.Background()
 		c.handleMessageEvent(ctx, event)
 	})
 
@@ -383,34 +390,58 @@ func (c *Channel) probeBotInfo(ctx context.Context) error {
 
 // --- Send helpers ---
 
-func (c *Channel) sendChunkedText(ctx context.Context, chatID, receiveIDType, text string, chunkLimit int) error {
+func (c *Channel) sendChunkedText(ctx context.Context, chatID, receiveIDType, text string, chunkLimit int, replyTargetID string) error {
 	for _, chunk := range channels.ChunkMarkdown(text, chunkLimit) {
-		if err := c.sendText(ctx, chatID, receiveIDType, chunk); err != nil {
+		if err := c.sendText(ctx, chatID, receiveIDType, chunk, replyTargetID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Channel) sendText(ctx context.Context, chatID, receiveIDType, text string) error {
-	content := buildPostContent(text)
+// deliverMessage routes a message either through the Lark reply endpoint
+// (when replyTargetID is non-empty) or the new-message endpoint. On reply
+// endpoint failure — typically because the original thread-root message was
+// deleted — it falls back to the new-message endpoint so the user still
+// receives the response even if thread placement is lost. The fallback path
+// logs a warning so operators can diagnose stale thread references.
+func (c *Channel) deliverMessage(ctx context.Context, chatID, receiveIDType, replyTargetID, msgType, content string) error {
+	if replyTargetID != "" {
+		if _, err := c.client.ReplyMessage(ctx, replyTargetID, msgType, content, true); err == nil {
+			return nil
+		} else {
+			slog.Warn("feishu.reply_failed_fallback_send",
+				"reply_target_id", replyTargetID,
+				"msg_type", msgType,
+				"error", err,
+			)
+			// Fall through to new-message endpoint.
+		}
+	}
+	if _, err := c.client.SendMessage(ctx, receiveIDType, chatID, msgType, content); err != nil {
+		return err
+	}
+	return nil
+}
 
-	_, err := c.client.SendMessage(ctx, receiveIDType, chatID, "post", content)
-	if err != nil {
+// sendText sends a Lark "post" message. When replyTargetID is non-empty, the
+// message is routed through the reply endpoint with reply_in_thread=true so it
+// stays nested inside the original thread.
+func (c *Channel) sendText(ctx context.Context, chatID, receiveIDType, text, replyTargetID string) error {
+	content := buildPostContent(text)
+	if err := c.deliverMessage(ctx, chatID, receiveIDType, replyTargetID, "post", content); err != nil {
 		return fmt.Errorf("feishu send text: %w", err)
 	}
 	return nil
 }
 
-func (c *Channel) sendMarkdownCard(ctx context.Context, chatID, receiveIDType, text string, metadata map[string]string) error {
+func (c *Channel) sendMarkdownCard(ctx context.Context, chatID, receiveIDType, text, replyTargetID string, metadata map[string]string) error {
 	card := buildMarkdownCard(text)
 	cardJSON, err := json.Marshal(card)
 	if err != nil {
 		return fmt.Errorf("marshal card: %w", err)
 	}
-
-	_, err = c.client.SendMessage(ctx, receiveIDType, chatID, "interactive", string(cardJSON))
-	if err != nil {
+	if err := c.deliverMessage(ctx, chatID, receiveIDType, replyTargetID, "interactive", string(cardJSON)); err != nil {
 		return fmt.Errorf("feishu send card: %w", err)
 	}
 	return nil

@@ -152,7 +152,7 @@ func NewOpenAIEmbeddingProvider(name, apiKey, apiURL, model string) *OpenAIEmbed
 		apiURL = "https://api.openai.com/v1"
 	}
 	if model == "" {
-		model = "text-embedding-3-small"
+		model = "text-embedding-3-large" // 3072 dims, matches halfvec(3072) schema
 	}
 
 	return &OpenAIEmbeddingProvider{

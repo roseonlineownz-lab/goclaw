@@ -23,7 +23,7 @@ func TestSQLiteCronStore_ReenableRestoresNextRun(t *testing.T) {
 	job, err := cronStore.AddJob(ctx, "job-reenable", store.CronSchedule{
 		Kind:    "every",
 		EveryMS: &everyMS,
-	}, "hello", false, "", "", "", "user-1")
+	}, "hello", false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("AddJob error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestSQLiteCronStore_EnableAlreadyEnabledPreservesNextRun(t *testing.T) {
 	job, err := cronStore.AddJob(ctx, "job-idempotent", store.CronSchedule{
 		Kind:    "every",
 		EveryMS: &everyMS,
-	}, "hello", false, "", "", "", "user-1")
+	}, "hello", false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("AddJob error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestSQLiteCronStore_EnableExpiredAtReturnsError(t *testing.T) {
 	job, err := cronStore.AddJob(ctx, "job-expired-at", store.CronSchedule{
 		Kind: "at",
 		AtMS: &future,
-	}, "hello", false, "", "", "", "user-1")
+	}, "hello", false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("AddJob error: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestSQLiteCronStore_SchedulerSkipsDisabledCachedJob(t *testing.T) {
 	job, err := cronStore.AddJob(ctx, "job-stale-cache", store.CronSchedule{
 		Kind:    "every",
 		EveryMS: &everyMS,
-	}, "hello", false, "", "", "", "user-1")
+	}, "hello", false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("AddJob error: %v", err)
 	}
@@ -163,8 +163,8 @@ func TestSQLiteCronStore_SchedulerSkipsDisabledCachedJob(t *testing.T) {
 	jobUUID := uuid.MustParse(job.ID)
 	pastRun := time.Now().Add(-time.Minute)
 	if _, err := db.ExecContext(ctx,
-		"UPDATE cron_jobs SET next_run_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
-		pastRun, time.Now(), jobUUID, store.MasterTenantID,
+		"UPDATE cron_jobs SET next_run_at = ?, updated_at = ? WHERE id = ?",
+		pastRun, time.Now(), jobUUID,
 	); err != nil {
 		t.Fatalf("mark due error: %v", err)
 	}
@@ -189,8 +189,8 @@ func TestSQLiteCronStore_SchedulerSkipsDisabledCachedJob(t *testing.T) {
 	}
 
 	if _, err := db.ExecContext(ctx,
-		"UPDATE cron_jobs SET enabled = 0, next_run_at = NULL, updated_at = ? WHERE id = ? AND tenant_id = ?",
-		time.Now(), jobUUID, store.MasterTenantID,
+		"UPDATE cron_jobs SET enabled = 0, next_run_at = NULL, updated_at = ? WHERE id = ?",
+		time.Now(), jobUUID,
 	); err != nil {
 		t.Fatalf("disable error: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestSQLiteCronStore_ExecuteOneJob_DoesNotRestoreNextRunAfterDisable(t *test
 	job, err := cronStore.AddJob(ctx, "job-midrun-disable", store.CronSchedule{
 		Kind:    "every",
 		EveryMS: &everyMS,
-	}, "hello", false, "", "", "", "user-1")
+	}, "hello", false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("AddJob error: %v", err)
 	}
@@ -219,8 +219,8 @@ func TestSQLiteCronStore_ExecuteOneJob_DoesNotRestoreNextRunAfterDisable(t *test
 
 	jobUUID := uuid.MustParse(job.ID)
 	if _, err := db.ExecContext(ctx,
-		"UPDATE cron_jobs SET next_run_at = NULL, updated_at = ? WHERE id = ? AND tenant_id = ?",
-		time.Now(), jobUUID, store.MasterTenantID,
+		"UPDATE cron_jobs SET next_run_at = NULL, updated_at = ? WHERE id = ?",
+		time.Now(), jobUUID,
 	); err != nil {
 		t.Fatalf("claim setup error: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestSQLiteCronStore_EnableJob_IgnoresMalformedPayload(t *testing.T) {
 	job, err := cronStore.AddJob(ctx, "job-bad-payload", store.CronSchedule{
 		Kind:    "every",
 		EveryMS: &everyMS,
-	}, "hello", false, "", "", "", "user-1")
+	}, "hello", false, "", "", "", "")
 	if err != nil {
 		t.Fatalf("AddJob error: %v", err)
 	}
@@ -258,8 +258,8 @@ func TestSQLiteCronStore_EnableJob_IgnoresMalformedPayload(t *testing.T) {
 
 	jobUUID := uuid.MustParse(job.ID)
 	if _, err := db.ExecContext(ctx,
-		"UPDATE cron_jobs SET payload = ? WHERE id = ? AND tenant_id = ?",
-		"{", jobUUID, store.MasterTenantID,
+		"UPDATE cron_jobs SET payload = ? WHERE id = ?",
+		"{", jobUUID,
 	); err != nil {
 		t.Fatalf("corrupt payload error: %v", err)
 	}
@@ -290,7 +290,7 @@ func newTestSQLiteCronStore(t *testing.T) (*SQLiteCronStore, context.Context, *s
 		t.Fatalf("EnsureSchema error: %v", err)
 	}
 
-	ctx := store.WithCrossTenant(store.WithTenantID(context.Background(), store.MasterTenantID))
+	ctx := context.Background()
 	cronStore := NewSQLiteCronStore(db)
 	cronStore.baseCtx = context.Background()
 	cronStore.cacheTTL = time.Hour

@@ -13,17 +13,6 @@ var bootstrapToolAllowlist = map[string]bool{
 	"Write":      true,
 }
 
-// filterBootstrapTools returns only the bootstrap-allowed tools from the full tool list.
-func filterBootstrapTools(toolNames []string) []string {
-	var filtered []string
-	for _, name := range toolNames {
-		if bootstrapToolAllowlist[name] {
-			filtered = append(filtered, name)
-		}
-	}
-	return filtered
-}
-
 // filteredToolNames returns tool names after applying policy filters.
 // Used for system prompt so denied tools don't appear in ## Tooling section.
 func (l *Loop) filteredToolNames() []string {

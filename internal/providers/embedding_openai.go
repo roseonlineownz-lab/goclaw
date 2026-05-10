@@ -13,9 +13,10 @@ import (
 
 const embeddingBatchSize = 2048
 
-// ExpectedEmbeddingDim is the pgvector column dimension used across the system.
-// All embedding providers must return vectors of this dimension.
-const ExpectedEmbeddingDim = 1536
+// ExpectedEmbeddingDim is the halfvec column dimension used across the system.
+// All memory embedding providers must return vectors of this dimension.
+// Uses OpenAI text-embedding-3-large with dimensions=3072.
+const ExpectedEmbeddingDim = 3072
 
 // OpenAIEmbeddingProvider implements store.EmbeddingProvider for OpenAI-compatible APIs.
 type OpenAIEmbeddingProvider struct {
@@ -33,7 +34,7 @@ func NewOpenAIEmbeddingProvider(apiKey, apiBase, model string) *OpenAIEmbeddingP
 		apiBase = "https://api.openai.com/v1"
 	}
 	if model == "" {
-		model = "text-embedding-3-small" // 1536 dimensions, matches pgvector column
+		model = "text-embedding-3-large" // 3072 dimensions, matches halfvec(3072) column
 	}
 	return &OpenAIEmbeddingProvider{
 		providerName: "openai",
@@ -49,7 +50,7 @@ func (p *OpenAIEmbeddingProvider) Name() string  { return p.providerName }
 func (p *OpenAIEmbeddingProvider) Model() string { return p.model }
 
 // Embed generates vector embeddings for the given texts.
-// Returns [][]float32 where each inner slice has ExpectedEmbeddingDim elements.
+// Returns [][]float32 where each inner slice has ExpectedEmbeddingDim (3072) elements.
 func (p *OpenAIEmbeddingProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -76,8 +77,9 @@ func (p *OpenAIEmbeddingProvider) Embed(ctx context.Context, texts []string) ([]
 
 func (p *OpenAIEmbeddingProvider) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	reqBody := map[string]any{
-		"model": p.model,
-		"input": texts,
+		"model":      p.model,
+		"input":      texts,
+		"dimensions": ExpectedEmbeddingDim, // request exact dim; text-embedding-3-large supports 3072
 	}
 
 	return RetryDo(ctx, p.retry, func() ([][]float32, error) {

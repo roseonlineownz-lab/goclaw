@@ -166,8 +166,8 @@ func TestOpenAIEmbedding_DimensionMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "returned 512") {
 		t.Fatalf("expected '512' in error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "expected 1536") {
-		t.Fatalf("expected '1536' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "expected 3072") {
+		t.Fatalf("expected '3072' in error, got: %v", err)
 	}
 }
 
@@ -260,12 +260,12 @@ func TestOpenAIEmbedding_DefaultBaseURL(t *testing.T) {
 	}
 }
 
-// TestOpenAIEmbedding_DefaultModel tests that default model is set
+// TestOpenAIEmbedding_DefaultModel tests that default model is text-embedding-3-large (3072 dims).
 func TestOpenAIEmbedding_DefaultModel(t *testing.T) {
 	provider := NewOpenAIEmbeddingProvider("test-key", "https://api.openai.com/v1", "")
 
-	if provider.Model() != "text-embedding-3-small" {
-		t.Fatalf("expected default model 'text-embedding-3-small', got %s", provider.Model())
+	if provider.Model() != "text-embedding-3-large" {
+		t.Fatalf("expected default model 'text-embedding-3-large', got %s", provider.Model())
 	}
 }
 

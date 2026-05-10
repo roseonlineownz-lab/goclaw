@@ -14,9 +14,12 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
-	"github.com/nextlevelbuilder/goclaw/internal/orchestration"
 	"github.com/nextlevelbuilder/goclaw/internal/edition"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
+	"github.com/nextlevelbuilder/goclaw/internal/hooks"
+	hookbuiltin "github.com/nextlevelbuilder/goclaw/internal/hooks/builtin"
+	"github.com/nextlevelbuilder/goclaw/internal/orchestration"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	kg "github.com/nextlevelbuilder/goclaw/internal/knowledgegraph"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
@@ -125,8 +128,10 @@ func wireExtras(
 
 	// 5. Shared MCP connection pool (eliminates duplicate connections across agents)
 	var mcpPool *mcpbridge.Pool
+	var mcpGrantChecker mcpbridge.GrantChecker
 	if stores.MCP != nil {
 		mcpPool = mcpbridge.NewPool(mcpbridge.DefaultPoolConfig())
+		mcpGrantChecker = mcpbridge.NewStoreGrantChecker(stores.MCP, msgBus)
 	}
 
 	// 6. Set up agent resolver: lazy-creates Loops from DB
@@ -143,6 +148,48 @@ func wireExtras(
 
 	// vaultIntc is set later by wireVault but captured by closure in OnTextUploaded.
 	var vaultIntc *tools.VaultInterceptor
+
+	// Agent Hooks (Issue #875) — lifecycle dispatcher + handlers.
+	var hookDispatcher hooks.Dispatcher = hooks.NewNoopDispatcher()
+	if hs, ok := stores.Hooks.(hooks.HookStore); ok && hs != nil {
+		// Wire builtin registry. Install a strip-all lookup FIRST so a Load()
+		// failure leaves the dispatcher failing closed (no wide fallback via
+		// the permissive default). On successful Load we swap in the real
+		// per-id allowlist, then UPSERT canonical rows with stable UUIDv5s.
+		// Seed failures log but never block startup.
+		hooks.SetBuiltinAllowlistLookup(func(uuid.UUID) []string { return nil })
+		if err := hookbuiltin.Load(); err != nil {
+			slog.Warn("hooks.builtin_load_failed", "err", err)
+		} else {
+			hooks.SetBuiltinAllowlistLookup(hookbuiltin.AllowlistFor)
+			if err := hookbuiltin.Seed(context.Background(), hs, appCfg.Hooks); err != nil {
+				slog.Warn("hooks.builtin_seed_failed", "err", err)
+			}
+		}
+
+		// Runtime migration — auto-disable legacy command-type hooks on
+		// Standard edition. No-op on Lite. Idempotent. Runs synchronously
+		// before listeners so traffic never sees a command hook fire on a
+		// post-migration Standard instance.
+		if n, err := hooks.DisableLegacyCommandHooks(context.Background(), hs, edition.Current()); err != nil {
+			slog.Warn("hooks.command_migration_failed", "err", err)
+		} else if n > 0 {
+			slog.Info("hooks.command_migration_ran",
+				"disabled_count", n, "edition", edition.Current().Name)
+		}
+
+		handlers := buildHookHandlers(stores, providerReg, appCfg.Hooks)
+		stdOpts := hooks.StdDispatcherOpts{
+			Store:    hs,
+			Audit:    hooks.NewAuditWriter(hs, ""),
+			Handlers: handlers,
+		}
+		hookDispatcher = hooks.NewStdDispatcher(stdOpts)
+		hooks.SubscribeDelegateEvents(domainBus, hookDispatcher)
+		// Stash handlers for later gateway.go wiring (test runner).
+		sharedHookHandlers = handlers
+		slog.Info("agent hooks dispatcher wired", "handlers", "command,http,prompt")
+	}
 
 	resolver := agent.NewManagedResolver(agent.ResolverDeps{
 		AgentStore:             stores.Agents,
@@ -177,6 +224,7 @@ func wireExtras(
 		BuiltinToolStore:       stores.BuiltinTools,
 		MCPStore:               stores.MCP,
 		MCPPool:                mcpPool,
+		MCPGrantChecker:        mcpGrantChecker,
 		ConfigPermStore:        stores.ConfigPermissions,
 		MediaStore:             mediaStore,
 		ModelPricing:           appCfg.Telemetry.ModelPricing,
@@ -187,9 +235,11 @@ func wireExtras(
 		UsersStore:             stores.Users,
 		SystemConfigs:          stores.SystemConfigs,
 		Workspace:              workspace,
+		TTSAutoMode:            appCfg.Tts.Auto,
 		AutoInjector:           autoInjector,
 		EvolutionMetricsStore:  stores.EvolutionMetrics,
 		DomainBus:              domainBus,
+		HookDispatcher:         hookDispatcher,
 		OnTextUploaded: func(ctx context.Context, path, content string) {
 			if vaultIntc != nil {
 				vaultIntc.AfterWrite(ctx, path, content)
@@ -228,9 +278,8 @@ func wireExtras(
 				}
 			}
 			msgBus.Broadcast(bus.Event{
-				Name:     protocol.EventAgent,
-				Payload:  event,
-				TenantID: event.TenantID,
+				Name:    protocol.EventAgent,
+				Payload: event,
 			})
 		},
 	})
@@ -288,7 +337,7 @@ func wireExtras(
 
 	// Wire config perm store for file writer permission checks
 	if stores.ConfigPermissions != nil {
-		for _, toolName := range []string{"read_file", "write_file", "edit", "cron"} {
+		for _, toolName := range []string{"read_file", "write_file", "edit", "delete_file", "cron"} {
 			if t, ok := toolsReg.Get(toolName); ok {
 				if cpa, ok := t.(tools.ConfigPermAware); ok {
 					cpa.SetConfigPermStore(stores.ConfigPermissions)
@@ -297,6 +346,14 @@ func wireExtras(
 		}
 		if contextFileInterceptor != nil {
 			contextFileInterceptor.SetConfigPermStore(stores.ConfigPermissions)
+		}
+		// Hook glob cache invalidation into grant/revoke so admin deny_glob extensions
+		// take effect within the current RPC round-trip (no 60s TTL wait).
+		type grantHookRegistrar interface {
+			RegisterGrantHook(fn func(agentID uuid.UUID))
+		}
+		if r, ok := stores.ConfigPermissions.(grantHookRegistrar); ok {
+			r.RegisterGrantHook(permissions.HookGlobCacheInvalidate())
 		}
 	}
 
@@ -384,6 +441,7 @@ func wireExtras(
 		}
 		delegateTool := tools.NewDelegateTool(stores.AgentLinks, stores.Agents, domainBus, delegateRunFn)
 		delegateTool.SetMsgBus(msgBus)
+		delegateTool.SetHookDispatcher(hookDispatcher)
 		toolsReg.Register(delegateTool)
 		slog.Info("delegate tool wired")
 	}
@@ -427,7 +485,11 @@ func wireExtras(
 		}
 	})
 
-	// Skills cache: bump version on skill changes
+	// Skills cache: bump version on every event (global listCache is
+	// version-keyed, so bump invalidates every tenant's ListSkills cache —
+	// cheap since rebuild is a single DB read). Then the agent router
+	// receives a scoped wipe: tenant-scoped events only wipe that tenant's
+	// cached Loops; master/global events wipe the entire router cache.
 	if stores.Skills != nil {
 		msgBus.Subscribe(bus.TopicCacheSkills, func(event bus.Event) {
 			if event.Name != protocol.EventCacheInvalidate {
@@ -438,6 +500,7 @@ func wireExtras(
 				return
 			}
 			stores.Skills.BumpVersion()
+			agentRouter.InvalidateAll()
 		})
 	}
 
@@ -507,7 +570,8 @@ func wireExtras(
 		})
 	}
 
-	// Builtin tools cache: re-apply disables on settings/enabled changes
+	// Builtin tools cache: re-apply disables on settings/enabled changes.
+	// Re-applies the global registry disables list and clears all cached agents.
 	if stores.BuiltinTools != nil {
 		msgBus.Subscribe(bus.TopicCacheBuiltinTools, func(event bus.Event) {
 			if event.Name != protocol.EventCacheInvalidate {
@@ -602,8 +666,7 @@ func wireExtras(
 			return
 		}
 		// Re-register from DB if provider still exists and is ACP type
-		provCtx := store.WithTenantID(context.Background(), event.TenantID)
-		p, err := stores.Providers.GetProviderByName(provCtx, payload.Key)
+		p, err := stores.Providers.GetProviderByName(context.Background(), payload.Key)
 		if err != nil {
 			// Provider was deleted or not found — already unregistered by handler
 			return
@@ -651,7 +714,7 @@ func buildKGExtractFunc(kgStore store.KnowledgeGraphStore, bts store.BuiltinTool
 			return
 		}
 
-		p, err := providerReg.Get(ctx, settings.ExtractionProvider)
+		p, err := providerReg.GetByName(settings.ExtractionProvider)
 		if err != nil {
 			slog.Warn("kg extract: provider not found", "provider", settings.ExtractionProvider, "error", err)
 			return

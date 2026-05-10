@@ -31,6 +31,14 @@ func init() {
 		MsgUserIDRequired:    "user_id is required",
 		MsgMsgRequired:       "message is required",
 
+		// Abort
+		MsgAbortStopped:         "run stopped",
+		MsgAbortForced:          "run force-aborted (3s grace exceeded)",
+		MsgAbortAlreadyAborting: "abort already in progress",
+		MsgAbortNotFound:        "run not found or already finished",
+		MsgAbortUnauthorized:    "not authorized to abort this run",
+		MsgAbortFailed:          "failed to abort run: %s",
+
 		// Channel instances
 		MsgInvalidChannelType: "invalid channel_type",
 		MsgInstanceNotFound:   "instance not found",
@@ -65,6 +73,8 @@ func init() {
 		MsgAlreadySummoning:      "agent is already being summoned",
 		MsgSummoningUnavailable:  "summoning not available",
 		MsgNoDescription:         "agent has no description to resummon from",
+		MsgSummonCancelled:       "summon cancelled by user",
+		MsgCannotCancel:          "agent is not being summoned",
 		MsgInvalidPath:           "invalid path",
 
 		// Scheduler
@@ -81,12 +91,12 @@ func init() {
 		MsgNotImplemented: "%s not yet implemented",
 
 		// Agent links
-		MsgLinksNotConfigured:   "agent links not configured",
-		MsgInvalidDirection:     "direction must be outbound, inbound, or bidirectional",
-		MsgSourceTargetSame:     "source and target must be different agents",
-		MsgCannotDelegateOpen:   "cannot delegate to open agents — only predefined agents can be delegation targets",
-		MsgNoUpdatesProvided:    "no updates provided",
-		MsgInvalidLinkStatus:    "status must be active or disabled",
+		MsgLinksNotConfigured: "agent links not configured",
+		MsgInvalidDirection:   "direction must be outbound, inbound, or bidirectional",
+		MsgSourceTargetSame:   "source and target must be different agents",
+		MsgAgentTypeRejected:  "agent_type field is no longer accepted; agents are predefined-only in v4",
+		MsgNoUpdatesProvided:  "no updates provided",
+		MsgInvalidLinkStatus:  "status must be active or disabled",
 
 		// Teams
 		MsgTeamsNotConfigured:   "teams not configured",
@@ -100,13 +110,19 @@ func init() {
 		// Skills
 		MsgSkillsUpdateNotSupported: "skills.update not supported for file-based skills",
 		MsgCannotResolveSkillID:     "cannot resolve skill ID for file-based skill",
+		MsgInvalidSkillSource:       "invalid skill source: must be one of builtin, hub-verified, hub-unverified, agent-created, user-uploaded",
+		MsgIsSystemDeprecated:       "is_system field is no longer supported; use source='builtin' instead",
+		MsgVersionAlreadyArchived:   "skill version already archived",
+		MsgCuratorInvalidTransition: "invalid curator run state transition: %s -> %s",
 
 		// Logs
 		MsgInvalidLogAction: "action must be 'start' or 'stop'",
 
 		// Config
-		MsgRawConfigRequired: "raw config is required",
-		MsgRawPatchRequired:  "raw patch is required",
+		MsgRawConfigRequired:     "raw config is required",
+		MsgRawPatchRequired:      "raw patch is required",
+		MsgConfigMasterScopeOnly: "config.* methods are master-scope only; use tenant tool config endpoints for per-tenant overrides",
+		MsgMasterScopeRequired:   "this action requires master tenant scope",
 
 		// Storage / File
 		MsgCannotDeleteSkillsDir: "cannot delete skills directories",

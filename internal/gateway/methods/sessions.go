@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/workspace"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
@@ -25,8 +28,8 @@ type SessionsMethods struct {
 	cfg           *config.Config
 }
 
-func NewSessionsMethods(sess store.SessionStore, eventBus bus.EventPublisher, cfg *config.Config) *SessionsMethods {
-	return &SessionsMethods{sessions: sess, eventBus: eventBus, cfg: cfg}
+func NewSessionsMethods(sess store.SessionStore, projectGrants store.ProjectGrantStore, eventBus bus.EventPublisher, cfg *config.Config) *SessionsMethods {
+	return &SessionsMethods{sessions: sess, projectGrants: projectGrants, eventBus: eventBus, cfg: cfg}
 }
 
 // SetProjectSwitchDeps wires the optional dependencies the
@@ -46,6 +49,8 @@ func (m *SessionsMethods) Register(router *gateway.MethodRouter) {
 	router.Register(protocol.MethodSessionsPatch, m.handlePatch)
 	router.Register(protocol.MethodSessionsDelete, m.handleDelete)
 	router.Register(protocol.MethodSessionsReset, m.handleReset)
+	router.Register(protocol.MethodSessionsCompact, m.handleCompact)
+	router.Register(protocol.MethodSessionsUpdateProject, m.handleUpdateProject)
 }
 
 type sessionsListParams struct {
@@ -66,11 +71,10 @@ func (m *SessionsMethods) handleList(ctx context.Context, client *gateway.Client
 	}
 
 	opts := store.SessionListOpts{
-		AgentID:  params.AgentID,
-		Channel:  params.Channel,
-		Limit:    params.Limit,
-		Offset:   params.Offset,
-		TenantID: store.TenantIDFromContext(ctx),
+		AgentID: params.AgentID,
+		Channel: params.Channel,
+		Limit:   params.Limit,
+		Offset:  params.Offset,
 	}
 	// Role-based filtering: admins/owners see all sessions; regular users see only their own.
 	// Tenant scope is always applied above — admin sees all sessions within the tenant.

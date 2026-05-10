@@ -1,12 +1,10 @@
 package http
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,7 +12,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
-	"github.com/nextlevelbuilder/goclaw/internal/sessions"
+	sessions "github.com/nextlevelbuilder/goclaw/internal/agentsessions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
@@ -55,56 +53,9 @@ type chatCompletionsRequest struct {
 }
 
 type chatMessage struct {
-	Role    string      `json:"role"`
-	Content flexContent `json:"content"`
-	Name    string      `json:"name,omitempty"`
-}
-
-// flexContent accepts either a string or an OpenAI-style content-parts array
-// ([{type:"text", text:"..."}, ...]) and normalizes to a plain string.
-// Non-text parts (image_url, input_audio) are currently dropped.
-type flexContent string
-
-func (c *flexContent) UnmarshalJSON(data []byte) error {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
-		*c = ""
-		return nil
-	}
-	switch data[0] {
-	case '"':
-		var s string
-		if err := json.Unmarshal(data, &s); err != nil {
-			return err
-		}
-		*c = flexContent(s)
-		return nil
-	case '[':
-		var parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text,omitempty"`
-		}
-		if err := json.Unmarshal(data, &parts); err != nil {
-			return fmt.Errorf("content array: %w", err)
-		}
-		var b strings.Builder
-		for _, p := range parts {
-			if p.Type == "text" && p.Text != "" {
-				if b.Len() > 0 {
-					b.WriteByte('\n')
-				}
-				b.WriteString(p.Text)
-			}
-		}
-		*c = flexContent(b.String())
-		return nil
-	default:
-		return fmt.Errorf("content must be string or array, got %q", data[0])
-	}
-}
-
-func (c flexContent) MarshalJSON() ([]byte, error) {
-	return json.Marshal(string(c))
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Name    string `json:"name,omitempty"`
 }
 
 type chatCompletionsResponse struct {
@@ -143,7 +94,7 @@ func (h *ChatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s","type":"invalid_request_error"}}`, i18n.T(locale, i18n.MsgInvalidAuth)), http.StatusUnauthorized)
 		return
 	}
-	if !permissions.HasMinRole(auth.Role, permissions.RoleOperator) {
+	if !permissions.HasMinRole(auth.Role, permissions.RoleMember) {
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s","type":"invalid_request_error"}}`, i18n.T(locale, i18n.MsgPermissionDenied, "/v1/chat/completions")), http.StatusForbidden)
 		return
 	}
@@ -195,7 +146,7 @@ func (h *ChatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	var lastMessage string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
-			lastMessage = string(req.Messages[i].Content)
+			lastMessage = req.Messages[i].Content
 			break
 		}
 	}
@@ -248,7 +199,7 @@ func (h *ChatCompletionsHandler) handleNonStream(w http.ResponseWriter, r *http.
 		Model:   model,
 		Choices: []chatChoice{{
 			Index:        0,
-			Message:      &chatMessage{Role: "assistant", Content: flexContent(SignFileURLs(result.Content, FileSigningKey()))},
+			Message:      &chatMessage{Role: "assistant", Content: SignFileURLs(result.Content, FileSigningKey())},
 			FinishReason: "stop",
 		}},
 	}
@@ -297,10 +248,10 @@ func (h *ChatCompletionsHandler) handleStream(w http.ResponseWriter, r *http.Req
 	})
 
 	if err != nil {
-		writeSSEChunk(w, flusher, completionID, model, &chatMessage{Content: flexContent("Error: " + err.Error())}, "stop")
+		writeSSEChunk(w, flusher, completionID, model, &chatMessage{Content: "Error: " + err.Error()}, "stop")
 	} else {
 		// Send content chunk
-		writeSSEChunk(w, flusher, completionID, model, &chatMessage{Content: flexContent(SignFileURLs(result.Content, FileSigningKey()))}, "stop")
+		writeSSEChunk(w, flusher, completionID, model, &chatMessage{Content: SignFileURLs(result.Content, FileSigningKey())}, "stop")
 	}
 
 	// Send [DONE]

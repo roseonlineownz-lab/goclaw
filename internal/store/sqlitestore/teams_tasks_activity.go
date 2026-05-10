@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,31 +28,29 @@ func (s *SQLiteTeamStore) AddTaskComment(ctx context.Context, comment *store.Tea
 	if commentType == "" {
 		commentType = "note"
 	}
-	tid := tenantIDForInsert(ctx)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO team_task_comments (id, task_id, agent_id, user_id, content, comment_type, created_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO team_task_comments (id, task_id, agent_id, user_id, content, comment_type, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		comment.ID, comment.TaskID, comment.AgentID,
 		nilStr(comment.UserID),
-		comment.Content, commentType, comment.CreatedAt, tid,
+		comment.Content, commentType, comment.CreatedAt,
 	)
 	if err != nil {
 		return err
 	}
 	_, _ = s.db.ExecContext(ctx,
-		`UPDATE team_tasks SET comment_count = comment_count + 1 WHERE id = ? AND tenant_id = ?`, comment.TaskID, tid)
+		`UPDATE team_tasks SET comment_count = comment_count + 1 WHERE id = ?`, comment.TaskID)
 	return nil
 }
 
 func (s *SQLiteTeamStore) ListTaskComments(ctx context.Context, taskID uuid.UUID) ([]store.TeamTaskCommentData, error) {
-	tid := tenantIDForInsert(ctx)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT c.id, c.task_id, c.agent_id, c.user_id, c.content, c.comment_type, c.created_at,
 		 COALESCE(a.agent_key, '') AS agent_key
 		 FROM team_task_comments c
 		 LEFT JOIN agents a ON a.id = c.agent_id
-		 WHERE c.task_id = ? AND c.tenant_id = ?
-		 ORDER BY c.created_at ASC`, taskID, tid)
+		 WHERE c.task_id = ?
+		 ORDER BY c.created_at ASC`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -60,15 +59,14 @@ func (s *SQLiteTeamStore) ListTaskComments(ctx context.Context, taskID uuid.UUID
 }
 
 func (s *SQLiteTeamStore) ListRecentTaskComments(ctx context.Context, taskID uuid.UUID, limit int) ([]store.TeamTaskCommentData, error) {
-	tid := tenantIDForInsert(ctx)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT c.id, c.task_id, c.agent_id, c.user_id, c.content, c.comment_type, c.created_at,
 		 COALESCE(a.agent_key, '') AS agent_key
 		 FROM team_task_comments c
 		 LEFT JOIN agents a ON a.id = c.agent_id
-		 WHERE c.task_id = ? AND c.tenant_id = ?
+		 WHERE c.task_id = ?
 		 ORDER BY c.created_at DESC
-		 LIMIT ?`, taskID, tid, limit)
+		 LIMIT ?`, taskID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -115,20 +113,19 @@ func (s *SQLiteTeamStore) RecordTaskEvent(ctx context.Context, event *store.Team
 	}
 	event.CreatedAt = time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO team_task_events (id, task_id, event_type, actor_type, actor_id, data, created_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.ID, event.TaskID, event.EventType, event.ActorType, event.ActorID, event.Data, event.CreatedAt, tenantIDForInsert(ctx),
+		`INSERT INTO team_task_events (id, task_id, event_type, actor_type, actor_id, data, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		event.ID, event.TaskID, event.EventType, event.ActorType, event.ActorID, event.Data, event.CreatedAt,
 	)
 	return err
 }
 
 func (s *SQLiteTeamStore) ListTaskEvents(ctx context.Context, taskID uuid.UUID) ([]store.TeamTaskEventData, error) {
-	tid := tenantIDForInsert(ctx)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, task_id, event_type, actor_type, actor_id, data, created_at
 		 FROM team_task_events
-		 WHERE task_id = ? AND tenant_id = ?
-		 ORDER BY created_at ASC`, taskID, tid)
+		 WHERE task_id = ?
+		 ORDER BY created_at ASC`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -140,15 +137,14 @@ func (s *SQLiteTeamStore) ListTeamEvents(ctx context.Context, teamID uuid.UUID, 
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	tid := tenantIDForInsert(ctx)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT e.id, e.task_id, e.event_type, e.actor_type, e.actor_id, e.data, e.created_at
 		 FROM team_task_events e
 		 JOIN team_tasks t ON t.id = e.task_id
-		 WHERE t.team_id = ? AND t.tenant_id = ?
+		 WHERE t.team_id = ?
 		 ORDER BY e.created_at DESC
 		 LIMIT ? OFFSET ?`,
-		teamID, tid, limit, offset)
+		teamID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -184,22 +180,25 @@ func (s *SQLiteTeamStore) AttachFileToTask(ctx context.Context, att *store.TeamT
 	if len(att.Metadata) == 0 {
 		att.Metadata = json.RawMessage(`{}`)
 	}
-	tid := tenantIDForInsert(ctx)
+	// SQLite has no GENERATED columns via modernc driver — compute app-side.
+	if att.BaseName == "" && att.Path != "" {
+		att.BaseName = ComputeAttachmentBaseName(att.Path)
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO team_task_attachments (id, task_id, team_id, chat_id, path, file_size, mime_type, created_by_agent_id, created_by_sender_id, metadata, created_at, tenant_id)
+		`INSERT INTO team_task_attachments (id, task_id, team_id, chat_id, path, base_name, file_size, mime_type, created_by_agent_id, created_by_sender_id, metadata, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (task_id, path) DO NOTHING`,
-		att.ID, att.TaskID, att.TeamID, att.ChatID, att.Path,
+		att.ID, att.TaskID, att.TeamID, att.ChatID, att.Path, att.BaseName,
 		att.FileSize, att.MimeType, att.CreatedByAgentID,
 		nilStr(att.CreatedBySenderID),
-		att.Metadata, att.CreatedAt, tid,
+		att.Metadata, att.CreatedAt,
 	)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
 		_, _ = s.db.ExecContext(ctx,
-			`UPDATE team_tasks SET attachment_count = attachment_count + 1 WHERE id = ? AND tenant_id = ?`, att.TaskID, tid)
+			`UPDATE team_tasks SET attachment_count = attachment_count + 1 WHERE id = ?`, att.TaskID)
 	}
 	return nil
 }
@@ -210,11 +209,10 @@ func (s *SQLiteTeamStore) GetAttachment(ctx context.Context, attachmentID uuid.U
 	var senderID sql.NullString
 	var metadata json.RawMessage
 	var createdAt sqliteTime
-	tid := tenantIDForInsert(ctx)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, task_id, team_id, chat_id, path, file_size, mime_type,
 		        created_by_agent_id, created_by_sender_id, metadata, created_at
-		 FROM team_task_attachments WHERE id = ? AND tenant_id = ?`, attachmentID, tid,
+		 FROM team_task_attachments WHERE id = ?`, attachmentID,
 	).Scan(&a.ID, &a.TaskID, &a.TeamID, &a.ChatID, &a.Path, &a.FileSize, &a.MimeType,
 		&agentID, &senderID, &metadata, &createdAt)
 	if err != nil {
@@ -230,13 +228,12 @@ func (s *SQLiteTeamStore) GetAttachment(ctx context.Context, attachmentID uuid.U
 }
 
 func (s *SQLiteTeamStore) ListTaskAttachments(ctx context.Context, taskID uuid.UUID) ([]store.TeamTaskAttachmentData, error) {
-	tid := tenantIDForInsert(ctx)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, task_id, team_id, chat_id, path, file_size, mime_type,
 		        created_by_agent_id, created_by_sender_id, metadata, created_at
 		 FROM team_task_attachments
-		 WHERE task_id = ? AND tenant_id = ?
-		 ORDER BY created_at ASC`, taskID, tid)
+		 WHERE task_id = ?
+		 ORDER BY created_at ASC`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -265,17 +262,24 @@ func (s *SQLiteTeamStore) ListTaskAttachments(ctx context.Context, taskID uuid.U
 }
 
 func (s *SQLiteTeamStore) DetachFileFromTask(ctx context.Context, taskID uuid.UUID, path string) error {
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM team_task_attachments WHERE task_id = ? AND path = ? AND tenant_id = ?`,
-		taskID, path, tid,
+		`DELETE FROM team_task_attachments WHERE task_id = ? AND path = ?`,
+		taskID, path,
 	)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
 		_, _ = s.db.ExecContext(ctx,
-			`UPDATE team_tasks SET attachment_count = MAX(attachment_count - 1, 0) WHERE id = ? AND tenant_id = ?`, taskID, tid)
+			`UPDATE team_tasks SET attachment_count = MAX(attachment_count - 1, 0) WHERE id = ?`, taskID)
+
+		source := "task:" + taskID.String()
+		if _, derr := s.db.ExecContext(ctx, `
+			DELETE FROM vault_links
+			WHERE json_extract(metadata, '$.source') = ?
+		`, source); derr != nil {
+			slog.Warn("vault.link.cleanup_on_detach", "task_id", taskID, "err", derr)
+		}
 	}
 	return nil
 }
@@ -290,12 +294,11 @@ func (s *SQLiteTeamStore) UpdateTaskProgress(ctx context.Context, taskID, teamID
 	}
 	now := time.Now()
 	lockExpires := now.Add(taskLockDuration)
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET progress_percent = ?, progress_step = ?, lock_expires_at = ?, updated_at = ?
-		 WHERE id = ? AND status = ? AND team_id = ? AND tenant_id = ?`,
+		 WHERE id = ? AND status = ? AND team_id = ?`,
 		percent, step, lockExpires, now,
-		taskID, store.TeamTaskStatusInProgress, teamID, tid,
+		taskID, store.TeamTaskStatusInProgress, teamID,
 	)
 	if err != nil {
 		return err
@@ -313,12 +316,11 @@ func (s *SQLiteTeamStore) UpdateTaskProgress(ctx context.Context, taskID, teamID
 func (s *SQLiteTeamStore) RenewTaskLock(ctx context.Context, taskID, teamID uuid.UUID) error {
 	now := time.Now()
 	lockExpires := now.Add(taskLockDuration)
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET lock_expires_at = ?, updated_at = ?
-		 WHERE id = ? AND team_id = ? AND status = ? AND tenant_id = ?`,
+		 WHERE id = ? AND team_id = ? AND status = ?`,
 		lockExpires, now,
-		taskID, teamID, store.TeamTaskStatusInProgress, tid,
+		taskID, teamID, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
 		return err
@@ -381,18 +383,17 @@ func (s *SQLiteTeamStore) ForceRecoverAllTasks(ctx context.Context) ([]store.Rec
 
 func (s *SQLiteTeamStore) ListRecoverableTasks(ctx context.Context, teamID uuid.UUID) ([]store.TeamTaskData, error) {
 	now := time.Now()
-	tid := tenantIDForInsert(ctx)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+taskSelectCols+`
 		 `+taskJoinClause+`
-		 WHERE t.team_id = ? AND t.tenant_id = ?
+		 WHERE t.team_id = ?
 		   AND (
 		     t.status = ?
 		     OR (t.status = ? AND t.lock_expires_at IS NOT NULL AND t.lock_expires_at < ?)
 		   )
 		 ORDER BY t.priority DESC, t.created_at
 		 LIMIT ?`,
-		teamID, tid,
+		teamID,
 		store.TeamTaskStatusPending, store.TeamTaskStatusInProgress, now, maxListTasksRows)
 	if err != nil {
 		return nil, err
@@ -440,7 +441,7 @@ func (s *SQLiteTeamStore) FixOrphanedBlockedTasks(ctx context.Context) ([]store.
 	now := time.Now()
 	// Find blocked tasks where every entry in blocked_by is in terminal status.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT t.id, t.team_id, t.tenant_id, t.task_number, t.subject,
+		`SELECT t.id, t.team_id, t.task_number, t.subject,
 		        COALESCE(t.channel, ''), COALESCE(t.chat_id, '')
 		 FROM team_tasks t
 		 JOIN agent_teams tm ON tm.id = t.team_id AND tm.status = 'active'
@@ -449,7 +450,7 @@ func (s *SQLiteTeamStore) FixOrphanedBlockedTasks(ctx context.Context) ([]store.
 		   AND t.blocked_by IS NOT NULL AND t.blocked_by != '[]'
 		   AND NOT EXISTS (
 		     SELECT 1 FROM json_each(t.blocked_by) AS je
-		     JOIN team_tasks bt ON bt.id = je.value AND bt.tenant_id = t.tenant_id
+		     JOIN team_tasks bt ON bt.id = je.value
 		     WHERE bt.status NOT IN (?, ?, ?)
 		   )`,
 		store.TeamTaskStatusCompleted, store.TeamTaskStatusFailed, store.TeamTaskStatusCancelled,
@@ -466,8 +467,8 @@ func (s *SQLiteTeamStore) FixOrphanedBlockedTasks(ctx context.Context) ([]store.
 	// Unblock each — clear blocked_by and set pending.
 	for _, info := range infos {
 		_, _ = s.db.ExecContext(ctx,
-			`UPDATE team_tasks SET blocked_by = '[]', status = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
-			store.TeamTaskStatusPending, now, info.ID, info.TenantID,
+			`UPDATE team_tasks SET blocked_by = '[]', status = ?, updated_at = ? WHERE id = ?`,
+			store.TeamTaskStatusPending, now, info.ID,
 		)
 	}
 	return infos, nil
@@ -476,7 +477,7 @@ func (s *SQLiteTeamStore) FixOrphanedBlockedTasks(ctx context.Context) ([]store.
 // queryRecoveredTasks fetches recently-updated tasks matching the given status for recovery reporting.
 func (s *SQLiteTeamStore) queryRecoveredTasks(ctx context.Context, status string) ([]store.RecoveredTaskInfo, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT t.id, t.team_id, t.tenant_id, t.task_number, t.subject,
+		`SELECT t.id, t.team_id, t.task_number, t.subject,
 		        COALESCE(t.channel, ''), COALESCE(t.chat_id, '')
 		 FROM team_tasks t
 		 WHERE t.status = ?
@@ -504,7 +505,7 @@ func scanRecoveredTaskInfoRows(rows interface {
 	var out []store.RecoveredTaskInfo
 	for rows.Next() {
 		var info store.RecoveredTaskInfo
-		if err := rows.Scan(&info.ID, &info.TeamID, &info.TenantID, &info.TaskNumber, &info.Subject, &info.Channel, &info.ChatID); err != nil {
+		if err := rows.Scan(&info.ID, &info.TeamID, &info.TaskNumber, &info.Subject, &info.Channel, &info.ChatID); err != nil {
 			return nil, err
 		}
 		out = append(out, info)
@@ -517,15 +518,14 @@ func scanRecoveredTaskInfoRows(rows interface {
 
 func (s *SQLiteTeamStore) ResetTaskStatus(ctx context.Context, taskID, teamID uuid.UUID) error {
 	now := time.Now()
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET status = ?, locked_at = NULL, lock_expires_at = NULL, result = NULL,
 		 progress_percent = NULL, progress_step = NULL, updated_at = ?
-		 WHERE id = ? AND team_id = ? AND status IN (?, ?, ?, ?) AND tenant_id = ?`,
+		 WHERE id = ? AND team_id = ? AND status IN (?, ?, ?, ?)`,
 		store.TeamTaskStatusPending, now,
 		taskID, teamID,
 		store.TeamTaskStatusStale, store.TeamTaskStatusFailed,
-		store.TeamTaskStatusCancelled, store.TeamTaskStatusInReview, tid,
+		store.TeamTaskStatusCancelled, store.TeamTaskStatusInReview,
 	)
 	if err != nil {
 		return err
@@ -546,12 +546,11 @@ func (s *SQLiteTeamStore) ResetTaskStatus(ctx context.Context, taskID, teamID uu
 
 func (s *SQLiteTeamStore) SetTaskFollowup(ctx context.Context, taskID, teamID uuid.UUID, followupAt time.Time, max int, message, channel, chatID string) error {
 	now := time.Now()
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET followup_at = ?, followup_max = ?, followup_message = ?, followup_channel = ?, followup_chat_id = ?, updated_at = ?
-		 WHERE id = ? AND team_id = ? AND status = ? AND tenant_id = ?`,
+		 WHERE id = ? AND team_id = ? AND status = ?`,
 		followupAt, max, message, channel, chatID, now,
-		taskID, teamID, store.TeamTaskStatusInProgress, tid,
+		taskID, teamID, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
 		return err
@@ -567,11 +566,10 @@ func (s *SQLiteTeamStore) SetTaskFollowup(ctx context.Context, taskID, teamID uu
 }
 
 func (s *SQLiteTeamStore) ClearTaskFollowup(ctx context.Context, taskID uuid.UUID) error {
-	tid := tenantIDForInsert(ctx)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET followup_at = NULL, followup_count = 0, followup_message = NULL, followup_channel = NULL, followup_chat_id = NULL, updated_at = ?
-		 WHERE id = ? AND tenant_id = ?`,
-		time.Now(), taskID, tid,
+		 WHERE id = ?`,
+		time.Now(), taskID,
 	)
 	return err
 }
@@ -598,24 +596,22 @@ func (s *SQLiteTeamStore) ListAllFollowupDueTasks(ctx context.Context) ([]store.
 }
 
 func (s *SQLiteTeamStore) IncrementFollowupCount(ctx context.Context, taskID uuid.UUID, nextAt *time.Time) error {
-	tid := tenantIDForInsert(ctx)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET followup_count = followup_count + 1, followup_at = ?, updated_at = ?
-		 WHERE id = ? AND tenant_id = ?`,
-		nextAt, time.Now(), taskID, tid,
+		 WHERE id = ?`,
+		nextAt, time.Now(), taskID,
 	)
 	return err
 }
 
 func (s *SQLiteTeamStore) ClearFollowupByScope(ctx context.Context, channel, chatID string) (int, error) {
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks
 		 SET followup_at = NULL, followup_count = 0, followup_message = NULL,
 		     followup_channel = NULL, followup_chat_id = NULL, updated_at = ?
 		 WHERE followup_channel = ? AND followup_chat_id = ?
-		   AND followup_at IS NOT NULL AND status = ? AND tenant_id = ?`,
-		time.Now(), channel, chatID, store.TeamTaskStatusInProgress, tid,
+		   AND followup_at IS NOT NULL AND status = ?`,
+		time.Now(), channel, chatID, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
 		return 0, err
@@ -625,7 +621,6 @@ func (s *SQLiteTeamStore) ClearFollowupByScope(ctx context.Context, channel, cha
 }
 
 func (s *SQLiteTeamStore) SetFollowupForActiveTasks(ctx context.Context, teamID uuid.UUID, channel, chatID string, followupAt time.Time, max int, message string) (int, error) {
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks
 		 SET followup_at = ?, followup_max = ?, followup_message = ?,
@@ -633,14 +628,13 @@ func (s *SQLiteTeamStore) SetFollowupForActiveTasks(ctx context.Context, teamID 
 		 WHERE team_id = ?
 		   AND status = ?
 		   AND followup_at IS NULL
-		   AND tenant_id = ?
 		   AND (
 		     (COALESCE(channel,'') = ? AND COALESCE(chat_id,'') = ?)
 		     OR followup_channel = ?
 		     OR (COALESCE(channel,'') IN ('', 'system', 'delegate') AND COALESCE(chat_id,'') = '')
 		   )`,
 		followupAt, max, message, channel, chatID, time.Now(),
-		teamID, store.TeamTaskStatusInProgress, tid,
+		teamID, store.TeamTaskStatusInProgress,
 		channel, chatID, channel,
 	)
 	if err != nil {
@@ -651,7 +645,6 @@ func (s *SQLiteTeamStore) SetFollowupForActiveTasks(ctx context.Context, teamID 
 }
 
 func (s *SQLiteTeamStore) HasActiveMemberTasks(ctx context.Context, teamID uuid.UUID, excludeAgentID uuid.UUID) (bool, error) {
-	tid := tenantIDForInsert(ctx)
 	var exists bool
 	err := s.db.QueryRowContext(ctx,
 		`SELECT EXISTS(
@@ -660,10 +653,9 @@ func (s *SQLiteTeamStore) HasActiveMemberTasks(ctx context.Context, teamID uuid.
 			  AND owner_agent_id IS NOT NULL
 			  AND owner_agent_id != ?
 			  AND status IN (?, ?, ?)
-			  AND tenant_id = ?
 		)`,
 		teamID, excludeAgentID,
-		store.TeamTaskStatusPending, store.TeamTaskStatusInProgress, store.TeamTaskStatusBlocked, tid,
+		store.TeamTaskStatusPending, store.TeamTaskStatusInProgress, store.TeamTaskStatusBlocked,
 	).Scan(&exists)
 	return exists, err
 }

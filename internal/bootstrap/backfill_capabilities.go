@@ -21,11 +21,10 @@ func BackfillCapabilities(ctx context.Context, db *sql.DB) (int64, error) {
 	}
 
 	// Single query: insert CAPABILITIES.md for all agents missing it.
-	// Pulls tenant_id from the agents table to maintain tenant isolation.
 	// file_name is a constant, only content is parameterized to avoid PG type inference issues.
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO agent_context_files (id, agent_id, file_name, content, created_at, updated_at, tenant_id)
-		SELECT uuid_generate_v7(), a.id, 'CAPABILITIES.md', $1, NOW(), NOW(), a.tenant_id
+		INSERT INTO agent_context_files (id, agent_id, file_name, content, created_at, updated_at)
+		SELECT uuid_generate_v7(), a.id, 'CAPABILITIES.md', $1, NOW(), NOW()
 		FROM agents a
 		WHERE NOT EXISTS (
 			SELECT 1 FROM agent_context_files acf

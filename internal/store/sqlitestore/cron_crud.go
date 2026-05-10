@@ -70,10 +70,10 @@ func (s *SQLiteCronStore) AddJob(ctx context.Context, name string, schedule stor
 	nextRun := computeNextRun(&schedule, now, s.defaultTZ)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, tenant_id, agent_id, user_id, name, enabled, schedule_kind, cron_expression, run_at, timezone,
+		`INSERT INTO cron_jobs (id, agent_id, user_id, name, enabled, schedule_kind, cron_expression, run_at, timezone,
 		 interval_ms, payload, delete_after_run, deliver, deliver_channel, deliver_to, wake_heartbeat, next_run_at, created_at, updated_at)
-		 VALUES (?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, tenantIDForInsert(ctx), agentUUID, userIDPtr, name, scheduleKind, cronExpr, runAt, tz,
+		 VALUES (?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, agentUUID, userIDPtr, name, scheduleKind, cronExpr, runAt, tz,
 		intervalMS, payloadJSON, deleteAfterRun, deliver, channel, to, false, nextRun, now, now,
 	)
 	if err != nil {
@@ -98,7 +98,7 @@ func (s *SQLiteCronStore) GetJob(ctx context.Context, jobID string) (*store.Cron
 }
 
 func (s *SQLiteCronStore) ListJobs(ctx context.Context, includeDisabled bool, agentID, userID string) []store.CronJob {
-	q := `SELECT id, tenant_id, agent_id, user_id, name, enabled, schedule_kind, cron_expression, run_at, timezone,
+	q := `SELECT id, agent_id, user_id, name, enabled, schedule_kind, cron_expression, run_at, timezone,
 		 interval_ms, payload, delete_after_run, stateless, deliver, deliver_channel, deliver_to, wake_heartbeat,
 		 next_run_at, last_run_at, last_status, last_error,
 		 created_at, updated_at FROM cron_jobs WHERE 1=1`
@@ -118,16 +118,6 @@ func (s *SQLiteCronStore) ListJobs(ctx context.Context, includeDisabled bool, ag
 	if userID != "" {
 		q += " AND user_id = ?"
 		args = append(args, userID)
-	}
-
-	clause, targs, tErr := scopeClause(ctx)
-	if tErr != nil {
-		slog.Warn("cron.ListJobs: tenant context missing, returning empty (fail-closed)", "error", tErr)
-		return nil
-	}
-	if clause != "" {
-		q += clause
-		args = append(args, targs...)
 	}
 
 	q += " ORDER BY created_at DESC"
@@ -158,19 +148,7 @@ func (s *SQLiteCronStore) RemoveJob(ctx context.Context, jobID string) error {
 		return fmt.Errorf("invalid job ID: %s", jobID)
 	}
 
-	q := "DELETE FROM cron_jobs WHERE id = ?"
-	args := []any{id}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return fmt.Errorf("tenant_id required")
-		}
-		q += " AND tenant_id = ?"
-		args = append(args, tid)
-	}
-
-	res, err := s.db.ExecContext(ctx, q, args...)
+	res, err := s.db.ExecContext(ctx, "DELETE FROM cron_jobs WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
@@ -331,15 +309,6 @@ func (s *SQLiteCronStore) lockCronJobForMutation(ctx context.Context, tx *sql.Tx
 		FROM cron_jobs WHERE id = ?`
 	args := []any{id}
 
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, fmt.Errorf("tenant_id required")
-		}
-		q += " AND tenant_id = ?"
-		args = append(args, tid)
-	}
-
 	var (
 		state        store.CronJobMutableState
 		scheduleKind string
@@ -415,15 +384,6 @@ func execCronJobUpdateTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, updates 
 
 	args = append(args, id)
 	q := "UPDATE cron_jobs SET " + strings.Join(setClauses, ", ") + " WHERE id = ?"
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return fmt.Errorf("tenant_id required")
-		}
-		args = append(args, tid)
-		q += " AND tenant_id = ?"
-	}
-
 	res, err := tx.ExecContext(ctx, q, args...)
 	if err != nil {
 		return err

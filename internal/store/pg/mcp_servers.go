@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +29,10 @@ func (s *PGMCPServerStore) CreateServer(ctx context.Context, srv *store.MCPServe
 	if err := store.ValidateUserID(srv.CreatedBy); err != nil {
 		return err
 	}
+	// App-layer mutex guard: team_id and project_id cannot both be set.
+	if srv.TeamID != nil && srv.ProjectID != nil {
+		return fmt.Errorf("mcp server: team_id and project_id cannot both be set (scope mutex)")
+	}
 	if srv.ID == uuid.Nil {
 		srv.ID = store.GenNewID()
 	}
@@ -49,19 +52,20 @@ func (s *PGMCPServerStore) CreateServer(ctx context.Context, srv *store.MCPServe
 	encHeaders := s.encryptJSONB(jsonOrEmpty(srv.Headers))
 	encEnv := s.encryptJSONB(jsonOrEmpty(srv.Env))
 
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
+	meta := srv.Metadata
+	if len(meta) == 0 {
+		meta = []byte("{}")
 	}
-
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO mcp_servers (id, name, display_name, transport, command, args, url, headers, env,
-		 api_key, tool_prefix, timeout_sec, settings, enabled, created_by, created_at, updated_at, tenant_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		 api_key, tool_prefix, timeout_sec, settings, enabled, created_by, metadata,
+		 team_id, project_id, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		srv.ID, srv.Name, nilStr(srv.DisplayName), srv.Transport, nilStr(srv.Command),
 		jsonOrEmpty(srv.Args), nilStr(srv.URL), encHeaders, encEnv,
 		nilStr(apiKey), nilStr(srv.ToolPrefix), srv.TimeoutSec,
-		jsonOrEmpty(srv.Settings), srv.Enabled, srv.CreatedBy, now, now, tenantID,
+		jsonOrEmpty(srv.Settings), srv.Enabled, srv.CreatedBy, meta,
+		srv.TeamID, srv.ProjectID, now, now,
 	)
 	return err
 }
@@ -69,21 +73,12 @@ func (s *PGMCPServerStore) CreateServer(ctx context.Context, srv *store.MCPServe
 const mcpServerSelectCols = `id, name, COALESCE(display_name, '') AS display_name, transport,
 		 COALESCE(command, '') AS command, args, COALESCE(url, '') AS url, headers, env,
 		 COALESCE(api_key, '') AS api_key, COALESCE(tool_prefix, '') AS tool_prefix,
-		 timeout_sec, settings, enabled, created_by, created_at, updated_at`
+		 timeout_sec, settings, enabled, created_by, metadata, team_id, project_id, created_at, updated_at`
 
 func (s *PGMCPServerStore) GetServer(ctx context.Context, id uuid.UUID) (*store.MCPServerData, error) {
-	q := `SELECT ` + mcpServerSelectCols + ` FROM mcp_servers WHERE id = $1`
-	qArgs := []any{id}
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID == uuid.Nil {
-			return nil, sql.ErrNoRows
-		}
-		q += ` AND tenant_id = $2`
-		qArgs = append(qArgs, tenantID)
-	}
 	var srv store.MCPServerData
-	if err := pkgSqlxDB.GetContext(ctx, &srv, q, qArgs...); err != nil {
+	if err := pkgSqlxDB.GetContext(ctx, &srv,
+		`SELECT `+mcpServerSelectCols+` FROM mcp_servers WHERE id = $1`, id); err != nil {
 		return nil, err
 	}
 	s.decryptServerFields(&srv)
@@ -91,58 +86,82 @@ func (s *PGMCPServerStore) GetServer(ctx context.Context, id uuid.UUID) (*store.
 }
 
 func (s *PGMCPServerStore) GetServerByName(ctx context.Context, name string) (*store.MCPServerData, error) {
-	q := `SELECT ` + mcpServerSelectCols + ` FROM mcp_servers WHERE name = $1`
-	qArgs := []any{name}
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID == uuid.Nil {
-			return nil, sql.ErrNoRows
-		}
-		q += ` AND tenant_id = $2`
-		qArgs = append(qArgs, tenantID)
-	}
 	var srv store.MCPServerData
-	if err := pkgSqlxDB.GetContext(ctx, &srv, q, qArgs...); err != nil {
+	if err := pkgSqlxDB.GetContext(ctx, &srv,
+		`SELECT `+mcpServerSelectCols+` FROM mcp_servers WHERE name = $1`, name); err != nil {
 		return nil, err
 	}
 	s.decryptServerFields(&srv)
 	return &srv, nil
 }
 
-// decryptServerFields decrypts api_key, headers, and env after sqlx scan.
-func (s *PGMCPServerStore) decryptServerFields(srv *store.MCPServerData) {
-	srv.Headers = s.decryptJSONB(srv.Headers)
-	srv.Env = s.decryptJSONB(srv.Env)
-	if srv.APIKey != "" && s.encKey != "" {
-		if decrypted, err := crypto.Decrypt(srv.APIKey, s.encKey); err == nil {
-			srv.APIKey = decrypted
-		} else {
-			slog.Warn("mcp: failed to decrypt api key", "server", srv.Name, "error", err)
-		}
-	}
-}
 
 func (s *PGMCPServerStore) ListServers(ctx context.Context) ([]store.MCPServerData, error) {
-	q := `SELECT ` + mcpServerSelectCols + ` FROM mcp_servers`
-	var qArgs []any
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID == uuid.Nil {
-			return []store.MCPServerData{}, nil
-		}
-		q += ` WHERE tenant_id = $1`
-		qArgs = append(qArgs, tenantID)
-	}
-	q += ` ORDER BY name`
-
 	var result []store.MCPServerData
-	if err := pkgSqlxDB.SelectContext(ctx, &result, q, qArgs...); err != nil {
+	if err := pkgSqlxDB.SelectContext(ctx, &result,
+		`SELECT `+mcpServerSelectCols+` FROM mcp_servers ORDER BY name`); err != nil {
 		return nil, err
 	}
 	for i := range result {
 		s.decryptServerFields(&result[i])
 	}
 	return result, nil
+}
+
+// ListAccessibleServers returns servers the agent can reach, intersected with scope context.
+// Visibility = global servers UNION team-scoped (if teamID non-nil) UNION project-scoped
+// (if projectID non-nil), filtered to servers where the agent has an active grant.
+// Admin paths should continue using ListServers (no scope filter, no grant filter).
+func (s *PGMCPServerStore) ListAccessibleServers(ctx context.Context, agentID uuid.UUID, teamID, projectID *uuid.UUID) ([]store.MCPServerData, error) {
+	// mcpServerSelectCols does not include table alias — use a subquery approach
+	// so column names match the struct db tags without s. prefix.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+mcpServerSelectCols+`
+		 FROM mcp_servers
+		 WHERE id IN (
+		   SELECT s.id FROM mcp_servers s
+		   INNER JOIN mcp_agent_grants g ON g.server_id = s.id
+		   WHERE g.agent_id = $1
+		     AND g.enabled = TRUE
+		     AND s.enabled = TRUE
+		     AND (
+		           (s.team_id IS NULL AND s.project_id IS NULL)
+		        OR ($2::uuid IS NOT NULL AND s.team_id    = $2)
+		        OR ($3::uuid IS NOT NULL AND s.project_id = $3)
+		     )
+		 )
+		 ORDER BY name`,
+		agentID, teamID, projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []store.MCPServerData
+	for rows.Next() {
+		var srv store.MCPServerData
+		var displayName, command, url, apiKey, toolPrefix *string
+		var args, headers, env, settings, metadata *[]byte
+		if err := rows.Scan(
+			&srv.ID, &srv.Name, &displayName, &srv.Transport, &command,
+			&args, &url, &headers, &env, &apiKey, &toolPrefix,
+			&srv.TimeoutSec, &settings, &srv.Enabled, &srv.CreatedBy,
+			&metadata, &srv.TeamID, &srv.ProjectID, &srv.CreatedAt, &srv.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		srv.DisplayName = derefStr(displayName)
+		srv.Command = derefStr(command)
+		srv.URL = derefStr(url)
+		srv.ToolPrefix = derefStr(toolPrefix)
+		srv.Args = derefBytes(args)
+		srv.Settings = derefBytes(settings)
+		srv.Metadata = derefBytes(metadata)
+		s.decryptServerFields(&srv)
+		result = append(result, srv)
+	}
+	return result, rows.Err()
 }
 
 func (s *PGMCPServerStore) UpdateServer(ctx context.Context, id uuid.UUID, updates map[string]any) error {
@@ -174,59 +193,11 @@ func (s *PGMCPServerStore) UpdateServer(ctx context.Context, id uuid.UUID, updat
 		}
 	}
 	updates["updated_at"] = time.Now()
-	if store.IsCrossTenant(ctx) {
-		return execMapUpdate(ctx, s.db, "mcp_servers", id, updates)
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required for update")
-	}
-	return execMapUpdateWhereTenant(ctx, s.db, "mcp_servers", updates, id, tid)
+	return execMapUpdate(ctx, s.db, "mcp_servers", id, updates)
 }
 
 func (s *PGMCPServerStore) DeleteServer(ctx context.Context, id uuid.UUID) error {
-	if store.IsCrossTenant(ctx) {
-		_, err := s.db.ExecContext(ctx, "DELETE FROM mcp_servers WHERE id = $1", id)
-		return err
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required")
-	}
-	_, err := s.db.ExecContext(ctx, "DELETE FROM mcp_servers WHERE id = $1 AND tenant_id = $2", id, tid)
+	_, err := s.db.ExecContext(ctx, "DELETE FROM mcp_servers WHERE id = $1", id)
 	return err
 }
 
-// encryptJSONB encrypts a JSONB blob (env, headers) by converting it to a JSON string literal.
-// Unencrypted: {"key":"val"} (JSONB object). Encrypted: "aes-gcm:..." (JSONB string).
-func (s *PGMCPServerStore) encryptJSONB(data []byte) []byte {
-	if s.encKey == "" || len(data) == 0 || string(data) == "{}" || string(data) == "null" {
-		return data
-	}
-	enc, err := crypto.Encrypt(string(data), s.encKey)
-	if err != nil {
-		slog.Warn("mcp: failed to encrypt jsonb", "error", err)
-		return data
-	}
-	// Wrap as JSON string so it's valid JSONB
-	wrapped, _ := json.Marshal(enc)
-	return wrapped
-}
-
-// decryptJSONB decrypts a JSONB blob if it's an encrypted JSON string.
-// Returns the original bytes if unencrypted (JSON object) or on error.
-func (s *PGMCPServerStore) decryptJSONB(data []byte) []byte {
-	if s.encKey == "" || len(data) == 0 || data[0] != '"' {
-		return data // not a JSON string → unencrypted JSONB object
-	}
-	var encStr string
-	if json.Unmarshal(data, &encStr) != nil {
-		return data
-	}
-	dec, err := crypto.Decrypt(encStr, s.encKey)
-	if err != nil {
-		slog.Warn("mcp: failed to decrypt jsonb", "error", err)
-		return data
-	}
-	return []byte(dec)
-}

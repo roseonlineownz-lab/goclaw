@@ -15,6 +15,11 @@ func (h *KnowledgeGraphHandler) handleListEntities(w http.ResponseWriter, r *htt
 	entityType := r.URL.Query().Get("type")
 	query := r.URL.Query().Get("q")
 
+	// Scope to authenticated user when no explicit user_id filter and not admin.
+	if userID == "" && !store.IsSharedKG(r.Context()) {
+		userID = store.UserIDFromContext(r.Context())
+	}
+
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit <= 0 {
@@ -88,6 +93,12 @@ func (h *KnowledgeGraphHandler) handleUpsertEntity(w http.ResponseWriter, r *htt
 		return
 	}
 	entity.AgentID = agentID
+
+	// Tag entity with the authenticated user's ID for per-user isolation.
+	// Admin/master-scope callers use shared KG (user_id=NULL) so they see all rows.
+	if !store.IsSharedKG(r.Context()) {
+		entity.UserID = store.UserIDFromContext(r.Context())
+	}
 
 	if entity.ExternalID == "" || entity.Name == "" || entity.EntityType == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgEntityFieldsRequired)})

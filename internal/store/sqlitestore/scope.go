@@ -17,7 +17,7 @@ func scopeClause(ctx context.Context) (clause string, args []any, err error) {
 	if err != nil {
 		return "", nil, err
 	}
-	bScope := base.QueryScope{TenantID: scope.TenantID, ProjectID: scope.ProjectID}
+	bScope := base.QueryScope{ProjectID: scope.ProjectID}
 	clause, args, _ = base.BuildScopeClause(sqliteDialect, bScope, 0)
 	return clause, args, nil
 }
@@ -34,7 +34,7 @@ func scopeClauseAlias(ctx context.Context, alias string) (clause string, args []
 	if err != nil {
 		return "", nil, err
 	}
-	bScope := base.QueryScope{TenantID: scope.TenantID, ProjectID: scope.ProjectID}
+	bScope := base.QueryScope{ProjectID: scope.ProjectID}
 	clause, args, _ = base.BuildScopeClauseAlias(sqliteDialect, bScope, 0, alias)
 	return clause, args, nil
 }

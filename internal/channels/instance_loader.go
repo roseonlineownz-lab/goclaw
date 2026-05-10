@@ -9,14 +9,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/providerresolve"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
+
+// reloadStartTimeout bounds how long Reload() will wait for a single channel's
+// Start() to return before abandoning it and continuing with the rest.
+// Sits above Telegram's probeOverallTimeout (60s) so well-behaved channels
+// always get a chance to finish before being given up on.
+// var (not const) so tests can shrink it without waiting a real minute+.
+var reloadStartTimeout = 90 * time.Second
 
 // ChannelFactory creates a Channel from DB instance data.
 // name: channel name (registered in Manager, used in session keys).
@@ -243,12 +248,10 @@ func (l *InstanceLoader) loadInstance(ctx context.Context, inst store.ChannelIns
 	}
 
 	// Resolve agent_key from UUID — the routing system (Router, session keys) uses agent_key, not UUID.
-	// Use the instance's tenant_id to scope the agent lookup.
-	instCtx := store.WithTenantID(ctx, inst.TenantID)
 	var ag *store.AgentData
 	if base, ok := ch.(interface{ SetAgentID(string) }); ok {
 		var err error
-		ag, err = l.agentStore.GetByID(instCtx, inst.AgentID)
+		ag, err = l.agentStore.GetByID(ctx, inst.AgentID)
 		if err != nil {
 			l.manager.RecordFailureForType(inst.Name, inst.ChannelType, "", fmt.Errorf("agent %s not found for channel %s: %w", inst.AgentID, inst.Name, err))
 			return fmt.Errorf("agent %s not found for channel %s: %w", inst.AgentID, inst.Name, err)
@@ -259,16 +262,6 @@ func (l *InstanceLoader) loadInstance(ctx context.Context, inst store.ChannelIns
 	if base, ok := ch.(interface{ SetType(string) }); ok {
 		base.SetType(inst.ChannelType)
 	}
-	// Propagate tenant_id from DB instance to channel for tenant-scoped message handling.
-	if base, ok := ch.(interface{ SetTenantID(uuid.UUID) }); ok {
-		base.SetTenantID(inst.TenantID)
-	}
-	// Propagate tenant_id to pending history for compaction/sweep DB operations.
-	// Factory creates PendingHistory before SetTenantID is called, so tenantID is uuid.Nil at construction.
-	if ph, ok := ch.(interface{ SetPendingHistoryTenantID(uuid.UUID) }); ok {
-		ph.SetPendingHistoryTenantID(inst.TenantID)
-	}
-
 	// Wire pending message auto-compaction.
 	// Priority: config provider/model > agent's provider/model > fallback.
 	if pc, ok := ch.(PendingCompactable); ok && l.providerReg != nil {
@@ -276,9 +269,8 @@ func (l *InstanceLoader) loadInstance(ctx context.Context, inst store.ChannelIns
 		var model string
 
 		// Try config-level provider/model first.
-		tctx := store.WithTenantID(ctx, inst.TenantID)
 		if l.pendingCompactCfg != nil && l.pendingCompactCfg.Provider != "" {
-			if cp, err := l.providerReg.Get(tctx, l.pendingCompactCfg.Provider); err == nil {
+			if cp, err := l.providerReg.GetByName(l.pendingCompactCfg.Provider); err == nil {
 				p = cp
 				model = l.pendingCompactCfg.Model
 				if model == "" {
@@ -325,17 +317,72 @@ func (l *InstanceLoader) loadInstance(ctx context.Context, inst store.ChannelIns
 	l.manager.RegisterChannel(inst.Name, ch)
 
 	// Start the channel if requested (Reload path). LoadAll defers to StartAll.
+	// Bound the wait so one hung Start() can't block Reload()'s mutex and wedge
+	// every subsequent reload. Important: we pass the caller's ctx (not a
+	// timeout-wrapped one) to ch.Start so long-running goroutines the channel
+	// derives from it — e.g. Telegram's pollCtx — are not cancelled out from
+	// under a successful start.
 	if autoStart {
-		if err := ch.Start(ctx); err != nil {
-			l.manager.recordChannelStartFailure(inst.Name, ch, "", err)
-			slog.Error("channel instance start failed", "name", inst.Name, "error", err)
-			// Still registered — will show as not running.
-		} else {
-			l.manager.RecordHealth(inst.Name, snapshotChannelHealth(ch))
-		}
+		l.startChannelWithTimeout(ctx, inst, ch)
 	}
 
 	slog.Info("channel instance loaded",
 		"name", inst.Name, "type", inst.ChannelType, "agent_id", inst.AgentID)
 	return nil
+}
+
+// startChannelWithTimeout runs ch.Start(ctx) in a goroutine and waits up to
+// reloadStartTimeout for it to return. On timeout we stop the partially-started
+// channel and record a failure so Reload() can move on to the next instance.
+//
+// ctx is passed through unchanged: channels routinely derive long-lived
+// goroutines (e.g. Telegram long-polling) from this context and must keep
+// running after Start returns. A late-returning Start — i.e. one that ignores
+// the caller ctx entirely — is drained asynchronously so its goroutine doesn't
+// block forever on the send to startErr. If it eventually reports success,
+// we've already called Stop, which is idempotent across channel impls.
+func (l *InstanceLoader) startChannelWithTimeout(ctx context.Context, inst store.ChannelInstanceData, ch Channel) {
+	startErr := make(chan error, 1)
+	go func() { startErr <- ch.Start(ctx) }()
+
+	timer := time.NewTimer(reloadStartTimeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-startErr:
+		if err != nil {
+			l.manager.recordChannelStartFailure(inst.Name, ch, "", err)
+			slog.Error("channel instance start failed",
+				"name", inst.Name, "type", inst.ChannelType, "error", err)
+			return
+		}
+		l.manager.RecordHealth(inst.Name, snapshotChannelHealth(ch))
+
+	case <-timer.C:
+		// Stop the channel in a bounded window so we don't trade one hang for another.
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := ch.Stop(stopCtx); err != nil {
+			slog.Warn("failed to stop timed-out channel",
+				"name", inst.Name, "type", inst.ChannelType, "error", err)
+		}
+		stopCancel()
+
+		timeoutErr := fmt.Errorf("start timed out after %s (type=%s)", reloadStartTimeout, inst.ChannelType)
+		l.manager.recordChannelStartFailure(inst.Name, ch, "", timeoutErr)
+		slog.Error("channel instance start timed out",
+			"name", inst.Name, "type", inst.ChannelType, "timeout", reloadStartTimeout)
+
+		// Drain the late-returning Start so its goroutine can exit.
+		// Logged so operators can spot channels that ignore context cancellation.
+		go func() {
+			err := <-startErr
+			if err != nil {
+				slog.Warn("channel instance start returned after timeout",
+					"name", inst.Name, "type", inst.ChannelType, "error", err)
+				return
+			}
+			slog.Warn("channel instance start succeeded after timeout; already stopped",
+				"name", inst.Name, "type", inst.ChannelType)
+		}()
+	}
 }

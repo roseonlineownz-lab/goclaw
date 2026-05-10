@@ -15,8 +15,8 @@ import (
 
 // ModelInfo is a normalized model entry returned by the list-models endpoint.
 type ModelInfo struct {
-	ID        string                         `json:"id"`
-	Name      string                         `json:"name,omitempty"`
+	ID        string                        `json:"id"`
+	Name      string                        `json:"name,omitempty"`
 	Reasoning *providers.ReasoningCapability `json:"reasoning,omitempty"`
 }
 
@@ -107,8 +107,6 @@ func (h *ProvidersHandler) handleListProviderModels(w http.ResponseWriter, r *ht
 		models = dashScopeModels()
 	case "minimax_native":
 		models = minimaxModels()
-	case "suno":
-		models = sunoModels()
 	default:
 		// All other types use OpenAI-compatible /models endpoint
 		apiBase := strings.TrimRight(h.resolveAPIBase(p), "/")

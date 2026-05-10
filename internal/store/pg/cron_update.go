@@ -116,18 +116,8 @@ func (s *PGCronStore) UpdateJob(ctx context.Context, jobID string, patch store.C
 
 func (s *PGCronStore) lockCronJobForMutation(ctx context.Context, tx *sql.Tx, id uuid.UUID, loadPayload bool) (*store.CronJobMutableState, error) {
 	q := `SELECT enabled, schedule_kind, cron_expression, run_at, timezone, interval_ms, next_run_at, payload
-		FROM cron_jobs WHERE id = $1`
+		FROM cron_jobs WHERE id = $1 FOR UPDATE`
 	args := []any{id}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, fmt.Errorf("tenant_id required")
-		}
-		q += fmt.Sprintf(" AND tenant_id = $%d", len(args)+1)
-		args = append(args, tid)
-	}
-	q += " FOR UPDATE"
 
 	var (
 		state        store.CronJobMutableState
@@ -201,14 +191,6 @@ func execCronJobUpdateTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, updates 
 
 	args = append(args, id)
 	q := fmt.Sprintf("UPDATE cron_jobs SET %s WHERE id = $%d", strings.Join(setClauses, ", "), len(args))
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return fmt.Errorf("tenant_id required")
-		}
-		args = append(args, tid)
-		q += fmt.Sprintf(" AND tenant_id = $%d", len(args))
-	}
 
 	res, err := tx.ExecContext(ctx, q, args...)
 	if err != nil {

@@ -12,11 +12,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
@@ -176,7 +175,6 @@ type BaseChannel struct {
 	health           ChannelHealth
 	allowList        []string
 	agentID          string                  // for DB instances: routes to specific agent (empty = use resolveAgentRoute)
-	tenantID         uuid.UUID               // for DB instances: tenant scope (zero = master tenant fallback)
 	contactCollector *store.ContactCollector // optional: auto-collect contacts from channel messages
 
 	// Shared policy + pairing fields (set via setters after construction).
@@ -220,12 +218,6 @@ func (c *BaseChannel) AgentID() string { return c.agentID }
 
 // SetAgentID sets the explicit agent ID for routing (used by InstanceLoader for DB instances).
 func (c *BaseChannel) SetAgentID(id string) { c.agentID = id }
-
-// TenantID returns the tenant UUID for this channel (zero = master tenant fallback).
-func (c *BaseChannel) TenantID() uuid.UUID { return c.tenantID }
-
-// SetTenantID sets the tenant scope (used by InstanceLoader for DB instances).
-func (c *BaseChannel) SetTenantID(id uuid.UUID) { c.tenantID = id }
 
 // SetContactCollector sets the contact collector for auto-collecting contacts from messages.
 func (c *BaseChannel) SetContactCollector(cc *store.ContactCollector) { c.contactCollector = cc }
@@ -602,10 +594,12 @@ func (c *BaseChannel) HandleMessage(senderID, chatID, content string, media []st
 		userID = senderID[:idx]
 	}
 
-	// Convert string paths to MediaFile (for channels that haven't been updated yet).
+	// Convert string paths to MediaFile (legacy path-only callers).
+	// Use filepath.Base(p) as filename so persistMedia's sanitizer gets a
+	// meaningful stem instead of falling back to UUID.
 	var mediaFiles []bus.MediaFile
 	for _, p := range media {
-		mediaFiles = append(mediaFiles, bus.MediaFile{Path: p})
+		mediaFiles = append(mediaFiles, bus.MediaFile{Path: p, Filename: filepath.Base(p)})
 	}
 
 	msg := bus.InboundMessage{
@@ -617,7 +611,6 @@ func (c *BaseChannel) HandleMessage(senderID, chatID, content string, media []st
 		PeerKind: peerKind,
 		UserID:   userID,
 		Metadata: metadata,
-		TenantID: c.tenantID,
 		AgentID:  c.agentID,
 	}
 

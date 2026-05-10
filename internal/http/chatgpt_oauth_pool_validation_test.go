@@ -12,14 +12,13 @@ import (
 
 func TestValidateChatGPTOAuthProviderCandidateRejectsMemberReuseAcrossPools(t *testing.T) {
 	providerStore := newMockProviderStore()
-	tenantID := uuid.New()
-	ctx := store.WithTenantID(context.Background(), tenantID)
+
+	ctx := context.Background()
 
 	for _, provider := range []*store.LLMProviderData{
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "openai-codex",
+				Name:         "openai-codex",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      true,
 			Settings: json.RawMessage(`{
@@ -31,8 +30,7 @@ func TestValidateChatGPTOAuthProviderCandidateRejectsMemberReuseAcrossPools(t *t
 		},
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "codex-work",
+				Name:         "codex-work",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      true,
 		},
@@ -44,7 +42,6 @@ func TestValidateChatGPTOAuthProviderCandidateRejectsMemberReuseAcrossPools(t *t
 
 	candidate := &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "codex-team",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
@@ -63,12 +60,11 @@ func TestValidateChatGPTOAuthProviderCandidateRejectsMemberReuseAcrossPools(t *t
 
 func TestValidateChatGPTOAuthProviderCandidateRejectsPoolOnMember(t *testing.T) {
 	providerStore := newMockProviderStore()
-	tenantID := uuid.New()
-	ctx := store.WithTenantID(context.Background(), tenantID)
+
+	ctx := context.Background()
 
 	owner := &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "openai-codex",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
@@ -81,7 +77,6 @@ func TestValidateChatGPTOAuthProviderCandidateRejectsPoolOnMember(t *testing.T) 
 	}
 	member := &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "codex-work",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
@@ -109,12 +104,11 @@ func TestValidateChatGPTOAuthProviderCandidateRejectsPoolOnMember(t *testing.T) 
 
 func TestValidateChatGPTOAuthAgentRoutingRejectsCustomMembersWithoutProviderPool(t *testing.T) {
 	providerStore := newMockProviderStore()
-	tenantID := uuid.New()
-	ctx := store.WithTenantID(context.Background(), tenantID)
+
+	ctx := context.Background()
 
 	if err := providerStore.CreateProvider(ctx, &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "openai-codex",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
@@ -135,12 +129,11 @@ func TestValidateChatGPTOAuthAgentRoutingRejectsCustomMembersWithoutProviderPool
 
 func TestValidateChatGPTOAuthAgentRoutingAllowsStrategyOnlyOverride(t *testing.T) {
 	providerStore := newMockProviderStore()
-	tenantID := uuid.New()
-	ctx := store.WithTenantID(context.Background(), tenantID)
+
+	ctx := context.Background()
 
 	if err := providerStore.CreateProvider(ctx, &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "openai-codex",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
@@ -164,19 +157,42 @@ func TestValidateChatGPTOAuthAgentRoutingAllowsStrategyOnlyOverride(t *testing.T
 	}
 }
 
+func TestValidateChatGPTOAuthAgentRoutingAllowsPriorityOrderWithoutProviderPool(t *testing.T) {
+	providerStore := newMockProviderStore()
+
+	ctx := context.Background()
+
+	if err := providerStore.CreateProvider(ctx, &store.LLMProviderData{
+		BaseModel:    store.BaseModel{ID: uuid.New()},
+		Name:         "openai-codex",
+		ProviderType: store.ProviderChatGPTOAuth,
+		Enabled:      true,
+	}); err != nil {
+		t.Fatalf("CreateProvider() error = %v", err)
+	}
+
+	routing := &store.ChatGPTOAuthRoutingConfig{
+		OverrideMode: store.ChatGPTOAuthOverrideCustom,
+		Strategy:     store.ChatGPTOAuthStrategyPriority,
+	}
+
+	if err := validateChatGPTOAuthAgentRouting(ctx, providerStore, "openai-codex", routing); err != nil {
+		t.Fatalf("validateChatGPTOAuthAgentRouting() error = %v, want nil", err)
+	}
+}
+
 // TestValidatePoolGraphIgnoresDisabledProviders verifies that disabled providers'
 // stale pool configs do not block validation for active providers.
 func TestValidatePoolGraphIgnoresDisabledProviders(t *testing.T) {
 	providerStore := newMockProviderStore()
-	tenantID := uuid.New()
-	ctx := store.WithTenantID(context.Background(), tenantID)
+
+	ctx := context.Background()
 
 	// Disabled provider that previously owned "codex-work" in its pool.
 	for _, p := range []*store.LLMProviderData{
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "codex-old",
+				Name:         "codex-old",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      false, // disabled
 			Settings: json.RawMessage(`{
@@ -188,8 +204,7 @@ func TestValidatePoolGraphIgnoresDisabledProviders(t *testing.T) {
 		},
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "codex-work",
+				Name:         "codex-work",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      true,
 		},
@@ -202,13 +217,12 @@ func TestValidatePoolGraphIgnoresDisabledProviders(t *testing.T) {
 	// New candidate claims "codex-work" — should pass because the old owner is disabled.
 	candidate := &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "codex-new",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
 		Settings: json.RawMessage(`{
 			"codex_pool": {
-				"strategy": "primary_first",
+				"strategy": "priority_order",
 				"extra_provider_names": ["codex-work"]
 			}
 		}`),
@@ -223,14 +237,13 @@ func TestValidatePoolGraphIgnoresDisabledProviders(t *testing.T) {
 // providers still enforce the exclusive-membership rule.
 func TestValidatePoolGraphRejectsConflictWithEnabledProviders(t *testing.T) {
 	providerStore := newMockProviderStore()
-	tenantID := uuid.New()
-	ctx := store.WithTenantID(context.Background(), tenantID)
+
+	ctx := context.Background()
 
 	for _, p := range []*store.LLMProviderData{
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "codex-A",
+				Name:         "codex-A",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      true,
 			Settings: json.RawMessage(`{
@@ -242,8 +255,7 @@ func TestValidatePoolGraphRejectsConflictWithEnabledProviders(t *testing.T) {
 		},
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "codex-work",
+				Name:         "codex-work",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      true,
 		},
@@ -255,13 +267,12 @@ func TestValidatePoolGraphRejectsConflictWithEnabledProviders(t *testing.T) {
 
 	candidate := &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "codex-B",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,
 		Settings: json.RawMessage(`{
 			"codex_pool": {
-				"strategy": "primary_first",
+				"strategy": "priority_order",
 				"extra_provider_names": ["codex-work"]
 			}
 		}`),
@@ -276,14 +287,13 @@ func TestValidatePoolGraphRejectsConflictWithEnabledProviders(t *testing.T) {
 // reassigned to a new pool after the original pool owner is disabled.
 func TestValidatePoolGraphAllowsReassignAfterDisable(t *testing.T) {
 	providerStore := newMockProviderStore()
-	tenantID := uuid.New()
-	ctx := store.WithTenantID(context.Background(), tenantID)
+
+	ctx := context.Background()
 
 	for _, p := range []*store.LLMProviderData{
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "codex-A",
+				Name:         "codex-A",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      false, // previously active, now disabled
 			Settings: json.RawMessage(`{
@@ -295,8 +305,7 @@ func TestValidatePoolGraphAllowsReassignAfterDisable(t *testing.T) {
 		},
 		{
 			BaseModel:    store.BaseModel{ID: uuid.New()},
-			TenantID:     tenantID,
-			Name:         "codex-work",
+				Name:         "codex-work",
 			ProviderType: store.ProviderChatGPTOAuth,
 			Enabled:      true,
 		},
@@ -308,7 +317,6 @@ func TestValidatePoolGraphAllowsReassignAfterDisable(t *testing.T) {
 
 	candidate := &store.LLMProviderData{
 		BaseModel:    store.BaseModel{ID: uuid.New()},
-		TenantID:     tenantID,
 		Name:         "codex-B",
 		ProviderType: store.ProviderChatGPTOAuth,
 		Enabled:      true,

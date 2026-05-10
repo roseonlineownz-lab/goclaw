@@ -8,8 +8,8 @@ import (
 
 func TestSignBridgeContext_Deterministic(t *testing.T) {
 	key := "test-secret"
-	sig1 := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/workspace", "tenant-abc")
-	sig2 := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/workspace", "tenant-abc")
+	sig1 := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/workspace")
+	sig2 := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/workspace")
 	if sig1 != sig2 {
 		t.Errorf("expected deterministic output, got %q and %q", sig1, sig2)
 	}
@@ -19,8 +19,8 @@ func TestSignBridgeContext_Deterministic(t *testing.T) {
 }
 
 func TestSignBridgeContext_DifferentKey(t *testing.T) {
-	sig1 := SignBridgeContext("key-a", "agent1", "user1", "", "", "", "", "")
-	sig2 := SignBridgeContext("key-b", "agent1", "user1", "", "", "", "", "")
+	sig1 := SignBridgeContext("key-a", "agent1", "user1", "", "", "", "")
+	sig2 := SignBridgeContext("key-b", "agent1", "user1", "", "", "", "")
 	if sig1 == sig2 {
 		t.Error("different keys should produce different signatures")
 	}
@@ -28,8 +28,8 @@ func TestSignBridgeContext_DifferentKey(t *testing.T) {
 
 func TestSignBridgeContext_FieldOrder(t *testing.T) {
 	key := "test-secret"
-	sig1 := SignBridgeContext(key, "a", "b", "c", "d", "e", "f", "g")
-	sig2 := SignBridgeContext(key, "b", "a", "c", "d", "e", "f", "g")
+	sig1 := SignBridgeContext(key, "a", "b", "c", "d", "e", "f")
+	sig2 := SignBridgeContext(key, "b", "a", "c", "d", "e", "f")
 	if sig1 == sig2 {
 		t.Error("swapping field values should produce different signatures")
 	}
@@ -37,84 +37,86 @@ func TestSignBridgeContext_FieldOrder(t *testing.T) {
 
 // --- VerifyBridgeContext tests ---
 
-func TestVerifyBridgeContext_Level1_AllFields(t *testing.T) {
+func TestVerifyBridgeContext_Valid(t *testing.T) {
 	key := "gateway-token"
-	sig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "tenant-123")
+	sig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws")
 
-	ok, tenantVerified := VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "tenant-123", sig)
-	if !ok {
-		t.Error("expected ok=true for valid level 1 signature")
-	}
-	if !tenantVerified {
-		t.Error("expected tenantVerified=true for level 1 match")
-	}
-}
-
-func TestVerifyBridgeContext_Level2_OldSessionWithWorkspace(t *testing.T) {
-	key := "gateway-token"
-	// Pre-tenantID session: signed with workspace but empty tenantID.
-	// Middleware now receives X-Tenant-ID header (e.g. new code adds it).
-	// Level 1 fails (tenantID mismatch), level 2 matches (ignores tenantID).
-	sig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "")
-
-	ok, tenantVerified := VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "new-tenant-id", sig)
-	if !ok {
-		t.Error("expected ok=true for level 2 fallback")
-	}
-	if tenantVerified {
-		t.Error("expected tenantVerified=false — tenant was not in original signature")
-	}
-}
-
-func TestVerifyBridgeContext_Level3_NoWorkspaceNoTenant(t *testing.T) {
-	key := "gateway-token"
-	// Signature from the oldest format (no workspace, no tenantID)
-	sig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "", "")
-
-	ok, tenantVerified := VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "tenant-123", sig)
-	if !ok {
-		t.Error("expected ok=true for level 3 fallback")
-	}
-	if tenantVerified {
-		t.Error("expected tenantVerified=false for level 3 fallback")
+	if !VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", sig) {
+		t.Error("expected true for valid signature")
 	}
 }
 
 func TestVerifyBridgeContext_InvalidSig(t *testing.T) {
-	ok, tenantVerified := VerifyBridgeContext("key", "agent1", "user1", "", "", "", "", "", "invalid-sig")
-	if ok {
-		t.Error("expected ok=false for invalid signature")
-	}
-	if tenantVerified {
-		t.Error("expected tenantVerified=false for invalid signature")
-	}
-}
-
-func TestVerifyBridgeContext_TenantNotTrustedOnFallback(t *testing.T) {
-	key := "gateway-token"
-	// Old session signed WITHOUT tenantID
-	oldSig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "")
-
-	// Attacker replays old sig but adds a fake tenantID header
-	ok, tenantVerified := VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "fake-tenant-id", oldSig)
-	if !ok {
-		t.Error("expected ok=true (sig valid via fallback)")
-	}
-	if tenantVerified {
-		t.Error("expected tenantVerified=false — tenant header not covered by HMAC, must not be trusted")
+	if VerifyBridgeContext("key", "agent1", "user1", "", "", "", "", "invalid-sig") {
+		t.Error("expected false for invalid signature")
 	}
 }
 
 func TestVerifyBridgeContext_EmptyFields(t *testing.T) {
 	key := "test-key"
-	sig := SignBridgeContext(key, "", "", "", "", "", "", "")
+	sig := SignBridgeContext(key, "", "", "", "", "", "")
 
-	ok, tenantVerified := VerifyBridgeContext(key, "", "", "", "", "", "", "", sig)
-	if !ok {
-		t.Error("expected ok=true for empty fields with valid signature")
+	if !VerifyBridgeContext(key, "", "", "", "", "", "", sig) {
+		t.Error("expected true for empty fields with valid signature")
 	}
-	// Empty fields match at all levels; level 1 matches first → tenantVerified=true
-	if !tenantVerified {
-		t.Error("expected tenantVerified=true when all fields empty (level 1 matches)")
+}
+
+// --- Extra params (localKey, sessionKey) tests ---
+
+func TestSignBridgeContext_WithExtraParams(t *testing.T) {
+	key := "test-secret"
+	sig1 := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws")
+	sig2 := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "-100123:topic:42", "session-abc")
+
+	if sig1 == sig2 {
+		t.Error("signature with extra params should differ from signature without")
+	}
+}
+
+func TestVerifyBridgeContext_WithExtraParams(t *testing.T) {
+	key := "gateway-token"
+	localKey := "-100123:topic:42"
+	sessionKey := "session-abc"
+	sig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", localKey, sessionKey)
+
+	if !VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", sig, localKey, sessionKey) {
+		t.Error("expected true for valid signature with extra params")
+	}
+}
+
+func TestVerifyBridgeContext_FallbackWithoutExtraParams(t *testing.T) {
+	key := "gateway-token"
+	// Pre-localKey session: signed without extra params
+	sig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws")
+
+	// New code passes localKey/sessionKey but signature was created without them
+	if !VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", sig, "-100123:topic:42", "session-abc") {
+		t.Error("expected true for fallback (pre-localKey session)")
+	}
+}
+
+func TestVerifyBridgeContext_ExtraParamOrderMatters(t *testing.T) {
+	key := "gateway-token"
+	sig := SignBridgeContext(key, "agent1", "user1", "", "", "", "", "localKey", "sessionKey")
+
+	if !VerifyBridgeContext(key, "agent1", "user1", "", "", "", "", sig, "localKey", "sessionKey") {
+		t.Error("expected true for same order")
+	}
+
+	if VerifyBridgeContext(key, "agent1", "user1", "", "", "", "", sig, "sessionKey", "localKey") {
+		t.Error("expected false for swapped extra param order")
+	}
+}
+
+// FallbackOldTenantSig: sessions signed with old format including tenantID should still verify.
+func TestVerifyBridgeContext_FallbackOldTenantSig(t *testing.T) {
+	key := "gateway-token"
+	// Old-format: payload was agentID|userID|channel|chatID|peerKind|workspace|tenantID
+	// Simulate by calling old SignBridgeContext manually via extra param (tenantID as first extra)
+	oldSig := SignBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", "tenant-abc")
+
+	// New VerifyBridgeContext must accept this (backward compat fallback inserts "" as tenantID slot)
+	if !VerifyBridgeContext(key, "agent1", "user1", "telegram", "chat1", "direct", "/ws", oldSig, "tenant-abc") {
+		t.Error("expected true for backward compat with old tenantID-signed sessions (tenantID as first extra)")
 	}
 }

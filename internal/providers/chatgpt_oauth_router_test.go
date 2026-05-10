@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 )
 
 type routeEligibilityTokenSource struct {
@@ -37,16 +35,15 @@ func TestChatGPTOAuthRouterRoundRobin(t *testing.T) {
 	}))
 	defer serverB.Close()
 
-	tenantID := uuid.New()
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	providerA := NewCodexProvider("acct-a", &staticTokenSource{token: "token-a"}, serverA.URL, "gpt-5.4")
 	providerB := NewCodexProvider("acct-b", &staticTokenSource{token: "token-b"}, serverB.URL, "gpt-5.4")
 	providerA.retryConfig.Attempts = 1
 	providerB.retryConfig.Attempts = 1
-	registry.RegisterForTenant(tenantID, providerA)
-	registry.RegisterForTenant(tenantID, providerB)
+	registry.Register(providerA)
+	registry.Register(providerB)
 
-	router := NewChatGPTOAuthRouter(tenantID, registry, "acct-a", "round_robin", []string{"acct-b"})
+	router := NewChatGPTOAuthRouter(registry, "acct-a", "round_robin", []string{"acct-b"})
 
 	if _, err := router.Chat(context.Background(), ChatRequest{
 		Messages: []Message{{Role: "user", Content: "first"}},
@@ -81,16 +78,15 @@ func TestChatGPTOAuthRouterFailoverOnRetryableError(t *testing.T) {
 	}))
 	defer serverB.Close()
 
-	tenantID := uuid.New()
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	providerA := NewCodexProvider("acct-a", &staticTokenSource{token: "token-a"}, serverA.URL, "gpt-5.4")
 	providerB := NewCodexProvider("acct-b", &staticTokenSource{token: "token-b"}, serverB.URL, "gpt-5.4")
 	providerA.retryConfig.Attempts = 1
 	providerB.retryConfig.Attempts = 1
-	registry.RegisterForTenant(tenantID, providerA)
-	registry.RegisterForTenant(tenantID, providerB)
+	registry.Register(providerA)
+	registry.Register(providerB)
 
-	router := NewChatGPTOAuthRouter(tenantID, registry, "acct-a", "round_robin", []string{"acct-b"})
+	router := NewChatGPTOAuthRouter(registry, "acct-a", "round_robin", []string{"acct-b"})
 
 	if _, err := router.Chat(context.Background(), ChatRequest{
 		Messages: []Message{{Role: "user", Content: "fail over"}},
@@ -120,8 +116,7 @@ func TestChatGPTOAuthRouterSkipsBlockedProviderBeforeFirstPick(t *testing.T) {
 	}))
 	defer serverB.Close()
 
-	tenantID := uuid.New()
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	providerA := NewCodexProvider("acct-a", &routeEligibilityTokenSource{
 		token:       "token-a",
 		eligibility: RouteEligibility{Class: RouteEligibilityBlocked, Reason: "reauth"},
@@ -132,10 +127,10 @@ func TestChatGPTOAuthRouterSkipsBlockedProviderBeforeFirstPick(t *testing.T) {
 	}, serverB.URL, "gpt-5.4")
 	providerA.retryConfig.Attempts = 1
 	providerB.retryConfig.Attempts = 1
-	registry.RegisterForTenant(tenantID, providerA)
-	registry.RegisterForTenant(tenantID, providerB)
+	registry.Register(providerA)
+	registry.Register(providerB)
 
-	router := NewChatGPTOAuthRouter(tenantID, registry, "acct-a", "manual", []string{"acct-b"})
+	router := NewChatGPTOAuthRouter(registry, "acct-a", "manual", []string{"acct-b"})
 	if _, err := router.Chat(context.Background(), ChatRequest{
 		Messages: []Message{{Role: "user", Content: "route around blocked"}},
 	}); err != nil {
@@ -170,8 +165,7 @@ func TestChatGPTOAuthRouterRoundRobinPrefersHealthyBeforeUnknown(t *testing.T) {
 	}))
 	defer serverC.Close()
 
-	tenantID := uuid.New()
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	providerA := NewCodexProvider("acct-a", &routeEligibilityTokenSource{
 		token:       "token-a",
 		eligibility: RouteEligibility{Class: RouteEligibilityHealthy},
@@ -187,11 +181,11 @@ func TestChatGPTOAuthRouterRoundRobinPrefersHealthyBeforeUnknown(t *testing.T) {
 	providerA.retryConfig.Attempts = 1
 	providerB.retryConfig.Attempts = 1
 	providerC.retryConfig.Attempts = 1
-	registry.RegisterForTenant(tenantID, providerA)
-	registry.RegisterForTenant(tenantID, providerB)
-	registry.RegisterForTenant(tenantID, providerC)
+	registry.Register(providerA)
+	registry.Register(providerB)
+	registry.Register(providerC)
 
-	router := NewChatGPTOAuthRouter(tenantID, registry, "acct-a", "round_robin", []string{"acct-b", "acct-c"})
+	router := NewChatGPTOAuthRouter(registry, "acct-a", "round_robin", []string{"acct-b", "acct-c"})
 	for i := range 2 {
 		if _, err := router.Chat(context.Background(), ChatRequest{
 			Messages: []Message{{Role: "user", Content: "prefer healthy"}},
@@ -212,18 +206,17 @@ func TestChatGPTOAuthRouterRoundRobinPrefersHealthyBeforeUnknown(t *testing.T) {
 }
 
 func TestChatGPTOAuthRouterReportsWhenAllProvidersBlocked(t *testing.T) {
-	tenantID := uuid.New()
-	registry := NewRegistry(nil)
-	registry.RegisterForTenant(tenantID, NewCodexProvider("acct-a", &routeEligibilityTokenSource{
+	registry := NewRegistry()
+	registry.Register(NewCodexProvider("acct-a", &routeEligibilityTokenSource{
 		token:       "token-a",
 		eligibility: RouteEligibility{Class: RouteEligibilityBlocked, Reason: "reauth"},
 	}, "http://127.0.0.1", "gpt-5.4"))
-	registry.RegisterForTenant(tenantID, NewCodexProvider("acct-b", &routeEligibilityTokenSource{
+	registry.Register(NewCodexProvider("acct-b", &routeEligibilityTokenSource{
 		token:       "token-b",
 		eligibility: RouteEligibility{Class: RouteEligibilityBlocked, Reason: "exhausted"},
 	}, "http://127.0.0.1", "gpt-5.4"))
 
-	router := NewChatGPTOAuthRouter(tenantID, registry, "acct-a", "round_robin", []string{"acct-b"})
+	router := NewChatGPTOAuthRouter(registry, "acct-a", "round_robin", []string{"acct-b"})
 	_, err := router.Chat(context.Background(), ChatRequest{
 		Messages: []Message{{Role: "user", Content: "all blocked"}},
 	})
@@ -249,8 +242,7 @@ func TestChatGPTOAuthRouterPriorityOrderKeepsPrimaryAheadOfHealthyFallbacks(t *t
 	}))
 	defer serverB.Close()
 
-	tenantID := uuid.New()
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	providerA := NewCodexProvider("acct-a", &routeEligibilityTokenSource{
 		token:       "token-a",
 		eligibility: RouteEligibility{Class: RouteEligibilityUnknown, Reason: "retry_later"},
@@ -261,10 +253,10 @@ func TestChatGPTOAuthRouterPriorityOrderKeepsPrimaryAheadOfHealthyFallbacks(t *t
 	}, serverB.URL, "gpt-5.4")
 	providerA.retryConfig.Attempts = 1
 	providerB.retryConfig.Attempts = 1
-	registry.RegisterForTenant(tenantID, providerA)
-	registry.RegisterForTenant(tenantID, providerB)
+	registry.Register(providerA)
+	registry.Register(providerB)
 
-	router := NewChatGPTOAuthRouter(tenantID, registry, "acct-a", "priority_order", []string{"acct-b"})
+	router := NewChatGPTOAuthRouter(registry, "acct-a", "priority_order", []string{"acct-b"})
 	if _, err := router.Chat(context.Background(), ChatRequest{
 		Messages: []Message{{Role: "user", Content: "priority first"}},
 	}); err != nil {

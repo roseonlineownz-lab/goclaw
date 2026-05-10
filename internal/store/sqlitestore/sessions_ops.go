@@ -5,7 +5,9 @@ package sqlitestore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +26,21 @@ func (s *SQLiteSessionStore) Save(ctx context.Context, key string) error {
 	msgs := make([]providers.Message, len(data.Messages))
 	copy(msgs, data.Messages)
 	snapshot.Messages = msgs
+	// Deep-copy Metadata under RLock so later mutation does not race with
+	// concurrent readers holding data.Metadata via GetSessionMetadata.
+	metaCopy := make(map[string]string, len(data.Metadata)+2)
+	for k, v := range data.Metadata {
+		metaCopy[k] = v
+	}
+	snapshot.Metadata = metaCopy
 	s.mu.RUnlock()
+
+	// Persist adaptive-throttle numbers into metadata JSON so list queries can
+	// read accurate token counts without a dedicated column.
+	if snapshot.LastPromptTokens > 0 {
+		snapshot.Metadata["last_prompt_tokens"] = strconv.Itoa(snapshot.LastPromptTokens)
+		snapshot.Metadata["last_message_count"] = strconv.Itoa(snapshot.LastMessageCount)
+	}
 
 	msgsJSON, _ := json.Marshal(snapshot.Messages)
 	metaJSON := []byte("{}")
@@ -33,21 +49,21 @@ func (s *SQLiteSessionStore) Save(ctx context.Context, key string) error {
 	}
 
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET
+		`UPDATE agent_sessions SET
 			messages = ?, summary = ?, model = ?, provider = ?, channel = ?,
 			input_tokens = ?, output_tokens = ?, compaction_count = ?,
 			memory_flush_compaction_count = ?, memory_flush_at = ?,
 			label = ?, spawned_by = ?, spawn_depth = ?,
 			agent_id = ?, user_id = ?, metadata = ?, updated_at = ?,
-			team_id = ?
-		 WHERE session_key = ? AND tenant_id = ?`,
+			team_id = ?, project_id = ?
+		 WHERE session_key = ?`,
 		msgsJSON, nilStr(snapshot.Summary), nilStr(snapshot.Model), nilStr(snapshot.Provider), nilStr(snapshot.Channel),
 		snapshot.InputTokens, snapshot.OutputTokens, snapshot.CompactionCount,
 		snapshot.MemoryFlushCompactionCount, snapshot.MemoryFlushAt,
 		nilStr(snapshot.Label), nilStr(snapshot.SpawnedBy), snapshot.SpawnDepth,
 		nilSessionUUID(snapshot.AgentUUID), nilStr(snapshot.UserID), metaJSON, snapshot.Updated,
-		snapshot.TeamID,
-		key, tenantIDForInsert(ctx),
+		snapshot.TeamID, snapshot.ProjectID,
+		key,
 	)
 	if err != nil {
 		return err
@@ -55,12 +71,12 @@ func (s *SQLiteSessionStore) Save(ctx context.Context, key string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		// Session not yet in DB (e.g. cron/heartbeat sessions) — insert it.
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO sessions (id, session_key, messages, summary, model, provider, channel,
+			`INSERT INTO agent_sessions (id, session_key, messages, summary, model, provider, channel,
 				input_tokens, output_tokens, compaction_count,
 				memory_flush_compaction_count, memory_flush_at,
-				label, spawned_by, spawn_depth, agent_id, user_id, metadata, updated_at, team_id, tenant_id, created_at)
+				label, spawned_by, spawn_depth, agent_id, user_id, metadata, updated_at, team_id, project_id, created_at)
 			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(session_key, tenant_id) DO UPDATE SET
+			 ON CONFLICT(session_key) DO UPDATE SET
 				messages = excluded.messages, summary = excluded.summary, model = excluded.model,
 				provider = excluded.provider, channel = excluded.channel,
 				input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
@@ -69,14 +85,14 @@ func (s *SQLiteSessionStore) Save(ctx context.Context, key string) error {
 				memory_flush_at = excluded.memory_flush_at,
 				label = excluded.label, spawned_by = excluded.spawned_by, spawn_depth = excluded.spawn_depth,
 				agent_id = excluded.agent_id, user_id = excluded.user_id, metadata = excluded.metadata,
-				updated_at = excluded.updated_at, team_id = excluded.team_id`,
+				updated_at = excluded.updated_at, team_id = excluded.team_id, project_id = excluded.project_id`,
 			uuid.Must(uuid.NewV7()), key, msgsJSON,
 			nilStr(snapshot.Summary), nilStr(snapshot.Model), nilStr(snapshot.Provider), nilStr(snapshot.Channel),
 			snapshot.InputTokens, snapshot.OutputTokens, snapshot.CompactionCount,
 			snapshot.MemoryFlushCompactionCount, snapshot.MemoryFlushAt,
 			nilStr(snapshot.Label), nilStr(snapshot.SpawnedBy), snapshot.SpawnDepth,
 			nilSessionUUID(snapshot.AgentUUID), nilStr(snapshot.UserID), metaJSON, snapshot.Updated,
-			snapshot.TeamID, tenantIDForInsert(ctx), snapshot.Updated,
+			snapshot.TeamID, snapshot.ProjectID, snapshot.Updated,
 		)
 		return err
 	}
@@ -117,11 +133,10 @@ func (s *SQLiteSessionStore) Reset(ctx context.Context, key string) {
 	s.mu.Unlock()
 
 	// Session not in cache — clear directly in DB.
-	tid := tenantIDForInsert(ctx)
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET messages = '[]', summary = '', updated_at = ?
-		 WHERE session_key = ? AND tenant_id = ?`,
-		time.Now(), key, tid,
+		`UPDATE agent_sessions SET messages = '[]', summary = '', updated_at = ?
+		 WHERE session_key = ?`,
+		time.Now(), key,
 	); err != nil {
 		slog.Warn("sessions.reset_db_fallback_failed", "key", key, "error", err)
 	}
@@ -136,26 +151,43 @@ func (s *SQLiteSessionStore) Delete(ctx context.Context, key string) error {
 		s.OnDelete(key)
 	}
 
-	tid := tenantIDForInsert(ctx)
-	_, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE session_key = ? AND tenant_id = ?", key, tid)
+	_, err := s.db.ExecContext(ctx, "DELETE FROM agent_sessions WHERE session_key = ?", key)
 	return err
+}
+
+// UpdateProject sets the project_id FK on an existing session row.
+// Pass nil to clear the binding. Updates the in-memory cache when present.
+// Permission verification is the caller's responsibility.
+func (s *SQLiteSessionStore) UpdateProject(ctx context.Context, sessionKey string, projectID *uuid.UUID) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_sessions SET project_id = ? WHERE session_key = ?`,
+		projectID, sessionKey,
+	)
+	if err != nil {
+		return fmt.Errorf("session update project: %w", err)
+	}
+
+	// Sync the in-memory cache entry if present.
+	s.mu.Lock()
+	if data, ok := s.cache[sessionCacheKey(ctx, sessionKey)]; ok {
+		data.ProjectID = projectID
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *SQLiteSessionStore) LastUsedChannel(ctx context.Context, agentID string) (string, string) {
 	prefix := "agent:" + agentID + ":%"
-	tid := tenantIDForInsert(ctx)
 	var sessionKey string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT session_key FROM sessions
+		`SELECT session_key FROM agent_sessions
 		 WHERE session_key LIKE ?
 		   AND session_key NOT LIKE ?
 		   AND session_key NOT LIKE ?
-		   AND tenant_id = ?
 		 ORDER BY updated_at DESC LIMIT 1`,
 		prefix,
 		"agent:"+agentID+":cron:%",
 		"agent:"+agentID+":subagent:%",
-		tid,
 	).Scan(&sessionKey)
 	if err != nil {
 		return "", ""

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
+	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway"
@@ -18,6 +19,7 @@ func registerAllMethods(server *gateway.Server, agents *agent.Router, sessStore 
 
 	// Phase 1: Core methods
 	chatMethods := methods.NewChatMethods(agents, sessStore, cfg, server.RateLimiter(), msgBus)
+	chatMethods.SetAudioManager(audioMgr) // Wire TTS auto-apply for WS responses
 	chatMethods.Register(router)
 	methods.NewAgentsMethods(agents, cfg, cfgPath, workspace, agentStore, contextFileInterceptor, msgBus).Register(router)
 	sessionsMethods := methods.NewSessionsMethods(sessStore, projectGrantStore, msgBus, cfg)
@@ -29,29 +31,31 @@ func registerAllMethods(server *gateway.Server, agents *agent.Router, sessStore 
 	configMethods := methods.NewConfigMethods(cfg, cfgPath, configSecretsStore, msgBus)
 	if sysConfigStore != nil {
 		configMethods.SetSystemConfigSync(func(ctx context.Context, c *config.Config) {
-			// Only sync config for the current tenant (from request context)
 			seedConfigForContext(ctx, sysConfigStore, c, false) // onlyMissing=false → upsert
-			// Trigger readback via bus event with fresh context (request ctx may be canceled)
 			if msgBus != nil {
-				freshCtx := store.WithTenantID(context.Background(), store.TenantIDFromContext(ctx))
-				msgBus.Broadcast(bus.Event{Name: bus.TopicSystemConfigChanged, Payload: freshCtx})
+				msgBus.Broadcast(bus.Event{Name: bus.TopicSystemConfigChanged, Payload: context.Background()})
 			}
 		})
 	}
 	configMethods.Register(router)
 
 	// Phase 2: Skills (uses SkillStore interface — PG or File)
-	methods.NewSkillsMethods(skillStore, skillTenantCfgStore).Register(router)
+	methods.NewSkillsMethods(skillStore).Register(router)
 
 	// Phase 2: Cron (store created externally, shared with gateway)
 	methods.NewCronMethods(cronStore, msgBus, cfg).Register(router)
 
 	// Phase 2: Heartbeat
 	heartbeatMethods := methods.NewHeartbeatMethods(heartbeatStore, msgBus)
+	// Wire cache-aware resolver so heartbeat can accept agent_key or UUID
+	// without a DB roundtrip on the hot path when the agent is router-cached.
+	heartbeatMethods.SetAgentRouter(agents)
 	heartbeatMethods.Register(router)
 
 	// Phase 2: Config permissions
-	methods.NewConfigPermissionsMethods(configPermStore, agentStore).Register(router)
+	cfgPerms := methods.NewConfigPermissionsMethods(configPermStore, agentStore)
+	cfgPerms.SetAgentRouter(agents)
+	cfgPerms.Register(router)
 
 	// Phase 2: Pairing (store created externally, shared with channel manager).
 	// OnApprove callback is set later by the caller after channel manager is created.
@@ -86,5 +90,5 @@ func registerAllMethods(server *gateway.Server, agents *agent.Router, sessStore 
 		"phase2", []string{"skills", "cron", "heartbeat", "pairing", "usage", "exec_approval", "send"},
 	)
 
-	return pairingMethods, heartbeatMethods, chatMethods
+	return pairingMethods, heartbeatMethods, chatMethods, cfgPerms
 }

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -52,6 +54,10 @@ func (m *mockPairingStore) ListPending(ctx context.Context) []store.PairingReque
 }
 
 func (m *mockPairingStore) ListPaired(ctx context.Context) []store.PairedDeviceData {
+	return nil
+}
+
+func (m *mockPairingStore) BindUser(ctx context.Context, senderID, channel string, userID uuid.UUID) error {
 	return nil
 }
 

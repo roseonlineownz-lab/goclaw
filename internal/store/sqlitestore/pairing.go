@@ -40,19 +40,18 @@ func (s *SQLitePairingStore) SetOnRequest(cb func(code, senderID, channel, chatI
 }
 
 func (s *SQLitePairingStore) RequestPairing(ctx context.Context, senderID, channel, chatID, accountID string, metadata map[string]string) (string, error) {
-	tid := tenantIDForInsert(ctx)
 	now := time.Now().Round(0) // Strip monotonic clock for correct SQLite string comparison
 
 	s.db.ExecContext(ctx, "DELETE FROM pairing_requests WHERE expires_at < ?", now)
 
 	var count int64
-	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pairing_requests WHERE account_id = ? AND tenant_id = ?", accountID, tid).Scan(&count)
+	s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pairing_requests WHERE account_id = ?", accountID).Scan(&count)
 	if count >= maxPendingPerAccount {
 		return "", fmt.Errorf("max pending pairing requests (%d) exceeded", maxPendingPerAccount)
 	}
 
 	var existingCode string
-	err := s.db.QueryRowContext(ctx, "SELECT code FROM pairing_requests WHERE sender_id = ? AND channel = ? AND tenant_id = ?", senderID, channel, tid).Scan(&existingCode)
+	err := s.db.QueryRowContext(ctx, "SELECT code FROM pairing_requests WHERE sender_id = ? AND channel = ?", senderID, channel).Scan(&existingCode)
 	if err == nil {
 		return existingCode, nil
 	}
@@ -64,9 +63,9 @@ func (s *SQLitePairingStore) RequestPairing(ctx context.Context, senderID, chann
 
 	code := generatePairingCode()
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO pairing_requests (id, code, sender_id, channel, chat_id, account_id, expires_at, created_at, metadata, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		uuid.Must(uuid.NewV7()), code, senderID, channel, chatID, accountID, now.Add(codeTTL).Round(0), now, metaJSON, tid,
+		`INSERT INTO pairing_requests (id, code, sender_id, channel, chat_id, account_id, expires_at, created_at, metadata)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		uuid.Must(uuid.NewV7()), code, senderID, channel, chatID, accountID, now.Add(codeTTL).Round(0), now, metaJSON,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create pairing request: %w", err)
@@ -84,11 +83,10 @@ func (s *SQLitePairingStore) ApprovePairing(ctx context.Context, code, approvedB
 	var reqID uuid.UUID
 	var senderID, channel, chatID string
 	var metaJSON []byte
-	var reqTenantID uuid.UUID
 
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, sender_id, channel, chat_id, COALESCE(metadata, '{}'), tenant_id FROM pairing_requests WHERE code = ? AND expires_at > ?", code, now,
-	).Scan(&reqID, &senderID, &channel, &chatID, &metaJSON, &reqTenantID)
+		"SELECT id, sender_id, channel, chat_id, COALESCE(metadata, '{}') FROM pairing_requests WHERE code = ? AND expires_at > ?", code, now,
+	).Scan(&reqID, &senderID, &channel, &chatID, &metaJSON)
 	if err != nil {
 		return nil, fmt.Errorf("pairing code %s not found or expired", code)
 	}
@@ -97,9 +95,9 @@ func (s *SQLitePairingStore) ApprovePairing(ctx context.Context, code, approvedB
 
 	expiresAt := now.Add(pairedDeviceTTL)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO paired_devices (id, sender_id, channel, chat_id, paired_by, paired_at, metadata, expires_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		uuid.Must(uuid.NewV7()), senderID, channel, chatID, approvedBy, now, metaJSON, expiresAt, reqTenantID,
+		`INSERT INTO paired_devices (id, sender_id, channel, chat_id, paired_by, paired_at, metadata, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		uuid.Must(uuid.NewV7()), senderID, channel, chatID, approvedBy, now, metaJSON, expiresAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create paired device: %w", err)
@@ -133,8 +131,7 @@ func (s *SQLitePairingStore) DenyPairing(ctx context.Context, code string) error
 }
 
 func (s *SQLitePairingStore) RevokePairing(ctx context.Context, senderID, channel string) error {
-	tid := tenantIDForInsert(ctx)
-	result, err := s.db.ExecContext(ctx, "DELETE FROM paired_devices WHERE sender_id = ? AND channel = ? AND tenant_id = ?", senderID, channel, tid)
+	result, err := s.db.ExecContext(ctx, "DELETE FROM paired_devices WHERE sender_id = ? AND channel = ?", senderID, channel)
 	if err != nil {
 		return err
 	}
@@ -145,12 +142,43 @@ func (s *SQLitePairingStore) RevokePairing(ctx context.Context, senderID, channe
 	return nil
 }
 
+// BindUser stamps user_id on an existing paired_devices row. Rejects if the
+// device is already bound to a different user (ErrPairingBoundToDifferentUser).
+// See PG impl for v4 binding semantics — channel manager calls this on first
+// authenticated message resolution.
+func (s *SQLitePairingStore) BindUser(ctx context.Context, senderID, channel string, userID uuid.UUID) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE paired_devices SET user_id = ?
+		   WHERE sender_id = ? AND channel = ?
+		     AND (user_id IS NULL OR user_id = ?)`,
+		userID, senderID, channel, userID,
+	)
+	if err != nil {
+		return err
+	}
+	rows, _ := res.RowsAffected()
+	if rows > 0 {
+		return nil
+	}
+	var existing sql.NullString
+	err = s.db.QueryRowContext(ctx,
+		`SELECT user_id FROM paired_devices WHERE sender_id = ? AND channel = ?`,
+		senderID, channel,
+	).Scan(&existing)
+	if err != nil {
+		return nil // missing row — silent no-op
+	}
+	if existing.Valid && existing.String != "" && existing.String != userID.String() {
+		return store.ErrPairingBoundToDifferentUser
+	}
+	return nil
+}
+
 func (s *SQLitePairingStore) IsPaired(ctx context.Context, senderID, channel string) (bool, error) {
-	tid := tenantIDForInsert(ctx)
 	var count int64
 	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM paired_devices WHERE sender_id = ? AND channel = ? AND tenant_id = ? AND (expires_at IS NULL OR expires_at > ?)",
-		senderID, channel, tid, time.Now().Round(0),
+		"SELECT COUNT(*) FROM paired_devices WHERE sender_id = ? AND channel = ? AND (expires_at IS NULL OR expires_at > ?)",
+		senderID, channel, time.Now().Round(0),
 	).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("pairing check query: %w", err)
@@ -159,14 +187,13 @@ func (s *SQLitePairingStore) IsPaired(ctx context.Context, senderID, channel str
 }
 
 func (s *SQLitePairingStore) ListPending(ctx context.Context) []store.PairingRequestData {
-	tid := tenantIDForInsert(ctx)
 	now := time.Now().Round(0) // Strip monotonic clock for correct SQLite string comparison
 
 	s.db.ExecContext(ctx, "DELETE FROM pairing_requests WHERE expires_at < ?", now)
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT code, sender_id, channel, chat_id, account_id, created_at, expires_at, COALESCE(metadata, '{}')
-		 FROM pairing_requests WHERE tenant_id = ? ORDER BY created_at DESC`, tid)
+		 FROM pairing_requests ORDER BY created_at DESC`)
 	if err != nil {
 		return nil
 	}
@@ -198,14 +225,13 @@ func (s *SQLitePairingStore) ListPending(ctx context.Context) []store.PairingReq
 }
 
 func (s *SQLitePairingStore) ListPaired(ctx context.Context) []store.PairedDeviceData {
-	tid := tenantIDForInsert(ctx)
 	now := time.Now().Round(0)
 
 	s.db.ExecContext(ctx, "DELETE FROM paired_devices WHERE expires_at IS NOT NULL AND expires_at < ?", now)
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT sender_id, channel, chat_id, paired_by, paired_at, COALESCE(metadata, '{}')
-		 FROM paired_devices WHERE tenant_id = ? ORDER BY paired_at DESC`, tid)
+		 FROM paired_devices ORDER BY paired_at DESC`)
 	if err != nil {
 		return nil
 	}
@@ -236,8 +262,6 @@ func (s *SQLitePairingStore) ListPaired(ctx context.Context) []store.PairedDevic
 }
 
 func (s *SQLitePairingStore) MigrateGroupChatID(ctx context.Context, channel, oldChatID, newChatID string) error {
-	tid := tenantIDForInsert(ctx)
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migrate tx: %w", err)
@@ -250,9 +274,8 @@ func (s *SQLitePairingStore) MigrateGroupChatID(ctx context.Context, channel, ol
 		 SET sender_id = REPLACE(sender_id, ?, ?),
 		     chat_id = REPLACE(chat_id, ?, ?)
 		 WHERE sender_id LIKE '%' || ? || '%'
-		   AND channel = ?
-		   AND tenant_id = ?`,
-		oldChatID, newChatID, oldChatID, newChatID, oldChatID, channel, tid,
+		   AND channel = ?`,
+		oldChatID, newChatID, oldChatID, newChatID, oldChatID, channel,
 	); err != nil {
 		return fmt.Errorf("migrate paired_devices: %w", err)
 	}
@@ -262,9 +285,8 @@ func (s *SQLitePairingStore) MigrateGroupChatID(ctx context.Context, channel, ol
 		`UPDATE sessions
 		 SET session_key = REPLACE(session_key, ':' || ?, ':' || ?),
 		     user_id = REPLACE(user_id, ':' || ?, ':' || ?)
-		 WHERE session_key LIKE '%:telegram:%:' || ? || '%'
-		   AND tenant_id = ?`,
-		oldChatID, newChatID, oldChatID, newChatID, oldChatID, tid,
+		 WHERE session_key LIKE '%:telegram:%:' || ? || '%'`,
+		oldChatID, newChatID, oldChatID, newChatID, oldChatID,
 	); err != nil {
 		return fmt.Errorf("migrate sessions: %w", err)
 	}
@@ -274,9 +296,8 @@ func (s *SQLitePairingStore) MigrateGroupChatID(ctx context.Context, channel, ol
 		`UPDATE channel_contacts
 		 SET sender_id = REPLACE(sender_id, ?, ?)
 		 WHERE sender_id LIKE '%' || ? || '%'
-		   AND channel_type = 'telegram'
-		   AND tenant_id = ?`,
-		oldChatID, newChatID, oldChatID, tid,
+		   AND channel_type = 'telegram'`,
+		oldChatID, newChatID, oldChatID,
 	); err != nil {
 		return fmt.Errorf("migrate channel_contacts: %w", err)
 	}
@@ -286,9 +307,8 @@ func (s *SQLitePairingStore) MigrateGroupChatID(ctx context.Context, channel, ol
 		`UPDATE channel_pending_messages
 		 SET history_key = REPLACE(history_key, ?, ?)
 		 WHERE history_key LIKE '%' || ? || '%'
-		   AND channel_name = ?
-		   AND tenant_id = ?`,
-		oldChatID, newChatID, oldChatID, channel, tid,
+		   AND channel_name = ?`,
+		oldChatID, newChatID, oldChatID, channel,
 	); err != nil {
 		return fmt.Errorf("migrate channel_pending_messages: %w", err)
 	}

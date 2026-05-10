@@ -116,6 +116,9 @@ func (m *mockSessionStore) SetHistory(context.Context, string, []providers.Messa
 func (m *mockSessionStore) Reset(context.Context, string)                           {}
 func (m *mockSessionStore) Delete(context.Context, string) error                    { return nil }
 func (m *mockSessionStore) Save(context.Context, string) error                      { return nil }
+func (m *mockSessionStore) UpdateProject(_ context.Context, _ string, _ *uuid.UUID) error {
+	return nil
+}
 
 func (m *mockSessionStore) UpdateMetadata(context.Context, string, string, string, string) {}
 func (m *mockSessionStore) AccumulateTokens(context.Context, string, int64, int64)         {}

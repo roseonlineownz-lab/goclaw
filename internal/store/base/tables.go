@@ -17,7 +17,11 @@ var TablesWithUpdatedAt = map[string]bool{
 	"user_agent_overrides": true, "config_secrets": true,
 	"memory_documents": true, "memory_chunks": true, "embedding_cache": true,
 	"vault_documents":     true,
-	"secure_cli_binaries": true, "tenants": true,
+	"secure_cli_binaries": true,
+	"hooks":          true,
+	"users":          true,
+	"user_hook_budget": true,
+	"projects":       true,
 }
 
 // TableHasUpdatedAt returns true if the table has an updated_at column.

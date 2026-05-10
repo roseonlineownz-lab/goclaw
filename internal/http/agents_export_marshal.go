@@ -11,6 +11,62 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
+func canonicalizeChatGPTOAuthRoutingForResponse(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	agent := &store.AgentData{ChatGPTOAuthRouting: raw}
+	routing := store.PublicChatGPTOAuthRouting(agent.ParseChatGPTOAuthRouting())
+	if routing == nil {
+		return nil
+	}
+	out, err := json.Marshal(routing)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func canonicalizeProviderSettingsForResponse(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return raw
+	}
+	providerSettings := store.ParseChatGPTOAuthProviderSettings(raw)
+	if providerSettings == nil || providerSettings.CodexPool == nil {
+		delete(settings, "codex_pool")
+	} else {
+		routing := store.PublicChatGPTOAuthRouting(providerSettings.CodexPool)
+		settings["codex_pool"] = map[string]any{
+			"strategy":             routing.Strategy,
+			"extra_provider_names": routing.ExtraProviderNames,
+		}
+	}
+	if len(settings) == 0 {
+		return nil
+	}
+	out, err := json.Marshal(settings)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func canonicalizeAgentForResponse(ag *store.AgentData) store.AgentData {
+	clone := *ag
+	clone.ChatGPTOAuthRouting = canonicalizeChatGPTOAuthRoutingForResponse(ag.ChatGPTOAuthRouting)
+	return clone
+}
+
+func canonicalizeProviderForResponse(p *store.LLMProviderData) store.LLMProviderData {
+	clone := *p
+	clone.Settings = canonicalizeProviderSettingsForResponse(p.Settings)
+	return clone
+}
+
 // addToTar adds a single file to the tar archive with a standard header.
 func addToTar(tw *tar.Writer, name string, data []byte) error {
 	hdr := &tar.Header{
@@ -38,7 +94,7 @@ func marshalJSONL[T any](items []T) ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
-// marshalAgentConfig serializes an agent with sensitive fields (tenant_id, owner_id) stripped.
+// marshalAgentConfig serializes an agent with sensitive fields (owner_id, api keys) stripped.
 func marshalAgentConfig(ag *store.AgentData) ([]byte, error) {
 	type exportableAgent struct {
 		AgentKey          string          `json:"agent_key"`
@@ -48,7 +104,6 @@ func marshalAgentConfig(ag *store.AgentData) ([]byte, error) {
 		Model             string          `json:"model"`
 		ContextWindow     int             `json:"context_window"`
 		MaxToolIterations int             `json:"max_tool_iterations"`
-		AgentType         string          `json:"agent_type"`
 		Status            string          `json:"status"`
 		ToolsConfig       json.RawMessage `json:"tools_config,omitempty"`
 		SandboxConfig     json.RawMessage `json:"sandbox_config,omitempty"`
@@ -66,7 +121,8 @@ func marshalAgentConfig(ag *store.AgentData) ([]byte, error) {
 		SkillEvolve         bool            `json:"skill_evolve,omitempty"`
 		SkillNudgeInterval  int             `json:"skill_nudge_interval,omitempty"`
 		ReasoningConfig     json.RawMessage `json:"reasoning_config,omitempty"`
-		WorkspaceSharing    json.RawMessage `json:"workspace_sharing,omitempty"`
+		ShareWorkspace      bool            `json:"share_workspace,omitempty"`
+		ShareMemory         bool            `json:"share_memory,omitempty"`
 		ChatGPTOAuthRouting json.RawMessage `json:"chatgpt_oauth_routing,omitempty"`
 		ShellDenyGroups     json.RawMessage `json:"shell_deny_groups,omitempty"`
 		KGDedupConfig       json.RawMessage `json:"kg_dedup_config,omitempty"`
@@ -79,7 +135,6 @@ func marshalAgentConfig(ag *store.AgentData) ([]byte, error) {
 		Model:               ag.Model,
 		ContextWindow:       ag.ContextWindow,
 		MaxToolIterations:   ag.MaxToolIterations,
-		AgentType:           ag.AgentType,
 		Status:              ag.Status,
 		ToolsConfig:         ag.ToolsConfig,
 		SandboxConfig:       ag.SandboxConfig,
@@ -96,8 +151,9 @@ func marshalAgentConfig(ag *store.AgentData) ([]byte, error) {
 		SkillEvolve:         ag.SkillEvolve,
 		SkillNudgeInterval:  ag.SkillNudgeInterval,
 		ReasoningConfig:     ag.ReasoningConfig,
-		WorkspaceSharing:    ag.WorkspaceSharing,
-		ChatGPTOAuthRouting: ag.ChatGPTOAuthRouting,
+		ShareWorkspace:      ag.ShareWorkspace,
+		ShareMemory:         ag.ShareMemory,
+		ChatGPTOAuthRouting: canonicalizeChatGPTOAuthRoutingForResponse(ag.ChatGPTOAuthRouting),
 		ShellDenyGroups:     ag.ShellDenyGroups,
 		KGDedupConfig:       ag.KGDedupConfig,
 	}, "", "  ")

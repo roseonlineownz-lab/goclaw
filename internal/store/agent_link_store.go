@@ -32,6 +32,7 @@ type AgentLinkData struct {
 	Settings      json.RawMessage `json:"settings,omitempty" db:"settings"`
 	Status        string          `json:"status" db:"status"` // "active", "disabled"
 	CreatedBy     string          `json:"created_by" db:"created_by"`
+	Metadata      json.RawMessage `json:"metadata,omitempty" db:"metadata"`
 
 	// Joined fields (populated by queries that JOIN agents table)
 	SourceAgentKey     string `json:"source_agent_key,omitempty" db:"source_agent_key"`

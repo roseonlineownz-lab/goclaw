@@ -244,7 +244,10 @@ func (m *mockSessionStore) TruncateHistory(context.Context, string, int) {}
 func (m *mockSessionStore) SetHistory(context.Context, string, []providers.Message) {}
 func (m *mockSessionStore) Reset(context.Context, string) {}
 func (m *mockSessionStore) Delete(context.Context, string) error { return nil }
-func (m *mockSessionStore) Save(context.Context, string) error { return nil }
+func (m *mockSessionStore) Save(context.Context, string) error   { return nil }
+func (m *mockSessionStore) UpdateProject(_ context.Context, _ string, _ *uuid.UUID) error {
+	return nil
+}
 
 // mockDomainEventBus implements eventbus.DomainEventBus for testing.
 type mockDomainEventBus struct {
@@ -305,17 +308,15 @@ func TestEpisodicWorkerHandle_WithSummary(t *testing.T) {
 
 	worker := &episodicWorker{
 		store:    mockStore,
-		provider: mockProvider,
-		model:    "test-model",
+		registry: testRegistry(mockProvider),
 		eventBus: mockEventBus,
 	}
 
 	ctx := context.Background()
 	event := eventbus.DomainEvent{
 		Type:     eventbus.EventSessionCompleted,
-		TenantID: uuid.New().String(),
 		AgentID:  uuid.New().String(),
-		UserID:   "test-user",
+		UserID:   uuid.New().String(),
 		Payload: &eventbus.SessionCompletedPayload{
 			SessionKey:     "session-123",
 			CompactionCount: 1,
@@ -368,9 +369,8 @@ func TestEpisodicWorkerHandle_DuplicateSourceID(t *testing.T) {
 	ctx := context.Background()
 	event := eventbus.DomainEvent{
 		Type:     eventbus.EventSessionCompleted,
-		TenantID: uuid.New().String(),
 		AgentID:  uuid.New().String(),
-		UserID:   "test-user",
+		UserID:   uuid.New().String(),
 		Payload: &eventbus.SessionCompletedPayload{
 			SessionKey:      "session-123",
 			CompactionCount: 1,
@@ -400,7 +400,6 @@ func TestEpisodicWorkerHandle_NonUUIDAgentID(t *testing.T) {
 	ctx := context.Background()
 	event := eventbus.DomainEvent{
 		Type:     eventbus.EventSessionCompleted,
-		TenantID: uuid.New().String(),
 		AgentID:  "goctech-leader", // agent key, not a UUID
 		UserID:   "test-user",
 		Payload: &eventbus.SessionCompletedPayload{
@@ -422,17 +421,19 @@ func TestEpisodicWorkerHandle_NonUUIDAgentID(t *testing.T) {
 	}
 }
 
-// TestEpisodicWorkerHandle_NonUUIDTenantID mirrors the agent_id guard for tenant_id.
-func TestEpisodicWorkerHandle_NonUUIDTenantID(t *testing.T) {
+// TestEpisodicWorkerHandle_NonUUIDUserID mirrors the agent_id guard for user_id.
+// v4 schema treats user_id as UUID; non-UUID strings reaching the
+// store would surface as confusing PG type errors instead of a clear handler
+// error. The worker rejects bad UserID at entry — store is never touched.
+func TestEpisodicWorkerHandle_NonUUIDUserID(t *testing.T) {
 	mockStore := &mockEpisodicStore{}
 	worker := &episodicWorker{store: mockStore}
 
 	ctx := context.Background()
 	event := eventbus.DomainEvent{
 		Type:     eventbus.EventSessionCompleted,
-		TenantID: "not-a-uuid",
 		AgentID:  uuid.New().String(),
-		UserID:   "test-user",
+		UserID:   "alice@example.com", // email, not UUID
 		Payload: &eventbus.SessionCompletedPayload{
 			SessionKey:      "session-123",
 			CompactionCount: 0,
@@ -442,12 +443,16 @@ func TestEpisodicWorkerHandle_NonUUIDTenantID(t *testing.T) {
 
 	err := worker.Handle(ctx, event)
 	if err == nil {
-		t.Fatal("Expected error for non-UUID tenant_id, got nil")
+		t.Fatal("Expected error for non-UUID user_id, got nil")
 	}
-	if !strings.Contains(err.Error(), "invalid tenant_id") {
-		t.Errorf("Expected 'invalid tenant_id' error, got: %v", err)
+	if !strings.Contains(err.Error(), "invalid user_id") {
+		t.Errorf("Expected 'invalid user_id' error, got: %v", err)
+	}
+	if len(mockStore.created) != 0 {
+		t.Errorf("Expected no episodic created on bad user_id, got %d", len(mockStore.created))
 	}
 }
+
 
 // Test semantic worker
 
@@ -475,7 +480,6 @@ func TestSemanticWorkerHandle_WithValidExtraction(t *testing.T) {
 	ctx := context.Background()
 	event := eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
-		TenantID: uuid.New().String(),
 		AgentID:  uuid.New().String(),
 		UserID:   "test-user",
 		Payload: &eventbus.EpisodicCreatedPayload{
@@ -699,8 +703,7 @@ func TestDreamingWorkerHandle_MeetsThreshold(t *testing.T) {
 	worker := &dreamingWorker{
 		episodicStore: mockEpisodic,
 		memoryStore:   mockMemory,
-		provider:      mockProvider,
-		model:         "test-model",
+		registry:      testRegistry(mockProvider),
 		threshold:     5,
 		debounce:      1 * time.Second,
 	}
@@ -708,7 +711,6 @@ func TestDreamingWorkerHandle_MeetsThreshold(t *testing.T) {
 	ctx := context.Background()
 	event := eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
-		TenantID: uuid.New().String(),
 		AgentID:  "agent-123",
 		UserID:   "user-123",
 		Payload:  &eventbus.EpisodicCreatedPayload{},
@@ -756,8 +758,7 @@ func TestDreamingWorkerHandle_DebounceSkip(t *testing.T) {
 	worker := &dreamingWorker{
 		episodicStore: mockEpisodic,
 		memoryStore:   mockMemory,
-		provider:      mockProvider,
-		model:         "test-model",
+		registry:      testRegistry(mockProvider),
 		threshold:     5,
 		debounce:      10 * time.Second,
 	}
@@ -767,7 +768,6 @@ func TestDreamingWorkerHandle_DebounceSkip(t *testing.T) {
 	// First run should succeed
 	event1 := eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
-		TenantID: uuid.New().String(),
 		AgentID:  "agent-123",
 		UserID:   "user-123",
 		Payload: &eventbus.EpisodicCreatedPayload{
@@ -789,7 +789,6 @@ func TestDreamingWorkerHandle_DebounceSkip(t *testing.T) {
 	mockEpisodic.promoted = make(map[string]bool) // reset for second run
 	event2 := eventbus.DomainEvent{
 		Type:     eventbus.EventEpisodicCreated,
-		TenantID: uuid.New().String(),
 		AgentID:  "agent-123",
 		UserID:   "user-123",
 		Payload: &eventbus.EpisodicCreatedPayload{
@@ -832,8 +831,7 @@ func TestRegister_WiresAllWorkers(t *testing.T) {
 		KGStore:       mockKG,
 		SessionStore:  mockSession,
 		EventBus:      mockEventBus,
-		Provider:      mockProvider,
-		Model:         "test-model",
+		Registry:      testRegistry(mockProvider),
 		Extractor:     mockExtractor,
 	}
 

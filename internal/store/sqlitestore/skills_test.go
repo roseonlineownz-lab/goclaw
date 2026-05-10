@@ -79,5 +79,5 @@ func newTestSQLiteSkillStore(t *testing.T) (context.Context, *SQLiteSkillStore) 
 		t.Fatalf("EnsureSchema error: %v", err)
 	}
 
-	return store.WithTenantID(context.Background(), store.MasterTenantID), NewSQLiteSkillStore(db, t.TempDir())
+	return context.Background(), NewSQLiteSkillStore(db, t.TempDir())
 }

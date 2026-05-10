@@ -13,7 +13,7 @@ import (
 type entityRow struct {
 	ID          string          `db:"id"`
 	AgentID     string          `db:"agent_id"`
-	UserID      string          `db:"user_id"`
+	UserID      *string         `db:"user_id"`
 	ExternalID  string          `db:"external_id"`
 	Name        string          `db:"name"`
 	EntityType  string          `db:"entity_type"`
@@ -30,7 +30,7 @@ func (r *entityRow) toEntity() store.Entity {
 	e := store.Entity{
 		ID:          r.ID,
 		AgentID:     r.AgentID,
-		UserID:      r.UserID,
+		UserID:      derefStr(r.UserID),
 		ExternalID:  r.ExternalID,
 		Name:        r.Name,
 		EntityType:  r.EntityType,
@@ -71,7 +71,7 @@ func (r *entityTemporalRow) toEntity() store.Entity {
 type relationRow struct {
 	ID             string          `db:"id"`
 	AgentID        string          `db:"agent_id"`
-	UserID         string          `db:"user_id"`
+	UserID         *string         `db:"user_id"`
 	SourceEntityID string          `db:"source_entity_id"`
 	RelationType   string          `db:"relation_type"`
 	TargetEntityID string          `db:"target_entity_id"`
@@ -85,7 +85,7 @@ func (r *relationRow) toRelation() store.Relation {
 	rel := store.Relation{
 		ID:             r.ID,
 		AgentID:        r.AgentID,
-		UserID:         r.UserID,
+		UserID:         derefStr(r.UserID),
 		SourceEntityID: r.SourceEntityID,
 		RelationType:   r.RelationType,
 		TargetEntityID: r.TargetEntityID,
@@ -139,7 +139,7 @@ type dedupCandidateRow struct {
 	CreatedAt  time.Time       `db:"created_at"`
 	AID        string          `db:"a_id"`
 	AAgentID   string          `db:"a_agent_id"`
-	AUserID    string          `db:"a_user_id"`
+	AUserID    *string         `db:"a_user_id"`
 	AExtID     string          `db:"a_external_id"`
 	AName      string          `db:"a_entity_name"`
 	AType      string          `db:"a_entity_type"`
@@ -151,7 +151,7 @@ type dedupCandidateRow struct {
 	AUpdatedAt time.Time       `db:"a_updated_at"`
 	BID        string          `db:"b_id"`
 	BAgentID   string          `db:"b_agent_id"`
-	BUserID    string          `db:"b_user_id"`
+	BUserID    *string         `db:"b_user_id"`
 	BExtID     string          `db:"b_external_id"`
 	BName      string          `db:"b_entity_name"`
 	BType      string          `db:"b_entity_type"`
@@ -172,7 +172,7 @@ func (r *dedupCandidateRow) toDedupCandidate() store.DedupCandidate {
 		CreatedAt:  r.CreatedAt.UnixMilli(),
 	}
 	dc.EntityA = store.Entity{
-		ID: r.AID, AgentID: r.AAgentID, UserID: r.AUserID, ExternalID: r.AExtID,
+		ID: r.AID, AgentID: r.AAgentID, UserID: derefStr(r.AUserID), ExternalID: r.AExtID,
 		Name: r.AName, EntityType: r.AType, Description: r.ADesc,
 		SourceID: r.ASourceID, Confidence: r.AConf,
 		CreatedAt: r.ACreatedAt.UnixMilli(), UpdatedAt: r.AUpdatedAt.UnixMilli(),
@@ -181,7 +181,7 @@ func (r *dedupCandidateRow) toDedupCandidate() store.DedupCandidate {
 		_ = json.Unmarshal(r.AProps, &dc.EntityA.Properties)
 	}
 	dc.EntityB = store.Entity{
-		ID: r.BID, AgentID: r.BAgentID, UserID: r.BUserID, ExternalID: r.BExtID,
+		ID: r.BID, AgentID: r.BAgentID, UserID: derefStr(r.BUserID), ExternalID: r.BExtID,
 		Name: r.BName, EntityType: r.BType, Description: r.BDesc,
 		SourceID: r.BSourceID, Confidence: r.BConf,
 		CreatedAt: r.BCreatedAt.UnixMilli(), UpdatedAt: r.BUpdatedAt.UnixMilli(),

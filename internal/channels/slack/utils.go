@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
-	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // HandleMessage overrides BaseChannel to allow messages when the chatID (Slack channel)
@@ -24,13 +24,15 @@ func (c *Channel) HandleMessage(senderID, chatID, content string, mediaPaths []s
 
 	var mediaFiles []bus.MediaFile
 	for _, p := range mediaPaths {
-		mediaFiles = append(mediaFiles, bus.MediaFile{Path: p})
+		// Slack file API doesn't expose a separate original filename here — the
+		// downloaded temp file is already named after the Slack file name, so
+		// basename is the best source for persistMedia's sanitizer.
+		mediaFiles = append(mediaFiles, bus.MediaFile{Path: p, Filename: filepath.Base(p)})
 	}
 
 	// Collect contact for processed messages (DM + group-mentioned).
 	if cc := c.ContactCollector(); cc != nil {
-		ctx := store.WithTenantID(context.Background(), c.TenantID())
-		cc.EnsureContact(ctx, c.Type(), c.Name(), userID, userID, metadata["username"], "", peerKind, "user", "", "")
+		cc.EnsureContact(context.Background(), c.Type(), c.Name(), userID, userID, metadata["username"], "", peerKind, "user", "", "")
 	}
 
 	c.Bus().PublishInbound(bus.InboundMessage{
@@ -41,7 +43,6 @@ func (c *Channel) HandleMessage(senderID, chatID, content string, mediaPaths []s
 		Media:    mediaFiles,
 		PeerKind: peerKind,
 		UserID:   userID,
-		TenantID: c.TenantID(),
 		Metadata: metadata,
 		AgentID:  c.AgentID(),
 	})

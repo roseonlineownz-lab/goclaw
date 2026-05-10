@@ -7,78 +7,49 @@ import (
 	"github.com/google/uuid"
 )
 
-// QueryScope represents the multi-level isolation scope for database queries.
-// Currently supports tenant-level scoping; designed to be extended with
-// project-level scoping when the Project feature is implemented.
+// QueryScope represents the per-query isolation scope. v4 is single-tenant;
+// only ProjectID is used by clause builders.
 type QueryScope struct {
-	TenantID  uuid.UUID
-	ProjectID *uuid.UUID // nil = no project filter (tenant-only)
+	ProjectID *uuid.UUID // nil = no project filter
 }
 
-// ScopeFromContext extracts the query scope from context.
-// Returns error if tenant ID is missing (fail-closed).
+// ScopeFromContext returns an empty scope; v4 has no tenant fail-closed.
+// Project scoping (when introduced) will populate ProjectID here.
 func ScopeFromContext(ctx context.Context) (QueryScope, error) {
-	tid := TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return QueryScope{}, fmt.Errorf("tenant_id required")
-	}
-	return QueryScope{TenantID: tid}, nil
+	_ = ctx
+	return QueryScope{}, nil
 }
 
 // WhereClause generates SQL WHERE conditions for the scope.
-// Returns the clause string (e.g. " AND tenant_id = $3"), args, and the next
-// available parameter index. Callers chain: startParam → nextParam.
+// v4: tenant clause omitted; only project clause emitted when set.
 func (s QueryScope) WhereClause(startParam int) (clause string, args []any, nextParam int) {
-	clause = fmt.Sprintf(" AND tenant_id = $%d", startParam)
-	args = []any{s.TenantID}
-	nextParam = startParam + 1
-
 	if s.ProjectID != nil {
-		clause += fmt.Sprintf(" AND project_id = $%d", nextParam)
-		args = append(args, *s.ProjectID)
-		nextParam++
+		return fmt.Sprintf(" AND project_id = $%d", startParam),
+			[]any{*s.ProjectID}, startParam + 1
 	}
-
-	return clause, args, nextParam
+	return "", nil, startParam
 }
 
 // WhereClauseAlias generates SQL WHERE conditions qualified with a table alias.
-// Used in JOIN queries to avoid column ambiguity.
-// SECURITY: alias is interpolated into SQL — callers MUST pass hardcoded string literals only.
+// SECURITY: alias is interpolated — callers MUST pass hardcoded string literals only.
 func (s QueryScope) WhereClauseAlias(startParam int, alias string) (clause string, args []any, nextParam int) {
-	// Defense-in-depth: only allow simple alphanumeric aliases to prevent SQL injection.
+	if s.ProjectID == nil {
+		return "", nil, startParam
+	}
 	for _, c := range alias {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
 			return "", nil, startParam
 		}
 	}
-	clause = fmt.Sprintf(" AND %s.tenant_id = $%d", alias, startParam)
-	args = []any{s.TenantID}
-	nextParam = startParam + 1
-
-	if s.ProjectID != nil {
-		clause += fmt.Sprintf(" AND %s.project_id = $%d", alias, nextParam)
-		args = append(args, *s.ProjectID)
-		nextParam++
-	}
-
-	return clause, args, nextParam
+	return fmt.Sprintf(" AND %s.project_id = $%d", alias, startParam),
+		[]any{*s.ProjectID}, startParam + 1
 }
 
 // InsertValues returns column names and values for INSERT operations.
-// Falls back to MasterTenantID when TenantID is nil.
+// v4: only project_id is inserted when set.
 func (s QueryScope) InsertValues() (columns []string, values []any) {
-	tid := s.TenantID
-	if tid == uuid.Nil {
-		tid = MasterTenantID
-	}
-	columns = []string{"tenant_id"}
-	values = []any{tid}
-
 	if s.ProjectID != nil {
-		columns = append(columns, "project_id")
-		values = append(values, *s.ProjectID)
+		return []string{"project_id"}, []any{*s.ProjectID}
 	}
-
-	return columns, values
+	return nil, nil
 }

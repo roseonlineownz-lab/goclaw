@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	slackapi "github.com/slack-go/slack"
 	"github.com/slack-go/slack/socketmode"
 
@@ -125,7 +124,7 @@ func New(cfg config.SlackConfig, msgBus *bus.MessageBus, pairingSvc store.Pairin
 	}
 	ch.SetRequireMention(requireMention)
 	ch.SetPairingService(pairingSvc)
-	ch.SetGroupHistory(channels.MakeHistory(channels.TypeSlack, pendingStore, base.TenantID()))
+	ch.SetGroupHistory(channels.MakeHistory(channels.TypeSlack, pendingStore))
 	ch.SetHistoryLimit(historyLimit)
 	return ch, nil
 }
@@ -215,7 +214,7 @@ func (c *Channel) sweepMaps() {
 	now := time.Now()
 
 	c.dedup.Range(func(k, v any) bool {
-		if now.Sub(v.(time.Time)) > 5*time.Minute {
+		if t, ok := v.(time.Time); ok && now.Sub(t) > 5*time.Minute {
 			c.dedup.Delete(k)
 		}
 		return true
@@ -223,7 +222,7 @@ func (c *Channel) sweepMaps() {
 
 	if c.threadTTL > 0 {
 		c.threadParticip.Range(func(k, v any) bool {
-			if now.Sub(v.(time.Time)) > c.threadTTL {
+			if t, ok := v.(time.Time); ok && now.Sub(t) > c.threadTTL {
 				c.threadParticip.Delete(k)
 			}
 			return true
@@ -269,13 +268,6 @@ func (c *Channel) handleEvent(evt socketmode.Event) {
 func (c *Channel) SetPendingCompaction(cfg *channels.CompactionConfig) {
 	if gh := c.GroupHistory(); gh != nil {
 		gh.SetCompactionConfig(cfg)
-	}
-}
-
-// SetPendingHistoryTenantID propagates tenant_id to the pending history for DB operations.
-func (c *Channel) SetPendingHistoryTenantID(id uuid.UUID) {
-	if gh := c.GroupHistory(); gh != nil {
-		gh.SetTenantID(id)
 	}
 }
 

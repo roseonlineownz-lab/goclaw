@@ -27,19 +27,8 @@ func (s *SQLiteAgentStore) GetByKeys(ctx context.Context, keys []string) ([]stor
 		args[i] = k
 	}
 
-	var q string
-	if store.IsCrossTenant(ctx) {
-		q = `SELECT ` + agentSelectCols + `
-			 FROM agents WHERE agent_key IN (` + placeholders + `) AND deleted_at IS NULL`
-	} else {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, fmt.Errorf("no tenant context for batch agent lookup")
-		}
-		q = `SELECT ` + agentSelectCols + `
-			 FROM agents WHERE agent_key IN (` + placeholders + `) AND deleted_at IS NULL AND tenant_id = ?`
-		args = append(args, tid)
-	}
+	q := `SELECT ` + agentSelectCols + `
+		 FROM agents WHERE agent_key IN (` + placeholders + `) AND deleted_at IS NULL`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -64,19 +53,8 @@ func (s *SQLiteAgentStore) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]sto
 		args[i] = id
 	}
 
-	var q string
-	if store.IsCrossTenant(ctx) {
-		q = `SELECT ` + agentSelectCols + `
-			 FROM agents WHERE id IN (` + placeholders + `) AND deleted_at IS NULL`
-	} else {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, fmt.Errorf("no tenant context for batch agent lookup")
-		}
-		q = `SELECT ` + agentSelectCols + `
-			 FROM agents WHERE id IN (` + placeholders + `) AND deleted_at IS NULL AND tenant_id = ?`
-		args = append(args, tid)
-	}
+	q := `SELECT ` + agentSelectCols + `
+		 FROM agents WHERE id IN (` + placeholders + `) AND deleted_at IS NULL`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

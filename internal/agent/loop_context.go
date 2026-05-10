@@ -34,10 +34,6 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if l.id != "" {
 		ctx = store.WithAgentKey(ctx, l.id)
 	}
-	// Inject tenant into context for tool-level tenant scoping (spawn, MCP, etc.)
-	if l.tenantID != uuid.Nil {
-		ctx = store.WithTenantID(ctx, l.tenantID)
-	}
 	// Inject user ID into context for per-user scoping (memory, context files, etc.)
 	if req.UserID != "" {
 		ctx = store.WithUserID(ctx, req.UserID)
@@ -51,10 +47,6 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 			ctx = store.WithCredentialUserID(ctx, credUserID)
 		}
 	}
-	// Inject agent type into context for interceptor routing
-	if l.agentType != "" {
-		ctx = store.WithAgentType(ctx, l.agentType)
-	}
 	// Inject self-evolve flag for predefined agents that can update SOUL.md
 	if l.selfEvolve {
 		ctx = store.WithSelfEvolve(ctx, true)
@@ -67,9 +59,25 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if req.SenderName != "" {
 		ctx = store.WithSenderName(ctx, req.SenderName)
 	}
-	// Inject global builtin tool settings for media tools (provider chain)
+	// Inject caller role so RBAC-aware permission checks (CheckEditFilePermission,
+	// CheckCronPermission) can bypass per-user grants for authenticated admins
+	// dispatched from dashboard or other trusted sources (#915).
+	if req.Role != "" {
+		ctx = store.WithRole(ctx, req.Role)
+	}
+	// Inject global + per-agent builtin tool settings (tier 1+3).
+	// Media/provider-chain tools read the merged view via BuiltinToolSettingsFromCtx.
 	if l.builtinToolSettings != nil {
 		ctx = tools.WithBuiltinToolSettings(ctx, l.builtinToolSettings)
+	}
+	// Inject tenant-layer tool settings (tier 2). Merge with per-agent happens
+	// at read time — per-agent still wins at tool-name level.
+	if l.tenantToolSettings != nil {
+		ctx = tools.WithTenantToolSettings(ctx, l.tenantToolSettings)
+	}
+	// Inject tenant-specific allowed paths for filesystem tools.
+	if len(l.tenantAllowedPaths) > 0 {
+		ctx = tools.WithTenantAllowedPaths(ctx, l.tenantAllowedPaths)
 	}
 	// Inject channel type into context for tools (e.g. message tool needs it for Zalo group routing)
 	if req.ChannelType != "" {
@@ -103,11 +111,22 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if req.WorkspaceChannel != "" {
 		ctx = tools.WithWorkspaceChannel(ctx, req.WorkspaceChannel)
 	}
-	if req.WorkspaceChatID != "" {
-		ctx = tools.WithWorkspaceChatID(ctx, req.WorkspaceChatID)
+	// WorkspaceChatID drives vault chat_id isolation in isolated teams. Callers
+	// that don't set it explicitly fall back to req.ChatID — the chat segment
+	// used for workspace path layering — so the vault filter activates uniformly
+	// across every RunRequest entry point (WS direct, HTTP, cron, subagent).
+	effectiveWorkspaceChatID := req.WorkspaceChatID
+	if effectiveWorkspaceChatID == "" {
+		effectiveWorkspaceChatID = req.ChatID
+	}
+	if effectiveWorkspaceChatID != "" {
+		ctx = tools.WithWorkspaceChatID(ctx, effectiveWorkspaceChatID)
 	}
 	if req.TeamTaskID != "" {
 		ctx = tools.WithTeamTaskID(ctx, req.TeamTaskID)
+	}
+	if req.DelegationID != "" {
+		ctx = tools.WithDelegationID(ctx, req.DelegationID)
 	}
 
 	// --- Per-user setup: file seeding + workspace resolution ---
@@ -133,10 +152,10 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 			tools.UserChatLayer(tools.SanitizePathSegment(req.UserID), shared),
 		)
 		if l.shouldShareMemory() {
+			// share_memory collapses memory + KG + sessions into a single flag.
 			ctx = store.WithSharedMemory(ctx)
-		}
-		if l.shouldShareKnowledgeGraph() {
 			ctx = store.WithSharedKG(ctx)
+			ctx = store.WithSharedSessions(ctx)
 		}
 		if err := os.MkdirAll(effectiveWorkspace, 0755); err != nil {
 			slog.Warn("failed to create user workspace directory", "workspace", effectiveWorkspace, "user", req.UserID, "error", err)
@@ -156,6 +175,14 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	}
 	if req.TeamID != "" {
 		ctx = tools.WithToolTeamID(ctx, req.TeamID)
+		// Team root for dispatched tasks: resolve the UserChatLayer-stripped root
+		// so the dispatched agent can still read peer-scoped files in the same team.
+		if teamUUID, err := uuid.Parse(req.TeamID); err == nil && l.dataDir != "" {
+			teamRoot := tools.ResolveWorkspace(l.dataDir,
+				tools.TeamLayer(teamUUID),
+			)
+			ctx = tools.WithToolTeamRoot(ctx, teamRoot)
+		}
 	}
 	if req.LeaderAgentID != "" {
 		ctx = tools.WithLeaderAgentID(ctx, req.LeaderAgentID)
@@ -184,9 +211,8 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 				wsChat = req.UserID
 			}
 			shared := tools.IsSharedWorkspace(team.Settings)
-			// Resolve team workspace via layered pipeline: tenant → team → user/chat.
+			// Resolve team workspace via layered pipeline: team → user/chat.
 			wsDir := tools.ResolveWorkspace(l.dataDir,
-				tools.TenantLayer(store.TenantIDFromContext(ctx), store.TenantSlugFromContext(ctx)),
 				tools.TeamLayer(team.ID),
 				tools.UserChatLayer(wsChat, shared),
 			)
@@ -194,6 +220,14 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 				slog.Warn("failed to create team workspace directory", "workspace", wsDir, "error", err)
 			}
 			ctx = tools.WithToolTeamWorkspace(ctx, wsDir)
+			// Team root (no UserChatLayer): lets any team agent — leader or member —
+			// read files produced by peers under different chat/user scopes within
+			// the same team. Writes still default to wsDir above; team root only
+			// widens the allowed-prefix set for path boundary checks.
+			teamRoot := tools.ResolveWorkspace(l.dataDir,
+				tools.TeamLayer(team.ID),
+			)
+			ctx = tools.WithToolTeamRoot(ctx, teamRoot)
 			// Leader keeps personal workspace (set at line 110-132) as default.
 			// Team workspace accessible via ToolTeamWorkspaceFromCtx for delegation.
 			if req.TeamID == "" {
@@ -309,14 +343,13 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	rc := &store.RunContext{
 		AgentID:             l.agentUUID,
 		AgentKey:            l.id,
-		TenantID:            l.tenantID,
 		UserID:              req.UserID,
 		CredentialUserID:    credUserID,
-		AgentType:           l.agentType,
 		SenderID:            req.SenderID,
 		SelfEvolve:          l.selfEvolve,
 		SharedMemory:        store.IsSharedMemory(ctx),
 		SharedKG:            store.IsSharedKG(ctx),
+		SharedSessions:      store.IsSharedSessions(ctx),
 		RestrictToWorkspace: l.restrictToWs != nil && *l.restrictToWs,
 		BuiltinToolSettings: l.builtinToolSettings,
 		ChannelType:         req.ChannelType,
@@ -330,10 +363,12 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		TeamWorkspace:       tools.ToolTeamWorkspaceFromCtx(ctx),
 		TeamID:              tools.ToolTeamIDFromCtx(ctx),
 		WorkspaceChannel:    req.WorkspaceChannel,
-		WorkspaceChatID:     req.WorkspaceChatID,
+		WorkspaceChatID:     effectiveWorkspaceChatID,
+		TeamIsolated:        resolvedTeamSettings != nil && !tools.IsSharedWorkspace(resolvedTeamSettings),
 		TeamTaskID:          req.TeamTaskID,
 		LeaderAgentID:       tools.LeaderAgentIDFromCtx(ctx),
 		AgentToolKey:        l.id,
+		TenantAllowedPaths:  l.tenantAllowedPaths,
 	}
 	ctx = store.WithRunContext(ctx, rc)
 

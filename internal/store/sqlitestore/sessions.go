@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"maps"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,17 +28,13 @@ type SQLiteSessionStore struct {
 }
 
 func NewSQLiteSessionStore(db *sql.DB) *SQLiteSessionStore {
-	// No migrateLegacyWSKeys — SQLite has no regexp_replace.
 	return &SQLiteSessionStore{db: db, cache: make(map[string]*store.SessionData)}
 }
 
-// sessionCacheKey prefixes session key with tenant UUID to prevent cross-tenant cache collisions.
-func sessionCacheKey(ctx context.Context, key string) string {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
-	return tid.String() + ":" + key
+// sessionCacheKey returns the raw session key — v4 schema enforces global
+// uniqueness on session_key, so no tenant/owner prefix is needed.
+func sessionCacheKey(_ context.Context, key string) string {
+	return key
 }
 
 func (s *SQLiteSessionStore) GetOrCreate(ctx context.Context, key string) *store.SessionData {
@@ -74,9 +71,9 @@ func (s *SQLiteSessionStore) GetOrCreate(ctx context.Context, key string) *store
 
 	msgsJSON, _ := json.Marshal([]providers.Message{})
 	s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, session_key, messages, created_at, updated_at, team_id, tenant_id)
-		 VALUES (?,?,?,?,?,?,?) ON CONFLICT (tenant_id, session_key) DO NOTHING`,
-		uuid.Must(uuid.NewV7()), key, msgsJSON, now, now, teamID, tenantIDForInsert(ctx),
+		`INSERT INTO agent_sessions (id, session_key, messages, created_at, updated_at, team_id, project_id)
+		 VALUES (?,?,?,?,?,?,?) ON CONFLICT (session_key) DO NOTHING`,
+		uuid.Must(uuid.NewV7()), key, msgsJSON, now, now, teamID, nil,
 	)
 
 	return data
@@ -258,9 +255,9 @@ func (s *SQLiteSessionStore) getOrInit(ctx context.Context, key string) *store.S
 
 	msgsJSON, _ := json.Marshal([]providers.Message{})
 	s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, session_key, messages, created_at, updated_at, tenant_id)
-		 VALUES (?,?,?,?,?,?) ON CONFLICT (tenant_id, session_key) DO NOTHING`,
-		uuid.Must(uuid.NewV7()), key, msgsJSON, now, now, tenantIDForInsert(ctx),
+		`INSERT INTO agent_sessions (id, session_key, messages, created_at, updated_at)
+		 VALUES (?,?,?,?,?) ON CONFLICT (session_key) DO NOTHING`,
+		uuid.Must(uuid.NewV7()), key, msgsJSON, now, now,
 	)
 	return data
 }
@@ -269,26 +266,25 @@ func (s *SQLiteSessionStore) loadFromDB(ctx context.Context, key string) *store.
 	var sessionKey string
 	var msgsJSON []byte
 	var summary, model, provider, channel, label, spawnedBy, userID *string
-	var agentID, teamID *uuid.UUID
+	var agentID, teamID, projectID *uuid.UUID
 	var inputTokens, outputTokens int64
 	var compactionCount, memoryFlushCompactionCount, spawnDepth int
 	var memoryFlushAt int64
 	createdAt, updatedAt := scanTimePair()
 	var metaJSON *[]byte
 
-	tid := tenantIDForInsert(ctx)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT session_key, messages, summary, model, provider, channel,
 		 input_tokens, output_tokens, compaction_count,
 		 memory_flush_compaction_count, memory_flush_at,
 		 label, spawned_by, spawn_depth, agent_id, user_id,
-		 COALESCE(metadata, '{}'), created_at, updated_at, team_id
-		 FROM sessions WHERE session_key = ? AND tenant_id = ?`, key, tid,
+		 COALESCE(metadata, '{}'), created_at, updated_at, team_id, project_id
+		 FROM agent_sessions WHERE session_key = ?`, key,
 	).Scan(&sessionKey, &msgsJSON, &summary, &model, &provider, &channel,
 		&inputTokens, &outputTokens, &compactionCount,
 		&memoryFlushCompactionCount, &memoryFlushAt,
 		&label, &spawnedBy, &spawnDepth, &agentID, &userID,
-		&metaJSON, createdAt, updatedAt, &teamID)
+		&metaJSON, createdAt, updatedAt, &teamID, &projectID)
 	if err != nil {
 		return nil
 	}
@@ -301,6 +297,18 @@ func (s *SQLiteSessionStore) loadFromDB(ctx context.Context, key string) *store.
 		json.Unmarshal(*metaJSON, &meta)
 	}
 
+	// Restore adaptive-throttle fields from metadata so GetLastPromptTokens()
+	// returns the persisted value after a server restart (clean cache).
+	var lastPromptTokens, lastMessageCount int
+	if meta != nil {
+		if v := meta["last_prompt_tokens"]; v != "" {
+			lastPromptTokens, _ = strconv.Atoi(v)
+		}
+		if v := meta["last_message_count"]; v != "" {
+			lastMessageCount, _ = strconv.Atoi(v)
+		}
+	}
+
 	return &store.SessionData{
 		Key:                        sessionKey,
 		Messages:                   msgs,
@@ -310,6 +318,7 @@ func (s *SQLiteSessionStore) loadFromDB(ctx context.Context, key string) *store.
 		AgentUUID:                  derefUUID(agentID),
 		UserID:                     derefStr(userID),
 		TeamID:                     teamID,
+		ProjectID:                  projectID,
 		Model:                      derefStr(model),
 		Provider:                   derefStr(provider),
 		Channel:                    derefStr(channel),
@@ -322,6 +331,8 @@ func (s *SQLiteSessionStore) loadFromDB(ctx context.Context, key string) *store.
 		SpawnedBy:                  derefStr(spawnedBy),
 		SpawnDepth:                 spawnDepth,
 		Metadata:                   meta,
+		LastPromptTokens:           lastPromptTokens,
+		LastMessageCount:           lastMessageCount,
 	}
 }
 

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
+	"github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/store/pg"
 )
@@ -98,13 +100,27 @@ func (h *MCPHandler) doMCPImport(ctx context.Context, r io.Reader, userID string
 	}
 
 	// Import servers — build name → uuid.UUID map for grant wiring
-	tid := importTenantID(ctx)
 	serverNameToUUID := make(map[string]uuid.UUID, len(servers))
 
 	for i, srv := range servers {
 		if progressFn != nil {
 			progressFn(ProgressEvent{Phase: "server", Status: "running", Current: i + 1, Total: len(servers), Detail: srv.Name})
 		}
+
+		// Security validation: validate imported server config
+		var args []string
+		if len(srv.Args) > 0 {
+			_ = json.Unmarshal(srv.Args, &args)
+		}
+		if err := mcp.ValidateServerConfig(srv.Transport, srv.Command, args, srv.URL); err != nil {
+			slog.Warn("security.mcp.import_rejected",
+				"name", srv.Name,
+				"reason", err.Error(),
+				"transport", srv.Transport)
+			summary.ServersSkipped++
+			continue
+		}
+
 		id, created, err := pg.ImportMCPServer(ctx, h.db, srv, userID)
 		if err != nil {
 			slog.Warn("mcp.import: create server", "name", srv.Name, "error", err)
@@ -131,9 +147,9 @@ func (h *MCPHandler) doMCPImport(ctx context.Context, r io.Reader, userID string
 
 		serverID, ok := serverNameToUUID[g.ServerName]
 		if !ok {
-			// Server may have pre-existed — look it up (tenant-scoped)
+			// Server may have pre-existed — look it up.
 			if err := h.db.QueryRowContext(ctx,
-				"SELECT id FROM mcp_servers WHERE name = $1 AND tenant_id = $2", g.ServerName, tid,
+				"SELECT id FROM mcp_servers WHERE name = $1", g.ServerName,
 			).Scan(&serverID); err != nil {
 				slog.Warn("mcp.import.grant: server not found", "server", g.ServerName)
 				continue
@@ -142,7 +158,7 @@ func (h *MCPHandler) doMCPImport(ctx context.Context, r io.Reader, userID string
 
 		var agentID uuid.UUID
 		if err := h.db.QueryRowContext(ctx,
-			"SELECT id FROM agents WHERE agent_key = $1 AND tenant_id = $2", g.AgentKey, tid,
+			"SELECT id FROM agents WHERE agent_key = $1", g.AgentKey,
 		).Scan(&agentID); err != nil {
 			slog.Warn("mcp.import.grant: agent not found", "key", g.AgentKey)
 			continue

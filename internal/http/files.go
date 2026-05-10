@@ -10,10 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/edition"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
-	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // FilesHandler serves files over HTTP with Bearer token auth.
@@ -73,14 +71,12 @@ func (h *FilesHandler) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Multi-tenant (RBAC): additionally restrict to the requesting tenant's dirs.
-	// Prevents tenant A from signing a URL for tenant B's files.
+	// Standard edition: enforce workspace boundary (same as top-level check above).
+	// v4 single-tenant: dataDir/workspace are the only boundaries.
 	if edition.Current().RBACEnabled {
-		tenantData := config.TenantDataDir(h.dataDir, store.TenantIDFromContext(authedReq.Context()), store.TenantSlugFromContext(authedReq.Context()))
-		tenantWs := config.TenantWorkspace(h.workspace, store.TenantIDFromContext(authedReq.Context()), store.TenantSlugFromContext(authedReq.Context()))
-		if (!strings.HasPrefix(absPath, tenantData+sep) && absPath != tenantData) &&
-			(!strings.HasPrefix(absPath, tenantWs+sep) && absPath != tenantWs) {
-			slog.Warn("security.files_sign_tenant_denied", "path", absPath, "tenant_data", tenantData, "tenant_ws", tenantWs)
+		if (!strings.HasPrefix(absPath, h.dataDir+sep) && absPath != h.dataDir) &&
+			(!strings.HasPrefix(absPath, h.workspace+sep) && absPath != h.workspace) {
+			slog.Warn("security.files_sign_tenant_denied", "path", absPath, "workspace", h.workspace, "data_dir", h.dataDir)
 			http.Error(w, `{"error":"path outside allowed directories"}`, http.StatusForbidden)
 			return
 		}
@@ -186,16 +182,9 @@ func (h *FilesHandler) handleServe(w http.ResponseWriter, r *http.Request) {
 			allowed = true
 		}
 
-		// Multi-tenant (standard edition): additionally restrict to tenant-scoped subdirectories.
-		if allowed && edition.Current().RBACEnabled {
-			tenantData := config.TenantDataDir(h.dataDir, store.TenantIDFromContext(r.Context()), store.TenantSlugFromContext(r.Context()))
-			tenantWs := h.tenantWorkspace(r)
-			if !strings.HasPrefix(absPath, tenantData+sep) &&
-				!strings.HasPrefix(absPath, tenantWs+sep) &&
-				absPath != tenantData && absPath != tenantWs {
-				allowed = false
-			}
-		}
+		// Standard edition: workspace boundary already enforced by top-level checks above.
+		// v4 single-tenant: no per-tenant subdirectory restriction needed.
+		_ = edition.Current().RBACEnabled
 
 		if !allowed {
 			slog.Warn("security.files_path_denied", "path", absPath, "workspace", h.workspace, "data_dir", h.dataDir)
@@ -253,11 +242,9 @@ func (h *FilesHandler) handleServe(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, absPath)
 }
 
-// tenantWorkspace resolves the workspace scoped to the requesting tenant.
-func (h *FilesHandler) tenantWorkspace(r *http.Request) string {
-	tid := store.TenantIDFromContext(r.Context())
-	slug := store.TenantSlugFromContext(r.Context())
-	return config.TenantWorkspace(h.workspace, tid, slug)
+// tenantWorkspace returns the workspace root. v4 single-tenant: no per-tenant scoping.
+func (h *FilesHandler) tenantWorkspace(_ *http.Request) string {
+	return h.workspace
 }
 
 // findInWorkspace searches the workspace directory tree for a file by basename.

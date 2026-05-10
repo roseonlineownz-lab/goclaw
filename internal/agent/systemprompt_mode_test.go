@@ -74,7 +74,6 @@ func TestTaskModeDropsSections(t *testing.T) {
 	cfg := fullTestConfig()
 	cfg.Mode = PromptTask
 	cfg.SelfEvolve = true
-	cfg.AgentType = "predefined"
 	prompt := BuildSystemPrompt(cfg)
 	for _, dropped := range []string{"## Self-Evolution", "## Tool Call Style", "## Sub-Agent Spawning",
 		"Reminder: Follow AGENTS.md"} {
@@ -151,8 +150,10 @@ func TestNoneModeSections(t *testing.T) {
 			t.Errorf("none mode should not have: %s", dropped)
 		}
 	}
-	// Size check: should be under 3000 chars (~750 tokens)
-	if len(prompt) > 3000 {
+	// Size check: should be under 3200 chars (~800 tokens). The cap rose from
+	// 3100 in v4 because the # Agent Configuration framing now applies to
+	// every agent (predefined-only) instead of being open-agent-suppressed.
+	if len(prompt) > 3200 {
 		t.Errorf("none mode too large: %d chars", len(prompt))
 	}
 }
@@ -310,22 +311,22 @@ func TestPinnedSkillsMinimalMode(t *testing.T) {
 	}
 }
 
-func TestMinimalAllowlistIncludesUserPredefined(t *testing.T) {
+func TestMinimalAllowlistIncludesUserFile(t *testing.T) {
 	files := []bootstrap.File{
 		{Name: "AGENTS.md", Content: "rules"},
 		{Name: "TOOLS.md", Content: "tools"},
-		{Name: "USER_PREDEFINED.md", Content: "user rules"},
+		{Name: "USER.md", Content: "user rules"},
 		{Name: "SOUL.md", Content: "persona"},
 	}
 	filtered := bootstrap.FilterForSession(files, "agent:abc:subagent:xyz")
 	found := false
 	for _, f := range filtered {
-		if f.Name == "USER_PREDEFINED.md" {
+		if f.Name == "USER.md" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("USER_PREDEFINED.md should be in minimal allowlist")
+		t.Error("USER.md should be in minimal allowlist")
 	}
 	// SOUL.md should NOT be included
 	for _, f := range filtered {
@@ -452,7 +453,6 @@ func TestTaskModeIdentityIncluded(t *testing.T) {
 	cfg := SystemPromptConfig{
 		Mode:      PromptTask,
 		AgentID:   "tieu-thong",
-		AgentType: store.AgentTypePredefined,
 		ToolNames: []string{"exec", "read_file"},
 		ContextFiles: []bootstrap.ContextFile{
 			{Path: "SOUL.md", Content: "You are tieu-thong."},

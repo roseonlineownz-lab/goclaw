@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/skills"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -48,10 +47,8 @@ func (h *EvolutionHandler) applySkillDraft(ctx context.Context, sg store.Evoluti
 		slug = skills.Slugify(name)
 	}
 
-	// Resolve tenant-scoped destination directory.
-	tenantID := store.TenantIDFromContext(ctx)
-	tenantSlug := store.TenantSlugFromContext(ctx)
-	baseDir := config.TenantSkillsStoreDir(h.dataDir, tenantID, tenantSlug)
+	// Resolve destination directory. v4 single-tenant: always skills-store root.
+	baseDir := filepath.Join(h.dataDir, "skills-store")
 
 	version := h.skillStore.GetNextVersion(ctx, slug)
 	destDir := filepath.Join(baseDir, slug, fmt.Sprintf("%d", version))

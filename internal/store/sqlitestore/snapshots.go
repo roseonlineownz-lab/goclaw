@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -23,7 +21,7 @@ func NewSQLiteSnapshotStore(db *sql.DB) *SQLiteSnapshotStore {
 	return &SQLiteSnapshotStore{db: db}
 }
 
-const snapshotFieldCount = 22
+const snapshotFieldCount = 21
 
 // sqliteSnapshotBatchSize limits each INSERT to stay under SQLite's 999-variable limit (999 / 22 ≈ 45 → use 40).
 const sqliteSnapshotBatchSize = 40
@@ -45,11 +43,6 @@ func (s *SQLiteSnapshotStore) UpsertSnapshots(ctx context.Context, snapshots []s
 }
 
 func (s *SQLiteSnapshotStore) upsertBatch(ctx context.Context, snapshots []store.UsageSnapshot) error {
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
-	}
-
 	placeholderRow := "(" + strings.Repeat("?, ", snapshotFieldCount-1) + "?)"
 	vals := make([]string, len(snapshots))
 	var args []any
@@ -62,7 +55,6 @@ func (s *SQLiteSnapshotStore) upsertBatch(ctx context.Context, snapshots []store
 			snap.TotalCost, snap.RequestCount, snap.LLMCallCount, snap.ToolCallCount,
 			snap.ErrorCount, snap.UniqueUsers, snap.AvgDurationMS,
 			snap.MemoryDocs, snap.MemoryChunks, snap.KGEntities, snap.KGRelations,
-			tenantID,
 		)
 	}
 
@@ -71,10 +63,9 @@ func (s *SQLiteSnapshotStore) upsertBatch(ctx context.Context, snapshots []store
 		input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, thinking_tokens,
 		total_cost, request_count, llm_call_count, tool_call_count,
 		error_count, unique_users, avg_duration_ms,
-		memory_docs, memory_chunks, kg_entities, kg_relations,
-		tenant_id
+		memory_docs, memory_chunks, kg_entities, kg_relations
 	) VALUES ` + strings.Join(vals, ", ") + `
-	ON CONFLICT (bucket_hour, COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'), COALESCE(provider, ''), COALESCE(model, ''), COALESCE(channel, ''), tenant_id)
+	ON CONFLICT (bucket_hour, COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'), COALESCE(provider, ''), COALESCE(model, ''), COALESCE(channel, ''))
 	DO UPDATE SET
 		input_tokens        = excluded.input_tokens,
 		output_tokens       = excluded.output_tokens,
@@ -265,13 +256,6 @@ func buildSnapshotWhere(ctx context.Context, q store.SnapshotQuery) (string, []a
 	var conds []string
 	var args []any
 
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID != uuid.Nil {
-			conds = append(conds, "tenant_id = ?")
-			args = append(args, tenantID)
-		}
-	}
 	if !q.From.IsZero() {
 		conds = append(conds, "bucket_hour >= ?")
 		args = append(args, q.From)

@@ -27,8 +27,6 @@ func (c *Channel) resolveAgentUUID(ctx context.Context) (uuid.UUID, error) {
 		return id, nil
 	}
 
-	// Inject tenant scope so the store can filter by tenant_id.
-	ctx = store.WithTenantID(ctx, c.TenantID())
 	agent, err := c.agentStore.GetByKey(ctx, key)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("agent %q not found: %w", key, err)
@@ -57,9 +55,6 @@ func (c *Channel) handleBotCommand(ctx context.Context, message *telego.Message,
 	}
 
 	cmd = strings.SplitN(cmd, "@", 2)[0]
-
-	// Inject tenant scope so all command handlers have tenant_id in context.
-	ctx = store.WithTenantID(ctx, c.TenantID())
 
 	chatIDObj := tu.ID(chatID)
 
@@ -107,7 +102,7 @@ func (c *Channel) handleBotCommand(ctx context.Context, message *telego.Message,
 			if err == nil {
 				groupID := fmt.Sprintf("group:%s:%s", c.Name(), chatIDStr)
 				senderNumericID := strings.SplitN(senderID, "|", 2)[0]
-				isWriter, err := c.configPermStore.CheckPermission(ctx, agentID, groupID, store.ConfigTypeFileWriter, senderNumericID)
+				isWriter, err := c.configPermStore.CheckPermission(ctx, agentID, groupID, store.ConfigTypeEditFile, senderNumericID)
 				if err != nil {
 					slog.Warn("security.reset_writer_check_failed", "error", err, "sender", senderNumericID)
 					// fail-open: allow reset if DB check fails
@@ -133,7 +128,6 @@ func (c *Channel) handleBotCommand(ctx context.Context, message *telego.Message,
 			PeerKind: peerKind,
 			AgentID:  c.AgentID(),
 			UserID:   strings.SplitN(senderID, "|", 2)[0],
-			TenantID: c.TenantID(),
 			Metadata: map[string]string{
 				"command":           "reset",
 				"local_key":         localKey,
@@ -159,7 +153,6 @@ func (c *Channel) handleBotCommand(ctx context.Context, message *telego.Message,
 			PeerKind: peerKind,
 			AgentID:  c.AgentID(),
 			UserID:   strings.SplitN(senderID, "|", 2)[0],
-			TenantID: c.TenantID(),
 			Metadata: map[string]string{
 				"command":           "stop",
 				"local_key":         localKey,
@@ -183,7 +176,6 @@ func (c *Channel) handleBotCommand(ctx context.Context, message *telego.Message,
 			PeerKind: peerKind,
 			AgentID:  c.AgentID(),
 			UserID:   strings.SplitN(senderID, "|", 2)[0],
-			TenantID: c.TenantID(),
 			Metadata: map[string]string{
 				"command":           "stopall",
 				"local_key":         localKey,

@@ -38,6 +38,7 @@ type traceRow struct {
 	Metadata          json.RawMessage `json:"metadata" db:"metadata"`
 	Tags              pq.StringArray  `json:"tags" db:"tags"`
 	TeamID            *uuid.UUID      `json:"team_id" db:"team_id"`
+	ContactID         *uuid.UUID      `json:"contact_id" db:"contact_id"`
 	CreatedAt         time.Time       `json:"created_at" db:"created_at"`
 }
 
@@ -53,7 +54,7 @@ func (r *traceRow) toTraceData() store.TraceData {
 		LLMCallCount: r.LLMCallCount, ToolCallCount: r.ToolCallCount,
 		Status: r.Status, Error: derefStr(r.Error),
 		Metadata: r.Metadata, Tags: []string(r.Tags),
-		TeamID: r.TeamID, CreatedAt: r.CreatedAt,
+		TeamID: r.TeamID, ContactID: r.ContactID, CreatedAt: r.CreatedAt,
 	}
 }
 
@@ -91,6 +92,7 @@ type spanRow struct {
 	OutputPreview *string         `json:"output_preview" db:"output_preview"`
 	Metadata      json.RawMessage `json:"metadata" db:"metadata"`
 	TeamID        *uuid.UUID      `json:"team_id" db:"team_id"`
+	ContactID     *uuid.UUID      `json:"contact_id" db:"contact_id"`
 	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
 }
 
@@ -105,7 +107,7 @@ func (r *spanRow) toSpanData() store.SpanData {
 		FinishReason: derefStr(r.FinishReason), ModelParams: r.ModelParams,
 		ToolName: derefStr(r.ToolName), ToolCallID: derefStr(r.ToolCallID),
 		InputPreview: derefStr(r.InputPreview), OutputPreview: derefStr(r.OutputPreview),
-		Metadata: r.Metadata, TeamID: r.TeamID, CreatedAt: r.CreatedAt,
+		Metadata: r.Metadata, TeamID: r.TeamID, ContactID: r.ContactID, CreatedAt: r.CreatedAt,
 	}
 }
 

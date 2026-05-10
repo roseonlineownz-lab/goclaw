@@ -31,6 +31,14 @@ func init() {
 		MsgUserIDRequired:    "user_id 是必填项",
 		MsgMsgRequired:       "消息是必填项",
 
+		// Abort
+		MsgAbortStopped:         "已停止运行",
+		MsgAbortForced:          "已强制中止运行（超过 3 秒宽限期）",
+		MsgAbortAlreadyAborting: "正在中止中",
+		MsgAbortNotFound:        "运行未找到或已结束",
+		MsgAbortUnauthorized:    "无权中止此运行",
+		MsgAbortFailed:          "无法中止运行：%s",
+
 		// Channel instances
 		MsgInvalidChannelType: "Channel类型无效",
 		MsgInstanceNotFound:   "未找到实例",
@@ -65,6 +73,8 @@ func init() {
 		MsgAlreadySummoning:      "Agent正在被召唤中",
 		MsgSummoningUnavailable:  "召唤功能不可用",
 		MsgNoDescription:         "Agent没有可供重新召唤的描述",
+		MsgSummonCancelled:       "已取消召唤",
+		MsgCannotCancel:          "Agent 未处于召唤状态",
 		MsgInvalidPath:           "路径无效",
 
 		// Scheduler
@@ -81,12 +91,12 @@ func init() {
 		MsgNotImplemented: "%s 尚未实现",
 
 		// Agent links
-		MsgLinksNotConfigured:   "Agent链接未配置",
-		MsgInvalidDirection:     "方向必须是 outbound、inbound 或 bidirectional",
-		MsgSourceTargetSame:     "源和目标必须是不同的Agent",
-		MsgCannotDelegateOpen:   "无法委派给开放型Agent — 只有预定义Agent才能作为委派目标",
-		MsgNoUpdatesProvided:    "未提供更新内容",
-		MsgInvalidLinkStatus:    "状态必须是 active 或 disabled",
+		MsgLinksNotConfigured: "Agent链接未配置",
+		MsgInvalidDirection:   "方向必须是 outbound、inbound 或 bidirectional",
+		MsgSourceTargetSame:   "源和目标必须是不同的Agent",
+		MsgAgentTypeRejected:  "不再接受 agent_type 字段；v4 仅支持预定义型 Agent",
+		MsgNoUpdatesProvided:  "未提供更新内容",
+		MsgInvalidLinkStatus:  "状态必须是 active 或 disabled",
 
 		// Teams
 		MsgTeamsNotConfigured:   "团队未配置",
@@ -100,13 +110,19 @@ func init() {
 		// Skills
 		MsgSkillsUpdateNotSupported: "基于文件的Skill不支持 skills.update",
 		MsgCannotResolveSkillID:     "无法解析基于文件的Skill ID",
+		MsgInvalidSkillSource:       "无效的 skill source: 必须是 builtin, hub-verified, hub-unverified, agent-created, user-uploaded 之一",
+		MsgIsSystemDeprecated:       "is_system 字段已不再支持; 请使用 source='builtin' 替代",
+		MsgVersionAlreadyArchived:   "skill 版本已归档",
+		MsgCuratorInvalidTransition: "无效的 curator run 状态转换: %s -> %s",
 
 		// Logs
 		MsgInvalidLogAction: "action 必须是 'start' 或 'stop'",
 
 		// Config
-		MsgRawConfigRequired: "raw 配置是必填项",
-		MsgRawPatchRequired:  "raw 补丁是必填项",
+		MsgRawConfigRequired:     "raw 配置是必填项",
+		MsgRawPatchRequired:      "raw 补丁是必填项",
+		MsgConfigMasterScopeOnly: "config.* 方法仅适用于主作用域；使用租户工具配置端点进行租户级覆盖",
+		MsgMasterScopeRequired:   "此操作需要主租户范围",
 
 		// Storage / File
 		MsgCannotDeleteSkillsDir: "无法删除Skill目录",

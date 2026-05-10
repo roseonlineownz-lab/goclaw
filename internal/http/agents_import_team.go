@@ -16,14 +16,13 @@ import (
 // importTeamSection creates a team, members, tasks, comments, events, links,
 // and team workspace for the imported agent (which becomes the team lead).
 func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentData, arc *importArchive, progressFn func(ProgressEvent)) error {
-	tid := importTenantID(ctx)
 	userID := store.UserIDFromContext(ctx)
 
 	// Check if agent is already a team lead — skip to prevent duplicate teams
 	var existingTeam bool
 	_ = h.db.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM agent_teams WHERE lead_agent_id = $1 AND tenant_id = $2)",
-		ag.ID, tid,
+		"SELECT EXISTS(SELECT 1 FROM agent_teams WHERE lead_agent_id = $1)",
+		ag.ID,
 	).Scan(&existingTeam)
 	if existingTeam {
 		slog.Info("import: agent already has a team, skipping team import", "agent_id", ag.ID)
@@ -36,11 +35,11 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 	// Create team with new UUID
 	teamID := uuid.Must(uuid.NewV7())
 	_, err := h.db.ExecContext(ctx,
-		`INSERT INTO agent_teams (id, name, lead_agent_id, description, status, settings, created_by, created_at, updated_at, tenant_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8)`,
+		`INSERT INTO agent_teams (id, name, lead_agent_id, description, status, settings, created_by, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
 		teamID, arc.teamMeta.Name, ag.ID,
 		arc.teamMeta.Description, arc.teamMeta.Status,
-		coalesceJSON(arc.teamMeta.Settings), userID, tid,
+		coalesceJSON(arc.teamMeta.Settings), userID,
 	)
 	if err != nil {
 		return fmt.Errorf("create team: %w", err)
@@ -48,16 +47,16 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 
 	// Add lead as member
 	if _, err = h.db.ExecContext(ctx,
-		`INSERT INTO agent_team_members (team_id, agent_id, role, tenant_id, joined_at)
-		 VALUES ($1, $2, 'lead', $3, NOW())
+		`INSERT INTO agent_team_members (team_id, agent_id, role, joined_at)
+		 VALUES ($1, $2, 'lead', NOW())
 		 ON CONFLICT (team_id, agent_id) DO NOTHING`,
-		teamID, ag.ID, tid,
+		teamID, ag.ID,
 	); err != nil {
 		slog.Warn("import.team: add lead member", "error", err)
 	}
 
 	// Resolve agent_key → agent_id for all referenced keys
-	agentKeyToID := h.buildAgentKeyMap(ctx, tid, arc)
+	agentKeyToID := h.buildAgentKeyMap(ctx, arc)
 	// Always include the importing agent itself
 	agentKeyToID[ag.AgentKey] = ag.ID
 
@@ -76,7 +75,7 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 			}
 			rows = append(rows, memberRow{agentID: memberID, role: m.Role})
 		}
-		const cols = 4 // team_id, agent_id, role, tenant_id
+		const cols = 3 // team_id, agent_id, role
 		for start := 0; start < len(rows); start += 1000 {
 			end := min(start+1000, len(rows))
 			chunk := rows[start:end]
@@ -84,10 +83,10 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 			ph := make([]string, 0, len(chunk))
 			for i, r := range chunk {
 				b := i * cols
-				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,$%d,NOW())", b+1, b+2, b+3, b+4))
-				args = append(args, teamID, r.agentID, r.role, tid)
+				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,NOW())", b+1, b+2, b+3))
+				args = append(args, teamID, r.agentID, r.role)
 			}
-			q := `INSERT INTO agent_team_members (team_id, agent_id, role, tenant_id, joined_at)
+			q := `INSERT INTO agent_team_members (team_id, agent_id, role, joined_at)
 				VALUES ` + strings.Join(ph, ",") + ` ON CONFLICT (team_id, agent_id) DO NOTHING`
 			if _, err = h.db.ExecContext(ctx, q, args...); err != nil {
 				slog.Warn("import.team: batch insert members", "count", len(chunk), "error", err)
@@ -118,14 +117,13 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 			`INSERT INTO team_tasks
 			   (id, team_id, subject, description, status, priority, result, metadata,
 			    task_type, task_number, identifier, owner_agent_id, created_by_agent_id,
-			    assignee_user_id, progress_percent, progress_step, tenant_id, created_at, updated_at)
-			 VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW())`,
+			    assignee_user_id, progress_percent, progress_step, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW())`,
 			newID, teamID, t.Subject, t.Description,
 			t.Priority, nullStr(t.Result), nullJSON(t.Metadata),
 			t.TaskType, t.TaskNumber, t.Identifier,
 			ownerID, createdByID, t.AssigneeUserID,
 			nullInt(t.ProgressPercent), nullStr(t.ProgressStep),
-			tid,
 		); err != nil {
 			slog.Warn("import.team: insert task", "subject", t.Subject, "error", err)
 		}
@@ -176,7 +174,7 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 				commentType: c.CommentType, metadata: nullJSON(c.Metadata),
 			})
 		}
-		const cols = 8
+		const cols = 7
 		for start := 0; start < len(cRows); start += 1000 {
 			end := min(start+1000, len(cRows))
 			chunk := cRows[start:end]
@@ -184,10 +182,10 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 			ph := make([]string, 0, len(chunk))
 			for i, r := range chunk {
 				b := i * cols
-				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,NOW())", b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8))
-				args = append(args, r.id, r.taskID, r.agentID, r.userID, r.content, r.commentType, r.metadata, tid)
+				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,NOW())", b+1, b+2, b+3, b+4, b+5, b+6, b+7))
+				args = append(args, r.id, r.taskID, r.agentID, r.userID, r.content, r.commentType, r.metadata)
 			}
-			q := `INSERT INTO team_task_comments (id, task_id, agent_id, user_id, content, comment_type, metadata, tenant_id, created_at)
+			q := `INSERT INTO team_task_comments (id, task_id, agent_id, user_id, content, comment_type, metadata, created_at)
 				VALUES ` + strings.Join(ph, ",")
 			if _, err = h.db.ExecContext(ctx, q, args...); err != nil {
 				slog.Warn("import.team: batch insert comments", "count", len(chunk), "error", err)
@@ -216,7 +214,7 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 				actorID: ev.ActorID, data: nullJSON(ev.Data),
 			})
 		}
-		const cols = 7
+		const cols = 6
 		for start := 0; start < len(eRows); start += 1000 {
 			end := min(start+1000, len(eRows))
 			chunk := eRows[start:end]
@@ -224,10 +222,10 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 			ph := make([]string, 0, len(chunk))
 			for i, r := range chunk {
 				b := i * cols
-				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,NOW())", b+1, b+2, b+3, b+4, b+5, b+6, b+7))
-				args = append(args, r.id, r.taskID, r.eventType, r.actorType, r.actorID, r.data, tid)
+				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,NOW())", b+1, b+2, b+3, b+4, b+5, b+6))
+				args = append(args, r.id, r.taskID, r.eventType, r.actorType, r.actorID, r.data)
 			}
-			q := `INSERT INTO team_task_events (id, task_id, event_type, actor_type, actor_id, data, tenant_id, created_at)
+			q := `INSERT INTO team_task_events (id, task_id, event_type, actor_type, actor_id, data, created_at)
 				VALUES ` + strings.Join(ph, ",")
 			if _, err = h.db.ExecContext(ctx, q, args...); err != nil {
 				slog.Warn("import.team: batch insert events", "count", len(chunk), "error", err)
@@ -258,7 +256,7 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 				dir: l.Direction, desc: l.Description,
 			})
 		}
-		const cols = 7
+		const cols = 6
 		for start := 0; start < len(lRows); start += 1000 {
 			end := min(start+1000, len(lRows))
 			chunk := lRows[start:end]
@@ -266,10 +264,10 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 			ph := make([]string, 0, len(chunk))
 			for i, r := range chunk {
 				b := i * cols
-				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d)", b+1, b+2, b+3, b+4, b+5, b+6, b+7))
-				args = append(args, r.id, r.srcID, r.tgtID, r.dir, r.desc, userID, tid)
+				ph = append(ph, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d)", b+1, b+2, b+3, b+4, b+5, b+6))
+				args = append(args, r.id, r.srcID, r.tgtID, r.dir, r.desc, userID)
 			}
-			q := `INSERT INTO agent_links (id, source_agent_id, target_agent_id, direction, description, created_by, tenant_id)
+			q := `INSERT INTO agent_links (id, source_agent_id, target_agent_id, direction, description, created_by)
 				VALUES ` + strings.Join(ph, ",") + ` ON CONFLICT DO NOTHING`
 			if _, err = h.db.ExecContext(ctx, q, args...); err != nil {
 				slog.Warn("import.team: batch insert links", "count", len(chunk), "error", err)
@@ -296,8 +294,8 @@ func (h *AgentsHandler) importTeamSection(ctx context.Context, ag *store.AgentDa
 }
 
 // buildAgentKeyMap resolves all agent_keys referenced in the team section to UUIDs.
-// Uses batch GetByKeys with tenant-scoped context instead of per-key SELECT.
-func (h *AgentsHandler) buildAgentKeyMap(ctx context.Context, tid uuid.UUID, arc *importArchive) map[string]uuid.UUID {
+// Uses batch GetByKeys instead of per-key SELECT.
+func (h *AgentsHandler) buildAgentKeyMap(ctx context.Context, arc *importArchive) map[string]uuid.UUID {
 	keys := make(map[string]struct{})
 	for _, m := range arc.teamMembers {
 		keys[m.AgentKey] = struct{}{}
@@ -325,9 +323,7 @@ func (h *AgentsHandler) buildAgentKeyMap(ctx context.Context, tid uuid.UUID, arc
 		keyList = append(keyList, k)
 	}
 
-	// Ensure tenant-scoped context for GetByKeys (Red Team Fix #2).
-	scopedCtx := store.WithTenantID(ctx, tid)
-	agents, err := h.agents.GetByKeys(scopedCtx, keyList)
+	agents, err := h.agents.GetByKeys(ctx, keyList)
 	if err != nil {
 		slog.Warn("import.team: batch agent key lookup failed", "error", err)
 		return make(map[string]uuid.UUID)

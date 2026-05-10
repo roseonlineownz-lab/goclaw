@@ -10,6 +10,9 @@ type Entity struct {
 	ID          string            `json:"id" db:"id"`
 	AgentID     string            `json:"agent_id" db:"agent_id"`
 	UserID      string            `json:"user_id,omitempty" db:"user_id"`
+	TeamID      string            `json:"team_id,omitempty" db:"team_id"`
+	ContactID   string            `json:"contact_id,omitempty" db:"contact_id"`
+	ProjectID   string            `json:"project_id,omitempty" db:"project_id"`
 	ExternalID  string            `json:"external_id" db:"external_id"`
 	Name        string            `json:"name" db:"name"`
 	EntityType  string            `json:"entity_type" db:"entity_type"`
@@ -28,6 +31,7 @@ type Relation struct {
 	ID             string            `json:"id" db:"id"`
 	AgentID        string            `json:"agent_id" db:"agent_id"`
 	UserID         string            `json:"user_id,omitempty" db:"user_id"`
+	TeamID         string            `json:"team_id,omitempty" db:"team_id"`
 	SourceEntityID string            `json:"source_entity_id" db:"source_entity_id"`
 	RelationType   string            `json:"relation_type" db:"relation_type"`
 	TargetEntityID string            `json:"target_entity_id" db:"target_entity_id"`

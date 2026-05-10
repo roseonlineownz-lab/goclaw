@@ -2,7 +2,6 @@ package pg
 
 import (
 	"encoding/json"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -18,30 +17,6 @@ type agentBackfillRow struct {
 	ID          uuid.UUID `db:"id"`
 	DisplayName string    `db:"display_name"`
 	Frontmatter string    `db:"frontmatter"`
-}
-
-// agentShareRow maps the 6-column agent_shares SELECT query.
-// AgentShareData embeds BaseModel (id, created_at, updated_at) but the query
-// only selects id, agent_id, user_id, role, granted_by, created_at — so we use
-// a flat intermediate to avoid scan mismatches on missing updated_at.
-type agentShareRow struct {
-	ID        uuid.UUID `db:"id"`
-	AgentID   uuid.UUID `db:"agent_id"`
-	UserID    string    `db:"user_id"`
-	Role      string    `db:"role"`
-	GrantedBy string    `db:"granted_by"`
-	CreatedAt time.Time `db:"created_at"`
-}
-
-func (r agentShareRow) toAgentShareData() store.AgentShareData {
-	d := store.AgentShareData{}
-	d.ID = r.ID
-	d.AgentID = r.AgentID
-	d.UserID = r.UserID
-	d.Role = r.Role
-	d.GrantedBy = r.GrantedBy
-	d.CreatedAt = r.CreatedAt
-	return d
 }
 
 // userInstanceRow is an intermediate for ListUserInstances.

@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -33,8 +35,9 @@ type ProvidersHandler struct {
 	cliMu           sync.Mutex                       // serializes Claude CLI provider create to prevent duplicates
 	msgBus          *bus.MessageBus
 	sysConfigStore  store.SystemConfigStore
-	tracingStore    store.TracingStore   // optional: for provider-scoped pool activity
-	agents          store.AgentCRUDStore // optional: for provider pool activity agent lookup
+	tracingStore    store.TracingStore      // optional: for provider-scoped pool activity
+	agents          store.AgentCRUDStore    // optional: for provider pool activity agent lookup
+	modelReg        providers.ModelRegistry // optional: forward-compat model resolver for Anthropic
 }
 
 // NewProvidersHandler creates a handler for provider management endpoints.
@@ -73,6 +76,12 @@ func (h *ProvidersHandler) SetTracingStore(ts store.TracingStore) {
 // SetAgentStore sets the agent store for provider pool activity agent lookup.
 func (h *ProvidersHandler) SetAgentStore(as store.AgentCRUDStore) {
 	h.agents = as
+}
+
+// SetModelRegistry sets the forward-compat model registry used by Anthropic providers
+// for model alias resolution and token counting. Must be called before serving requests.
+func (h *ProvidersHandler) SetModelRegistry(r providers.ModelRegistry) {
+	h.modelReg = r
 }
 
 // resolveAPIBase returns the provider's api_base, falling back to config/env if empty.
@@ -162,14 +171,26 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 		if cliPath == "" {
 			cliPath = "claude"
 		}
-		var cliOpts []providers.ClaudeCLIOption
-		cliOpts = append(cliOpts, providers.WithClaudeCLISecurityHooks("", true))
+		// Validate: only accept "claude" or absolute path (mirrors startup path in cmd/gateway_providers.go).
+		// Prevents DB-poisoning attacks where a relative path resolves against CWD.
+		if cliPath != "claude" && !filepath.IsAbs(cliPath) {
+			slog.Warn("security.claude_cli: invalid path, using default", "path", cliPath, "provider", p.Name)
+			cliPath = "claude"
+		}
+		if _, err := exec.LookPath(cliPath); err != nil {
+			slog.Warn("claude-cli: binary not found, skipping in-memory registration", "path", cliPath, "provider", p.Name, "error", err)
+			return
+		}
+		cliOpts := []providers.ClaudeCLIOption{
+			providers.WithClaudeCLIName(p.Name),
+			providers.WithClaudeCLISecurityHooks("", true),
+		}
 		if h.gatewayAddr != "" {
 			mcpData := providers.BuildCLIMCPConfigData(nil, h.gatewayAddr, pkgGatewayToken)
 			mcpData.AgentMCPLookup = h.mcpLookup
 			cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfigData(mcpData))
 		}
-		h.providerReg.RegisterForTenant(p.TenantID, providers.NewClaudeCLIProvider(cliPath, cliOpts...))
+		h.providerReg.Register(providers.NewClaudeCLIProvider(cliPath, cliOpts...))
 		return
 	}
 	// Ollama doesn't need an API key — handle before the key guard (same as startup).
@@ -180,7 +201,7 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 		if host == "" {
 			host = "http://localhost:11434/v1"
 		}
-		h.providerReg.RegisterForTenant(p.TenantID, providers.NewOpenAIProvider(p.Name, "ollama", config.DockerLocalhost(host), "llama3.3"))
+		h.providerReg.Register(providers.NewOpenAIProvider(p.Name, "ollama", config.DockerLocalhost(host), "llama3.3"))
 		return
 	}
 	if p.APIKey == "" {
@@ -189,35 +210,41 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 	apiBase := h.resolveAPIBase(p)
 	switch p.ProviderType {
 	case store.ProviderChatGPTOAuth:
-		ts := oauth.NewDBTokenSource(h.store, h.secretStore, p.Name).WithTenantID(p.TenantID)
+		ts := oauth.NewDBTokenSource(h.store, h.secretStore, p.Name)
 		codex := providers.NewCodexProvider(p.Name, ts, apiBase, "")
 		if oauthSettings := store.ParseChatGPTOAuthProviderSettings(p.Settings); oauthSettings != nil {
 			codex.WithRoutingDefaults(oauthSettings.CodexPool.Strategy, oauthSettings.CodexPool.ExtraProviderNames)
 		}
-		h.providerReg.RegisterForTenant(p.TenantID, codex)
+		h.providerReg.Register(codex)
 	case store.ProviderAnthropicNative:
-		h.providerReg.RegisterForTenant(p.TenantID, providers.NewAnthropicProvider(p.APIKey,
-			providers.WithAnthropicBaseURL(apiBase)))
+		anthOpts := []providers.AnthropicOption{
+			providers.WithAnthropicName(p.Name),
+			providers.WithAnthropicBaseURL(apiBase),
+		}
+		if h.modelReg != nil {
+			anthOpts = append(anthOpts, providers.WithAnthropicRegistry(h.modelReg))
+		}
+		h.providerReg.Register(providers.NewAnthropicProvider(p.APIKey, anthOpts...))
 	case store.ProviderDashScope:
-		h.providerReg.RegisterForTenant(p.TenantID, providers.NewDashScopeProvider(p.Name, p.APIKey, apiBase, ""))
+		h.providerReg.Register(providers.NewDashScopeProvider(p.Name, p.APIKey, apiBase, ""))
 	case store.ProviderBailian:
 		base := apiBase
 		if base == "" {
 			base = "https://coding-intl.dashscope.aliyuncs.com/v1"
 		}
-		h.providerReg.RegisterForTenant(p.TenantID, providers.NewOpenAIProvider(p.Name, p.APIKey, base, "qwen3.5-plus"))
+		h.providerReg.Register(providers.NewOpenAIProvider(p.Name, p.APIKey, base, "qwen3.5-plus"))
 	case store.ProviderNovita:
 		base := apiBase
 		if base == "" {
 			base = store.NovitaDefaultAPIBase
 		}
-		h.providerReg.RegisterForTenant(p.TenantID, providers.NewOpenAIProvider(p.Name, p.APIKey, base, store.NovitaDefaultModel))
+		h.providerReg.Register(providers.NewOpenAIProvider(p.Name, p.APIKey, base, store.NovitaDefaultModel))
 	default:
 		prov := providers.NewOpenAIProvider(p.Name, p.APIKey, apiBase, "")
 		if p.ProviderType == store.ProviderMiniMax {
 			prov.WithChatPath("/text/chatcompletion_v2")
 		}
-		h.providerReg.RegisterForTenant(p.TenantID, prov)
+		h.providerReg.Register(prov)
 	}
 }
 
@@ -301,7 +328,11 @@ func (h *ProvidersHandler) handleListProviders(w http.ResponseWriter, r *http.Re
 		maskAPIKey(&providers[i])
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+	publicProviders := make([]store.LLMProviderData, 0, len(providers))
+	for i := range providers {
+		publicProviders = append(publicProviders, canonicalizeProviderForResponse(&providers[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": publicProviders})
 }
 
 func (h *ProvidersHandler) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +403,8 @@ func (h *ProvidersHandler) handleCreateProvider(w http.ResponseWriter, r *http.R
 
 	emitAudit(h.msgBus, r, "provider.created", "provider", p.ID.String())
 	maskAPIKey(&p)
-	writeJSON(w, http.StatusCreated, p)
+	publicProvider := canonicalizeProviderForResponse(&p)
+	writeJSON(w, http.StatusCreated, publicProvider)
 }
 
 func (h *ProvidersHandler) handleGetProvider(w http.ResponseWriter, r *http.Request) {
@@ -390,7 +422,8 @@ func (h *ProvidersHandler) handleGetProvider(w http.ResponseWriter, r *http.Requ
 	}
 
 	maskAPIKey(p)
-	writeJSON(w, http.StatusOK, p)
+	publicProvider := canonicalizeProviderForResponse(p)
+	writeJSON(w, http.StatusOK, publicProvider)
 }
 
 func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
@@ -518,10 +551,10 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 		if updated, err := h.store.GetProvider(r.Context(), id); err == nil {
 			// Unregister old name if renamed to prevent ghost entries
 			if oldName != "" && oldName != updated.Name {
-				h.providerReg.UnregisterForTenant(updated.TenantID, oldName)
+				h.providerReg.Unregister(oldName)
 			}
 			if !updated.Enabled {
-				h.providerReg.UnregisterForTenant(updated.TenantID, updated.Name)
+				h.providerReg.Unregister(updated.Name)
 			} else {
 				h.registerInMemory(updated)
 			}
@@ -550,10 +583,8 @@ func (h *ProvidersHandler) handleDeleteProvider(w http.ResponseWriter, r *http.R
 
 	// Read provider before deleting so we can unregister it
 	var providerName string
-	var providerTenantID uuid.UUID
 	if p, err := h.store.GetProvider(r.Context(), id); err == nil {
 		providerName = p.Name
-		providerTenantID = p.TenantID
 	}
 
 	if err := h.store.DeleteProvider(r.Context(), id); err != nil {
@@ -563,7 +594,7 @@ func (h *ProvidersHandler) handleDeleteProvider(w http.ResponseWriter, r *http.R
 	}
 
 	if h.providerReg != nil && providerName != "" {
-		h.providerReg.UnregisterForTenant(providerTenantID, providerName)
+		h.providerReg.Unregister(providerName)
 	}
 	if providerName != "" {
 		h.emitProviderCacheInvalidate(providerName)

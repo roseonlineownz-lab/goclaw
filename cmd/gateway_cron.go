@@ -13,7 +13,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/scheduler"
-	"github.com/nextlevelbuilder/goclaw/internal/sessions"
+	sessions "github.com/nextlevelbuilder/goclaw/internal/agentsessions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -29,8 +29,7 @@ func makeCronJobHandler(sched *scheduler.Scheduler, msgBus *bus.MessageBus, cfg 
 		agentID := job.AgentID
 		if agentID == "" && agentStore != nil {
 			// Resolve real default agent from DB instead of using literal "default" string.
-			tenantCtx := store.WithTenantID(context.Background(), job.TenantID)
-			if defaultAgent, err := agentStore.GetDefault(tenantCtx); err == nil {
+			if defaultAgent, err := agentStore.GetDefault(context.Background()); err == nil {
 				agentID = defaultAgent.AgentKey
 			} else {
 				agentID = cfg.ResolveDefaultAgentID()
@@ -40,8 +39,7 @@ func makeCronJobHandler(sched *scheduler.Scheduler, msgBus *bus.MessageBus, cfg 
 		} else if id, err := uuid.Parse(agentID); err == nil && agentStore != nil {
 			// Resolve agentKey from UUID so session key uses agentKey
 			// (consistent with chat/WS/team paths, fixes cache invalidation mismatch).
-			cronCtx := store.WithTenantID(context.Background(), job.TenantID)
-			if ag, err := agentStore.GetByID(cronCtx, id); err == nil {
+			if ag, err := agentStore.GetByID(context.Background(), id); err == nil {
 				agentID = ag.AgentKey
 			}
 		} else {
@@ -78,12 +76,10 @@ func makeCronJobHandler(sched *scheduler.Scheduler, msgBus *bus.MessageBus, cfg 
 			)
 		}
 
-		// Build context with tenant scope and timeout so agent loop events are
-		// scoped correctly and a hung agent can't block the cron scheduler forever.
+		// Build context with timeout so a hung agent can't block the cron scheduler forever.
 		jobTimeout := cfg.Cron.JobTimeoutDuration()
 		cronCtx, cancelCron := context.WithTimeout(context.Background(), jobTimeout)
 		defer cancelCron()
-		cronCtx = store.WithTenantID(cronCtx, job.TenantID)
 
 		// Reset session before each cron run to prevent tool errors from previous
 		// runs from polluting the context and blocking future executions (#294).

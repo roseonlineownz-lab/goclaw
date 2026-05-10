@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -30,8 +30,8 @@ type permRow struct {
 	UserID     string `json:"user_id" db:"user_id"` // individual user ID or "*" (group wildcard)
 }
 
-// fwCacheEntry holds cached file_writer ConfigPermission rows for a scope.
-type fwCacheEntry struct {
+// writerCacheEntry holds cached ConfigPermission rows for a scope+configType pair.
+type writerCacheEntry struct {
 	rows    []store.ConfigPermission
 	fetched time.Time
 }
@@ -39,18 +39,39 @@ type fwCacheEntry struct {
 // PGConfigPermissionStore implements store.ConfigPermissionStore backed by Postgres.
 // Includes a TTL cache for CheckPermission to avoid per-request DB queries.
 type PGConfigPermissionStore struct {
-	db      *sql.DB
-	mu      sync.RWMutex
-	cache   map[string]permCacheEntry // key: "agentID:userID"
-	fwMu    sync.RWMutex
-	fwCache map[string]fwCacheEntry // key: "agentID:scope"
+	db        *sql.DB
+	mu        sync.RWMutex
+	cache     map[string]permCacheEntry   // key: "agentID:userID"
+	writerMu  sync.RWMutex
+	writerCac map[string]writerCacheEntry // key: "agentID:scope:configType"
+
+	grantHooksMu sync.RWMutex
+	grantHooks   []func(agentID uuid.UUID) // called after Grant/Revoke with the affected agentID
 }
 
 func NewPGConfigPermissionStore(db *sql.DB) *PGConfigPermissionStore {
 	return &PGConfigPermissionStore{
-		db:      db,
-		cache:   make(map[string]permCacheEntry),
-		fwCache: make(map[string]fwCacheEntry),
+		db:        db,
+		cache:     make(map[string]permCacheEntry),
+		writerCac: make(map[string]writerCacheEntry),
+	}
+}
+
+// RegisterGrantHook registers a callback invoked after each Grant or Revoke with
+// the affected agentID. Used to invalidate derivative caches (e.g. glob cache)
+// without polling the 60s TTL.
+func (s *PGConfigPermissionStore) RegisterGrantHook(fn func(agentID uuid.UUID)) {
+	s.grantHooksMu.Lock()
+	s.grantHooks = append(s.grantHooks, fn)
+	s.grantHooksMu.Unlock()
+}
+
+func (s *PGConfigPermissionStore) runGrantHooks(agentID uuid.UUID) {
+	s.grantHooksMu.RLock()
+	hooks := s.grantHooks
+	s.grantHooksMu.RUnlock()
+	for _, fn := range hooks {
+		fn(agentID)
 	}
 }
 
@@ -60,18 +81,14 @@ func (s *PGConfigPermissionStore) InvalidateCache() {
 	s.cache = make(map[string]permCacheEntry)
 	s.mu.Unlock()
 
-	s.fwMu.Lock()
-	s.fwCache = make(map[string]fwCacheEntry)
-	s.fwMu.Unlock()
+	s.writerMu.Lock()
+	s.writerCac = make(map[string]writerCacheEntry)
+	s.writerMu.Unlock()
 }
 
 // CheckPermission evaluates deny-first, allow-second permission with Go-level wildcard matching.
 func (s *PGConfigPermissionStore) CheckPermission(ctx context.Context, agentID uuid.UUID, scope, configType, userID string) (bool, error) {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
-	cacheKey := tid.String() + ":" + agentID.String() + ":" + userID
+	cacheKey := agentID.String() + ":" + userID
 
 	// Check cache.
 	s.mu.RLock()
@@ -82,15 +99,11 @@ func (s *PGConfigPermissionStore) CheckPermission(ctx context.Context, agentID u
 	s.mu.RUnlock()
 
 	// Fetch from DB.
-	tClause, tArgs, _, err := scopeClause(ctx, 3)
-	if err != nil {
-		return false, err
-	}
 	var permRows []permRow
-	err = pkgSqlxDB.SelectContext(ctx, &permRows,
+	err := pkgSqlxDB.SelectContext(ctx, &permRows,
 		`SELECT scope, config_type, permission, user_id FROM agent_config_permissions
-		 WHERE agent_id = $1 AND (user_id = $2 OR user_id = '*')`+tClause,
-		append([]any{agentID, userID}, tArgs...)...,
+		 WHERE agent_id = $1 AND (user_id = $2 OR user_id = '*')`,
+		agentID, userID,
 	)
 	if err != nil {
 		return false, err
@@ -168,44 +181,45 @@ func (s *PGConfigPermissionStore) Grant(ctx context.Context, perm *store.ConfigP
 	if meta == nil {
 		meta = json.RawMessage("{}")
 	}
+	denyGlobs := perm.DenyGlobs
+	if denyGlobs == nil {
+		denyGlobs = store.DefaultDenyGlobs
+	}
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_config_permissions (agent_id, scope, config_type, user_id, permission, granted_by, metadata, created_at, updated_at, tenant_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9)
+		`INSERT INTO agent_config_permissions
+		   (agent_id, scope, config_type, user_id, permission, granted_by, metadata, deny_globs, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
 		 ON CONFLICT (agent_id, scope, config_type, user_id) DO UPDATE SET
-		        permission = EXCLUDED.permission,
-		        granted_by = EXCLUDED.granted_by,
-		        metadata = EXCLUDED.metadata,
-		        updated_at = EXCLUDED.updated_at`,
-		perm.AgentID, perm.Scope, perm.ConfigType, perm.UserID, perm.Permission, perm.GrantedBy, meta, now, tenantIDForInsert(ctx),
+		        permission  = EXCLUDED.permission,
+		        granted_by  = EXCLUDED.granted_by,
+		        metadata    = EXCLUDED.metadata,
+		        deny_globs  = EXCLUDED.deny_globs,
+		        updated_at  = EXCLUDED.updated_at`,
+		perm.AgentID, perm.Scope, perm.ConfigType, perm.UserID, perm.Permission, perm.GrantedBy, meta,
+		pq.Array(denyGlobs), now,
 	)
 	if err == nil {
 		s.InvalidateCache()
+		s.runGrantHooks(perm.AgentID)
 	}
 	return err
 }
 
 func (s *PGConfigPermissionStore) Revoke(ctx context.Context, agentID uuid.UUID, scope, configType, userID string) error {
-	tClause, tArgs, _, err := scopeClause(ctx, 5)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx,
-		`DELETE FROM agent_config_permissions WHERE agent_id = $1 AND scope = $2 AND config_type = $3 AND user_id = $4`+tClause,
-		append([]any{agentID, scope, configType, userID}, tArgs...)...,
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM agent_config_permissions WHERE agent_id = $1 AND scope = $2 AND config_type = $3 AND user_id = $4`,
+		agentID, scope, configType, userID,
 	)
 	if err == nil {
 		s.InvalidateCache()
+		s.runGrantHooks(agentID)
 	}
 	return err
 }
 
 func (s *PGConfigPermissionStore) List(ctx context.Context, agentID uuid.UUID, configType, scope string) ([]store.ConfigPermission, error) {
-	tClause, tArgs, _, err := scopeClause(ctx, 0) // paramN unused; we append manually
-	if err != nil {
-		return nil, err
-	}
-	query := `SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, created_at, updated_at
+	query := `SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, deny_globs, created_at, updated_at
 	          FROM agent_config_permissions WHERE agent_id = $1`
 	args := []any{agentID}
 
@@ -216,10 +230,6 @@ func (s *PGConfigPermissionStore) List(ctx context.Context, agentID uuid.UUID, c
 	if scope != "" {
 		args = append(args, scope)
 		query += ` AND scope = $` + itoa(len(args))
-	}
-	if tClause != "" {
-		args = append(args, tArgs...)
-		query += fmt.Sprintf(" AND tenant_id = $%d", len(args))
 	}
 	query += ` ORDER BY created_at`
 
@@ -232,32 +242,25 @@ func (s *PGConfigPermissionStore) List(ctx context.Context, agentID uuid.UUID, c
 	return scanConfigPermissions(rows)
 }
 
-// ListFileWriters returns cached file_writer allow permissions for a given agentID+scope.
+// ListWriters returns cached allow permissions for a given agentID+scope+configType.
 // Hot-path: called during system prompt injection for every group message.
-func (s *PGConfigPermissionStore) ListFileWriters(ctx context.Context, agentID uuid.UUID, scope string) ([]store.ConfigPermission, error) {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
-	cacheKey := tid.String() + ":" + agentID.String() + ":" + scope
+// Post-split semantic: callers pass ConfigTypeEditFile for the "writers" surface.
+func (s *PGConfigPermissionStore) ListWriters(ctx context.Context, agentID uuid.UUID, scope string, configType string) ([]store.ConfigPermission, error) {
+	cacheKey := agentID.String() + ":" + scope + ":" + configType
 
-	s.fwMu.RLock()
-	if entry, ok := s.fwCache[cacheKey]; ok && time.Since(entry.fetched) < permCacheTTL {
-		s.fwMu.RUnlock()
+	s.writerMu.RLock()
+	if entry, ok := s.writerCac[cacheKey]; ok && time.Since(entry.fetched) < permCacheTTL {
+		s.writerMu.RUnlock()
 		return entry.rows, nil
 	}
-	s.fwMu.RUnlock()
+	s.writerMu.RUnlock()
 
-	tClause, tArgs, _, err := scopeClause(ctx, 3)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, created_at, updated_at
+		`SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, deny_globs, created_at, updated_at
 		 FROM agent_config_permissions
-		 WHERE agent_id = $1 AND config_type = 'file_writer' AND scope = $2 AND permission = 'allow'`+tClause+`
+		 WHERE agent_id = $1 AND config_type = $2 AND scope = $3 AND permission = 'allow'
 		 ORDER BY created_at`,
-		append([]any{agentID, scope}, tArgs...)...,
+		agentID, configType, scope,
 	)
 	if err != nil {
 		return nil, err
@@ -269,11 +272,46 @@ func (s *PGConfigPermissionStore) ListFileWriters(ctx context.Context, agentID u
 		return nil, err
 	}
 
-	s.fwMu.Lock()
-	s.fwCache[cacheKey] = fwCacheEntry{rows: perms, fetched: time.Now()}
-	s.fwMu.Unlock()
+	s.writerMu.Lock()
+	s.writerCac[cacheKey] = writerCacheEntry{rows: perms, fetched: time.Now()}
+	s.writerMu.Unlock()
 
 	return perms, nil
+}
+
+// GetDenyGlobs returns the deduplicated union of deny_globs across all grant rows
+// matching (agentID, scope, userID). Returns the baseline default list when no row matches.
+func (s *PGConfigPermissionStore) GetDenyGlobs(ctx context.Context, agentID uuid.UUID, scope, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT deny_globs FROM agent_config_permissions
+		 WHERE agent_id = $1 AND (user_id = $2 OR user_id = '*') AND scope = $3 AND permission = 'allow'`,
+		agentID, userID, scope,
+	)
+	if err != nil {
+		return store.DefaultDenyGlobs, nil // fail-open: return baseline
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	for _, g := range store.DefaultDenyGlobs {
+		seen[g] = struct{}{}
+	}
+	result := make([]string, len(store.DefaultDenyGlobs))
+	copy(result, store.DefaultDenyGlobs)
+
+	for rows.Next() {
+		var globs pq.StringArray
+		if err := rows.Scan(&globs); err != nil {
+			continue
+		}
+		for _, g := range globs {
+			if _, dup := seen[g]; !dup {
+				seen[g] = struct{}{}
+				result = append(result, g)
+			}
+		}
+	}
+	return result, nil
 }
 
 func scanConfigPermissions(rows *sql.Rows) ([]store.ConfigPermission, error) {
@@ -281,12 +319,14 @@ func scanConfigPermissions(rows *sql.Rows) ([]store.ConfigPermission, error) {
 	for rows.Next() {
 		var p store.ConfigPermission
 		var metadata []byte
+		var globs pq.StringArray
 		if err := rows.Scan(
-			&p.ID, &p.AgentID, &p.Scope, &p.ConfigType, &p.UserID, &p.Permission, &p.GrantedBy, &metadata, &p.CreatedAt, &p.UpdatedAt,
+			&p.ID, &p.AgentID, &p.Scope, &p.ConfigType, &p.UserID, &p.Permission, &p.GrantedBy, &metadata, &globs, &p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		p.Metadata = metadata
+		p.DenyGlobs = []string(globs)
 		perms = append(perms, p)
 	}
 	if err := rows.Err(); err != nil {

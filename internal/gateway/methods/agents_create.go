@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/google/uuid"
-
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway"
@@ -30,9 +28,7 @@ func (m *AgentsMethods) handleCreate(ctx context.Context, client *gateway.Client
 		Avatar            string   `json:"avatar"`
 		Provider          string   `json:"provider"`
 		Model             string   `json:"model"`
-		AgentType         string   `json:"agent_type"`          // "open" (default) or "predefined"
 		OwnerIDs          []string `json:"owner_ids,omitempty"` // first entry used as DB owner_id; falls back to "system"
-		TenantID          string   `json:"tenant_id"`           // required for cross-tenant callers; ignored otherwise
 		ContextWindow     int      `json:"context_window"`
 		MaxToolIterations int      `json:"max_tool_iterations"`
 		BudgetCents       *int     `json:"budget_monthly_cents"`
@@ -52,23 +48,27 @@ func (m *AgentsMethods) handleCreate(ctx context.Context, client *gateway.Client
 		SkillEvolve         bool            `json:"skill_evolve"`
 		SkillNudgeInterval  int             `json:"skill_nudge_interval"`
 		ReasoningConfig     json.RawMessage `json:"reasoning_config,omitempty"`
-		WorkspaceSharing    json.RawMessage `json:"workspace_sharing,omitempty"`
+		ShareWorkspace      bool            `json:"share_workspace"`
+		ShareMemory         bool            `json:"share_memory"`
 		ChatGPTOAuthRouting json.RawMessage `json:"chatgpt_oauth_routing,omitempty"`
 		ShellDenyGroups     json.RawMessage `json:"shell_deny_groups,omitempty"`
 		KGDedupConfig       json.RawMessage `json:"kg_dedup_config,omitempty"`
 	}
 	if req.Params != nil {
+		// Reject legacy agent_type field — keep WS contract aligned with HTTP.
+		var probe map[string]json.RawMessage
+		if err := json.Unmarshal(req.Params, &probe); err == nil {
+			if _, hasAgentType := probe["agent_type"]; hasAgentType {
+				client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgAgentTypeRejected)))
+				return
+			}
+		}
 		json.Unmarshal(req.Params, &params)
 	}
 
 	if params.Name == "" {
 		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgRequired, "name")))
 		return
-	}
-
-	agentType := params.AgentType
-	if agentType == "" || agentType == store.AgentTypeOpen {
-		agentType = store.AgentTypePredefined // v3: open agents deprecated, default to predefined
 	}
 
 	agentID := config.NormalizeAgentID(params.Name)
@@ -101,23 +101,6 @@ func (m *AgentsMethods) handleCreate(ctx context.Context, client *gateway.Client
 			ownerID = params.OwnerIDs[0]
 		}
 
-		// Resolve tenant_id: explicit param for cross-tenant; otherwise inherit from connection scope.
-		var tenantID uuid.UUID
-		if client.IsOwner() {
-			if params.TenantID != "" {
-				tid, err := uuid.Parse(params.TenantID)
-				if err != nil {
-					client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgInvalidID, "tenant_id")))
-					return
-				}
-				tenantID = tid
-			} else {
-				tenantID = client.TenantID()
-			}
-		} else {
-			tenantID = client.TenantID()
-		}
-
 		provider := params.Provider
 		if provider == "" {
 			provider = m.cfg.Agents.Defaults.Provider
@@ -131,8 +114,6 @@ func (m *AgentsMethods) handleCreate(ctx context.Context, client *gateway.Client
 			AgentKey:         agentID,
 			DisplayName:      params.Name,
 			OwnerID:          ownerID,
-			TenantID:         tenantID,
-			AgentType:        agentType,
 			Provider:         provider,
 			Model:            model,
 			Workspace:        ws,
@@ -155,7 +136,8 @@ func (m *AgentsMethods) handleCreate(ctx context.Context, client *gateway.Client
 			SkillEvolve:         params.SkillEvolve,
 			SkillNudgeInterval:  params.SkillNudgeInterval,
 			ReasoningConfig:     params.ReasoningConfig,
-			WorkspaceSharing:    params.WorkspaceSharing,
+			ShareWorkspace:      params.ShareWorkspace,
+			ShareMemory:         params.ShareMemory,
 			ChatGPTOAuthRouting: params.ChatGPTOAuthRouting,
 			ShellDenyGroups:     params.ShellDenyGroups,
 			KGDedupConfig:       params.KGDedupConfig,
@@ -166,7 +148,7 @@ func (m *AgentsMethods) handleCreate(ctx context.Context, client *gateway.Client
 		}
 
 		// Seed context files to DB (skipped for open agents)
-		if _, err := bootstrap.SeedToStore(ctx, m.agentStore, agentData.ID, agentData.AgentType); err != nil {
+		if _, err := bootstrap.SeedToStore(ctx, m.agentStore, agentData.ID); err != nil {
 			slog.Warn("failed to seed bootstrap for agent", "agent", agentID, "error", err)
 		}
 

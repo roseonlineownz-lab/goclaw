@@ -42,8 +42,7 @@ func (d *gatewayDeps) wireTeamTaskAuditSubscriber() {
 			return
 		}
 
-		// Propagate tenant from bus event to ensure correct tenant isolation.
-		auditCtx := store.WithTenantID(context.Background(), evt.TenantID)
+		auditCtx := context.Background()
 
 		// Populate data field with event-specific context for audit trail.
 		var data json.RawMessage
@@ -95,13 +94,20 @@ func (d *gatewayDeps) wireTeamProgressNotifySubscriber() {
 				UserID:   meta.UserID,
 				PeerKind: meta.PeerKind,
 				Content:  leaderContent,
-				Metadata: map[string]string{"run_kind": tools.RunKindNotification},
+				Metadata: func() map[string]string {
+					m := map[string]string{"run_kind": tools.RunKindNotification}
+					if meta.LocalKey != "" {
+						m["local_key"] = meta.LocalKey
+					}
+					return m
+				}(),
 			})
 		} else {
 			d.msgBus.PublishOutbound(bus.OutboundMessage{
-				Channel: meta.Channel,
-				ChatID:  meta.ChatID,
-				Content: content,
+				Channel:  meta.Channel,
+				ChatID:   meta.ChatID,
+				Content:  content,
+				Metadata: buildAnnounceOutMeta(meta.LocalKey),
 			})
 		}
 	})
@@ -243,6 +249,7 @@ func (d *gatewayDeps) wireTeamProgressNotifySubscriber() {
 			UserID:    payload.UserID,
 			LeadAgent: leadAgentKey,
 			PeerKind:  payload.PeerKind,
+			LocalKey:  payload.LocalKey,
 		})
 	})
 	slog.Info("team progress notification subscriber registered")
@@ -272,7 +279,7 @@ func (d *gatewayDeps) wireAuditSubscriber() chan bus.AuditEventPayload {
 	})
 	go func() {
 		for payload := range auditCh {
-			auditCtx := store.WithTenantID(context.Background(), payload.TenantID)
+			auditCtx := context.Background()
 			if err := d.pgStores.Activity.Log(auditCtx, &store.ActivityLog{
 				ActorType:  payload.ActorType,
 				ActorID:    payload.ActorID,

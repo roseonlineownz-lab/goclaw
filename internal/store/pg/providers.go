@@ -46,24 +46,26 @@ func (s *PGProviderStore) CreateProvider(ctx context.Context, p *store.LLMProvid
 	if len(settings) == 0 {
 		settings = []byte("{}")
 	}
+	meta := p.Metadata
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
 
 	now := time.Now()
 	p.CreatedAt = now
 	p.UpdatedAt = now
-	tid := tenantIDForInsert(ctx)
-	p.TenantID = tid
-	// UPSERT: if provider with same (tenant_id, name) exists, update it and return its ID.
-	// This handles orphaned providers left after agent deletion (#295).
+	// UPSERT: if provider with same name exists, update it and return its ID.
+	// This handles orphaned providers left after agent deletion.
 	var actualID uuid.UUID
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO llm_providers (id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at, tenant_id)
+		`INSERT INTO llm_providers (id, name, display_name, provider_type, api_base, api_key, enabled, settings, metadata, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		 ON CONFLICT (tenant_id, name) DO UPDATE SET
+		 ON CONFLICT (name) DO UPDATE SET
 			display_name = EXCLUDED.display_name, provider_type = EXCLUDED.provider_type,
 			api_base = EXCLUDED.api_base, api_key = EXCLUDED.api_key,
 			enabled = EXCLUDED.enabled, settings = EXCLUDED.settings, updated_at = EXCLUDED.updated_at
 		 RETURNING id`,
-		p.ID, p.Name, p.DisplayName, p.ProviderType, p.APIBase, apiKey, p.Enabled, settings, now, now, tid,
+		p.ID, p.Name, p.DisplayName, p.ProviderType, p.APIBase, apiKey, p.Enabled, settings, meta, now, now,
 	).Scan(&actualID)
 	if err == nil {
 		p.ID = actualID // sync in-memory ID with actual DB row
@@ -72,16 +74,10 @@ func (s *PGProviderStore) CreateProvider(ctx context.Context, p *store.LLMProvid
 }
 
 func (s *PGProviderStore) GetProvider(ctx context.Context, id uuid.UUID) (*store.LLMProviderData, error) {
-	tClause, tArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	var p store.LLMProviderData
-	err = pkgSqlxDB.GetContext(ctx, &p,
-		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at, tenant_id
-		 FROM llm_providers WHERE id = $1`+tClause,
-		append([]any{id}, tArgs...)...,
-	)
+	err := pkgSqlxDB.GetContext(ctx, &p,
+		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, metadata, created_at, updated_at
+		 FROM llm_providers WHERE id = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("provider not found: %s", id)
 	}
@@ -90,16 +86,10 @@ func (s *PGProviderStore) GetProvider(ctx context.Context, id uuid.UUID) (*store
 }
 
 func (s *PGProviderStore) GetProviderByName(ctx context.Context, name string) (*store.LLMProviderData, error) {
-	tClause, tArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	var p store.LLMProviderData
-	err = pkgSqlxDB.GetContext(ctx, &p,
-		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at, tenant_id
-		 FROM llm_providers WHERE name = $1`+tClause,
-		append([]any{name}, tArgs...)...,
-	)
+	err := pkgSqlxDB.GetContext(ctx, &p,
+		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, metadata, created_at, updated_at
+		 FROM llm_providers WHERE name = $1`, name)
 	if err != nil {
 		return nil, fmt.Errorf("provider not found: %s", name)
 	}
@@ -108,14 +98,10 @@ func (s *PGProviderStore) GetProviderByName(ctx context.Context, name string) (*
 }
 
 func (s *PGProviderStore) ListProviders(ctx context.Context) ([]store.LLMProviderData, error) {
-	tClause, tArgs, _, err := scopeClause(ctx, 1)
-	if err != nil {
-		return nil, err
-	}
 	var result []store.LLMProviderData
-	err = pkgSqlxDB.SelectContext(ctx, &result,
-		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at, tenant_id
-		 FROM llm_providers WHERE true`+tClause+` ORDER BY name`, tArgs...)
+	err := pkgSqlxDB.SelectContext(ctx, &result,
+		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, metadata, created_at, updated_at
+		 FROM llm_providers ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -125,19 +111,9 @@ func (s *PGProviderStore) ListProviders(ctx context.Context) ([]store.LLMProvide
 	return result, nil
 }
 
-// ListAllProviders returns all providers across all tenants. Server-internal only.
+// ListAllProviders returns all providers. Kept for interface compatibility.
 func (s *PGProviderStore) ListAllProviders(ctx context.Context) ([]store.LLMProviderData, error) {
-	var result []store.LLMProviderData
-	err := pkgSqlxDB.SelectContext(ctx, &result,
-		`SELECT id, name, display_name, provider_type, api_base, api_key, enabled, settings, created_at, updated_at, tenant_id
-		 FROM llm_providers WHERE true ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	for i := range result {
-		result[i].APIKey = s.decryptKey(result[i].APIKey, result[i].Name)
-	}
-	return result, nil
+	return s.ListProviders(ctx)
 }
 
 func (s *PGProviderStore) UpdateProvider(ctx context.Context, id uuid.UUID, updates map[string]any) error {
@@ -150,26 +126,32 @@ func (s *PGProviderStore) UpdateProvider(ctx context.Context, id uuid.UUID, upda
 			updates["api_key"] = encrypted
 		}
 	}
-	if store.IsCrossTenant(ctx) {
-		return execMapUpdate(ctx, s.db, "llm_providers", id, updates)
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required")
-	}
-	return execMapUpdateWhereTenant(ctx, s.db, "llm_providers", updates, id, tid)
+	return execMapUpdate(ctx, s.db, "llm_providers", id, updates)
 }
 
 func (s *PGProviderStore) DeleteProvider(ctx context.Context, id uuid.UUID) error {
-	tClause, tArgs, _, err := scopeClause(ctx, 2)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx,
-		"DELETE FROM llm_providers WHERE id = $1"+tClause,
-		append([]any{id}, tArgs...)...,
-	)
-	return err
+	defer tx.Rollback()
+
+	// Disable heartbeats so the next scheduler tick after delete cannot fire stale config.
+	// FK ON DELETE SET NULL clears provider_id auto.
+	res, err := tx.ExecContext(ctx,
+		"UPDATE agent_heartbeats SET enabled = false WHERE provider_id = $1", id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		slog.Warn("heartbeat.provider_cleared",
+			"provider_id", id, "heartbeats_disabled", n)
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM llm_providers WHERE id = $1", id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PGProviderStore) decryptKey(apiKey, providerName string) string {

@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -36,89 +35,11 @@ func setupTestToken(t *testing.T, token string) {
 	t.Cleanup(func() { pkgGatewayToken = old })
 }
 
-func setupTestTenantStore(t *testing.T, ts store.TenantStore) {
-	t.Helper()
-	old := pkgTenantCache
-	pkgTenantCache = newTenantCache(ts, 5*time.Minute)
-	t.Cleanup(func() { pkgTenantCache = old })
-}
-
 func setupTestPairingStore(t *testing.T, ps store.PairingStore) {
 	t.Helper()
 	old := pkgPairingStore
 	pkgPairingStore = ps
 	t.Cleanup(func() { pkgPairingStore = old })
-}
-
-type mockTenantStore struct {
-	tenantsByID   map[uuid.UUID]*store.TenantData
-	tenantsBySlug map[string]*store.TenantData
-	roles         map[uuid.UUID]map[string]string
-}
-
-func newMockTenantStore() *mockTenantStore {
-	return &mockTenantStore{
-		tenantsByID:   make(map[uuid.UUID]*store.TenantData),
-		tenantsBySlug: make(map[string]*store.TenantData),
-		roles:         make(map[uuid.UUID]map[string]string),
-	}
-}
-
-func (m *mockTenantStore) addTenant(id uuid.UUID, slug string) {
-	t := &store.TenantData{ID: id, Slug: slug, Name: slug}
-	m.tenantsByID[id] = t
-	m.tenantsBySlug[slug] = t
-}
-
-func (m *mockTenantStore) setUserRole(tenantID uuid.UUID, userID, role string) {
-	if m.roles[tenantID] == nil {
-		m.roles[tenantID] = make(map[string]string)
-	}
-	m.roles[tenantID][userID] = role
-}
-
-func (m *mockTenantStore) CreateTenant(context.Context, *store.TenantData) error { return nil }
-func (m *mockTenantStore) GetTenant(_ context.Context, id uuid.UUID) (*store.TenantData, error) {
-	if t := m.tenantsByID[id]; t != nil {
-		return t, nil
-	}
-	return nil, fmt.Errorf("not found")
-}
-func (m *mockTenantStore) GetTenantBySlug(_ context.Context, slug string) (*store.TenantData, error) {
-	if t := m.tenantsBySlug[slug]; t != nil {
-		return t, nil
-	}
-	return nil, fmt.Errorf("not found")
-}
-func (m *mockTenantStore) ListTenants(context.Context) ([]store.TenantData, error) { return nil, nil }
-func (m *mockTenantStore) UpdateTenant(context.Context, uuid.UUID, map[string]any) error {
-	return nil
-}
-func (m *mockTenantStore) AddUser(context.Context, uuid.UUID, string, string) error { return nil }
-func (m *mockTenantStore) RemoveUser(context.Context, uuid.UUID, string) error      { return nil }
-func (m *mockTenantStore) GetUserRole(_ context.Context, tenantID uuid.UUID, userID string) (string, error) {
-	if role := m.roles[tenantID][userID]; role != "" {
-		return role, nil
-	}
-	return "", nil
-}
-func (m *mockTenantStore) ListUsers(context.Context, uuid.UUID) ([]store.TenantUserData, error) {
-	return nil, nil
-}
-func (m *mockTenantStore) ListUserTenants(context.Context, string) ([]store.TenantUserData, error) {
-	return nil, nil
-}
-func (m *mockTenantStore) ResolveUserTenant(context.Context, string) (uuid.UUID, error) {
-	return store.MasterTenantID, nil
-}
-func (m *mockTenantStore) GetTenantUser(context.Context, uuid.UUID) (*store.TenantUserData, error) {
-	return nil, fmt.Errorf("not found")
-}
-func (m *mockTenantStore) CreateTenantUserReturning(context.Context, uuid.UUID, string, string, string) (*store.TenantUserData, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (m *mockTenantStore) GetTenantsByIDs(context.Context, []uuid.UUID) ([]store.TenantData, error) {
-	return nil, nil
 }
 
 type mockPairingStore struct {
@@ -159,50 +80,6 @@ func TestResolveAuth_GatewayToken(t *testing.T) {
 	}
 	if auth.Role != permissions.RoleAdmin {
 		t.Errorf("role = %v, want admin", auth.Role)
-	}
-}
-
-func TestResolveAuth_GatewayTokenScopesNonOwnerToMemberTenant(t *testing.T) {
-	setupTestCache(t, nil)
-	setupTestToken(t, "my-gateway-token")
-	ts := newMockTenantStore()
-	tenantID := uuid.New()
-	ts.addTenant(tenantID, "acme")
-	ts.setUserRole(tenantID, "user-1", store.TenantRoleAdmin)
-	setupTestTenantStore(t, ts)
-
-	r := httptest.NewRequest("GET", "/v1/agents", nil)
-	r.Header.Set("Authorization", "Bearer my-gateway-token")
-	r.Header.Set("X-GoClaw-User-Id", "user-1")
-	r.Header.Set("X-GoClaw-Tenant-Id", "acme")
-
-	auth := resolveAuth(r)
-	if !auth.Authenticated {
-		t.Fatal("expected authenticated")
-	}
-	if auth.Role != permissions.RoleAdmin {
-		t.Fatalf("role = %v, want admin", auth.Role)
-	}
-	if auth.TenantID != tenantID {
-		t.Fatalf("tenantID = %v, want %v", auth.TenantID, tenantID)
-	}
-}
-
-func TestResolveAuth_GatewayTokenRejectsUnauthorizedTenantScope(t *testing.T) {
-	setupTestCache(t, nil)
-	setupTestToken(t, "my-gateway-token")
-	ts := newMockTenantStore()
-	ts.addTenant(uuid.New(), "acme")
-	setupTestTenantStore(t, ts)
-
-	r := httptest.NewRequest("GET", "/v1/agents", nil)
-	r.Header.Set("Authorization", "Bearer my-gateway-token")
-	r.Header.Set("X-GoClaw-User-Id", "user-1")
-	r.Header.Set("X-GoClaw-Tenant-Id", "acme")
-
-	auth := resolveAuth(r)
-	if auth.Authenticated {
-		t.Fatal("expected unauthenticated for unauthorized tenant scope")
 	}
 }
 
@@ -292,7 +169,7 @@ func TestResolveAuth_APIKeyWriteScope(t *testing.T) {
 	if key == nil {
 		t.Fatal("expected key from cache")
 	}
-	if role != permissions.RoleOperator {
+	if role != permissions.RoleMember {
 		t.Errorf("role = %v, want operator for write scope", role)
 	}
 }
@@ -316,86 +193,6 @@ func TestResolveAuth_SystemAPIKeyKeepsScopeDerivedRole(t *testing.T) {
 	if auth.Role != permissions.RoleAdmin {
 		t.Fatalf("role = %v, want admin", auth.Role)
 	}
-	if auth.TenantID != store.MasterTenantID {
-		t.Fatalf("tenantID = %v, want master tenant", auth.TenantID)
-	}
-}
-
-func TestResolveAuth_SystemAPIKeyHonorsTenantScopeHeader(t *testing.T) {
-	token := "system-admin-key"
-	setupTestCache(t, map[string]*store.APIKeyData{
-		crypto.HashAPIKey(token): {
-			ID:     uuid.New(),
-			Scopes: []string{"operator.admin"},
-		},
-	})
-	ts := newMockTenantStore()
-	tenantID := uuid.New()
-	ts.addTenant(tenantID, "acme")
-	setupTestTenantStore(t, ts)
-
-	r := httptest.NewRequest("GET", "/v1/providers", nil)
-	r.Header.Set("Authorization", "Bearer "+token)
-	r.Header.Set("X-GoClaw-Tenant-Id", "acme")
-
-	auth := resolveAuth(r)
-	if !auth.Authenticated {
-		t.Fatal("expected authenticated")
-	}
-	if auth.Role != permissions.RoleAdmin {
-		t.Fatalf("role = %v, want admin", auth.Role)
-	}
-	if auth.TenantID != tenantID {
-		t.Fatalf("tenantID = %v, want %v", auth.TenantID, tenantID)
-	}
-}
-
-func TestResolveAuth_BrowserPairingScopesToMemberTenant(t *testing.T) {
-	setupTestToken(t, "gateway-token")
-	ps := newMockPairingStore()
-	ps.paired["browser-1:browser"] = true
-	setupTestPairingStore(t, ps)
-	ts := newMockTenantStore()
-	tenantID := uuid.New()
-	ts.addTenant(tenantID, "acme")
-	ts.setUserRole(tenantID, "user-1", store.TenantRoleAdmin)
-	setupTestTenantStore(t, ts)
-
-	r := httptest.NewRequest("GET", "/v1/agents", nil)
-	r.Header.Set("X-GoClaw-Sender-Id", "browser-1")
-	r.Header.Set("X-GoClaw-User-Id", "user-1")
-	r.Header.Set("X-GoClaw-Tenant-Id", "acme")
-
-	auth := resolveAuth(r)
-	if !auth.Authenticated {
-		t.Fatal("expected authenticated")
-	}
-	if auth.Role != permissions.RoleOperator {
-		t.Fatalf("role = %v, want operator", auth.Role)
-	}
-	if auth.TenantID != tenantID {
-		t.Fatalf("tenantID = %v, want %v", auth.TenantID, tenantID)
-	}
-}
-
-func TestResolveAuth_BrowserPairingRejectsUnauthorizedTenantScope(t *testing.T) {
-	setupTestToken(t, "gateway-token")
-	ps := newMockPairingStore()
-	ps.paired["browser-1:browser"] = true
-	setupTestPairingStore(t, ps)
-	ts := newMockTenantStore()
-	ts.addTenant(uuid.New(), "acme")
-	setupTestTenantStore(t, ts)
-
-	r := httptest.NewRequest("GET", "/v1/agents", nil)
-	r.Header.Set("X-GoClaw-Sender-Id", "browser-1")
-	r.Header.Set("X-GoClaw-User-Id", "user-1")
-	r.Header.Set("X-GoClaw-Tenant-Id", "acme")
-
-	auth := resolveAuth(r)
-	if auth.Authenticated {
-		t.Fatal("expected unauthenticated for unauthorized tenant scope")
-	}
 }
 
 func TestHttpMinRole(t *testing.T) {
@@ -406,10 +203,10 @@ func TestHttpMinRole(t *testing.T) {
 		{http.MethodGet, permissions.RoleViewer},
 		{http.MethodHead, permissions.RoleViewer},
 		{http.MethodOptions, permissions.RoleViewer},
-		{http.MethodPost, permissions.RoleOperator},
-		{http.MethodPut, permissions.RoleOperator},
-		{http.MethodPatch, permissions.RoleOperator},
-		{http.MethodDelete, permissions.RoleOperator},
+		{http.MethodPost, permissions.RoleMember},
+		{http.MethodPut, permissions.RoleMember},
+		{http.MethodPatch, permissions.RoleMember},
+		{http.MethodDelete, permissions.RoleMember},
 	}
 
 	for _, tt := range tests {

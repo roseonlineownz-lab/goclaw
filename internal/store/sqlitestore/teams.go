@@ -7,11 +7,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/identity"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -27,7 +27,7 @@ func NewSQLiteTeamStore(db *sql.DB) *SQLiteTeamStore {
 	return &SQLiteTeamStore{db: db}
 }
 
-const teamSelectCols = `id, name, lead_agent_id, description, status, settings, created_by, created_at, updated_at`
+const teamSelectCols = `id, name, lead_agent_id, description, status, settings, created_by, team_key, metadata, created_at, updated_at`
 
 // ============================================================
 // Team CRUD
@@ -46,32 +46,27 @@ func (s *SQLiteTeamStore) CreateTeam(ctx context.Context, team *store.TeamData) 
 		settings = json.RawMessage(`{}`)
 	}
 
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
+	// Auto-generate stable slug from team name when caller did not supply one.
+	if team.TeamKey == "" {
+		team.TeamKey = identity.SlugFromName(team.Name, team.ID.String()[:6])
 	}
 
+	meta := team.Metadata
+	if len(meta) == 0 {
+		meta = []byte("{}")
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_teams (id, name, lead_agent_id, description, status, settings, created_by, created_at, updated_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO agent_teams (id, name, lead_agent_id, description, status, settings, created_by, team_key, metadata, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		team.ID, team.Name, team.LeadAgentID, team.Description,
-		team.Status, settings, team.CreatedBy, now, now, tenantID,
+		team.Status, settings, team.CreatedBy, team.TeamKey, meta, now, now,
 	)
 	return err
 }
 
 func (s *SQLiteTeamStore) GetTeam(ctx context.Context, teamID uuid.UUID) (*store.TeamData, error) {
-	if store.IsCrossTenant(ctx) {
-		row := s.db.QueryRowContext(ctx,
-			`SELECT `+teamSelectCols+` FROM agent_teams WHERE id = ?`, teamID)
-		return scanTeamRow(row)
-	}
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		return nil, nil
-	}
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+teamSelectCols+` FROM agent_teams WHERE id = ? AND tenant_id = ?`, teamID, tenantID)
+		`SELECT `+teamSelectCols+` FROM agent_teams WHERE id = ?`, teamID)
 	d, err := scanTeamRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -80,48 +75,27 @@ func (s *SQLiteTeamStore) GetTeam(ctx context.Context, teamID uuid.UUID) (*store
 }
 
 func (s *SQLiteTeamStore) UpdateTeam(ctx context.Context, teamID uuid.UUID, updates map[string]any) error {
-	if store.IsCrossTenant(ctx) {
-		return execMapUpdate(ctx, s.db, "agent_teams", teamID, updates)
+	// Immutability: team_key is set at creation and must never change.
+	delete(updates, "team_key")
+	if len(updates) == 0 {
+		return nil
 	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required for update")
-	}
-	return execMapUpdateWhereTenant(ctx, s.db, "agent_teams", updates, teamID, tid)
+	return execMapUpdate(ctx, s.db, "agent_teams", teamID, updates)
 }
 
 func (s *SQLiteTeamStore) DeleteTeam(ctx context.Context, teamID uuid.UUID) error {
-	if store.IsCrossTenant(ctx) {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM agent_teams WHERE id = ?`, teamID)
-		return err
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required for delete")
-	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM agent_teams WHERE id = ? AND tenant_id = ?`, teamID, tid)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM agent_teams WHERE id = ?`, teamID)
 	return err
 }
 
 func (s *SQLiteTeamStore) ListTeams(ctx context.Context) ([]store.TeamData, error) {
-	var tenantFilter string
-	var queryArgs []any
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID == uuid.Nil {
-			return nil, nil
-		}
-		tenantFilter = " WHERE t.tenant_id = ?"
-		queryArgs = append(queryArgs, tenantID)
-	}
-
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT t.id, t.name, t.lead_agent_id, t.description, t.status, t.settings, t.created_by, t.created_at, t.updated_at,
+		`SELECT t.id, t.name, t.lead_agent_id, t.description, t.status, t.settings, t.created_by, t.team_key, t.metadata, t.created_at, t.updated_at,
 		 COALESCE(a.agent_key, '') AS lead_agent_key,
 		 COALESCE(a.display_name, '') AS lead_display_name
 		 FROM agent_teams t
-		 LEFT JOIN agents a ON a.id = t.lead_agent_id`+tenantFilter+`
-		 ORDER BY t.created_at`, queryArgs...)
+		 LEFT JOIN agents a ON a.id = t.lead_agent_id
+		 ORDER BY t.created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +109,7 @@ func (s *SQLiteTeamStore) ListTeams(ctx context.Context) ([]store.TeamData, erro
 		createdAt, updatedAt := scanTimePair()
 		if err := rows.Scan(
 			&d.ID, &d.Name, &d.LeadAgentID, &desc, &d.Status,
-			&d.Settings, &d.CreatedBy, createdAt, updatedAt,
+			&d.Settings, &d.CreatedBy, &d.TeamKey, &d.Metadata, createdAt, updatedAt,
 			&d.LeadAgentKey, &d.LeadDisplayName,
 		); err != nil {
 			return nil, err
@@ -194,10 +168,10 @@ func (s *SQLiteTeamStore) ListTeams(ctx context.Context) ([]store.TeamData, erro
 
 func (s *SQLiteTeamStore) AddMember(ctx context.Context, teamID, agentID uuid.UUID, role string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_team_members (team_id, agent_id, role, joined_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO agent_team_members (team_id, agent_id, role, joined_at)
+		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT (team_id, agent_id) DO UPDATE SET role = excluded.role`,
-		teamID, agentID, role, time.Now(), tenantIDForInsert(ctx),
+		teamID, agentID, role, time.Now(),
 	)
 	return err
 }
@@ -218,18 +192,9 @@ func (s *SQLiteTeamStore) ListMembers(ctx context.Context, teamID uuid.UUID) ([]
 		 COALESCE(a.emoji, '') AS emoji
 		 FROM agent_team_members m
 		 JOIN agents a ON a.id = m.agent_id
-		 JOIN agent_teams at2 ON at2.id = m.team_id
-		 WHERE m.team_id = ? AND a.status = 'active'`
+		 WHERE m.team_id = ? AND a.status = 'active'
+		 ORDER BY m.joined_at`
 	args := []any{teamID}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			q += " AND at2.tenant_id = ?"
-			args = append(args, tid)
-		}
-	}
-	q += ` ORDER BY m.joined_at`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -261,22 +226,13 @@ func (s *SQLiteTeamStore) ListIdleMembers(ctx context.Context, teamID uuid.UUID)
 		 COALESCE(a.emoji, '') AS emoji
 		 FROM agent_team_members m
 		 JOIN agents a ON a.id = m.agent_id
-		 JOIN agent_teams at2 ON at2.id = m.team_id
 		 WHERE m.team_id = ? AND a.status = 'active' AND m.role != ?
 		   AND NOT EXISTS (
 		     SELECT 1 FROM team_tasks tt
 		     WHERE tt.owner_agent_id = m.agent_id AND tt.team_id = ? AND tt.status = ?
-		   )`
+		   )
+		 ORDER BY m.joined_at`
 	args := []any{teamID, store.TeamRoleLead, teamID, store.TeamTaskStatusInProgress}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			q += " AND at2.tenant_id = ?"
-			args = append(args, tid)
-		}
-	}
-	q += ` ORDER BY m.joined_at`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -301,23 +257,14 @@ func (s *SQLiteTeamStore) ListIdleMembers(ctx context.Context, teamID uuid.UUID)
 }
 
 func (s *SQLiteTeamStore) GetTeamForAgent(ctx context.Context, agentID uuid.UUID) (*store.TeamData, error) {
-	q := `SELECT t.id, t.name, t.lead_agent_id, t.description, t.status, t.settings, t.created_by, t.created_at, t.updated_at
+	q := `SELECT t.id, t.name, t.lead_agent_id, t.description, t.status, t.settings, t.created_by, t.team_key, t.metadata, t.created_at, t.updated_at
 		 FROM agent_teams t
 		 WHERE (
 		   t.lead_agent_id = ?
 		   OR EXISTS (SELECT 1 FROM agent_team_members m WHERE m.team_id = t.id AND m.agent_id = ?)
-		 ) AND t.status = ?`
-	args := []any{agentID, agentID, store.TeamStatusActive}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			q += " AND t.tenant_id = ?"
-			args = append(args, tid)
-		}
-	}
-	q += ` ORDER BY (t.lead_agent_id = ?) DESC LIMIT 1`
-	args = append(args, agentID)
+		 ) AND t.status = ?
+		 ORDER BY (t.lead_agent_id = ?) DESC LIMIT 1`
+	args := []any{agentID, agentID, store.TeamStatusActive, agentID}
 
 	row := s.db.QueryRowContext(ctx, q, args...)
 	d, err := scanTeamRow(row)
@@ -331,24 +278,12 @@ func (s *SQLiteTeamStore) KnownUserIDs(ctx context.Context, teamID uuid.UUID, li
 	if limit <= 0 {
 		limit = 100
 	}
-	q := `SELECT DISTINCT s.user_id
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT s.user_id
 		 FROM sessions s
 		 JOIN agent_team_members m ON m.agent_id = s.agent_id
-		 JOIN agent_teams at2 ON at2.id = m.team_id
-		 WHERE m.team_id = ? AND s.user_id != ''`
-	args := []any{teamID}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			q += " AND at2.tenant_id = ?"
-			args = append(args, tid)
-		}
-	}
-	q += ` ORDER BY s.user_id LIMIT ?`
-	args = append(args, limit)
-
-	rows, err := s.db.QueryContext(ctx, q, args...)
+		 WHERE m.team_id = ? AND s.user_id != ''
+		 ORDER BY s.user_id LIMIT ?`, teamID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -371,34 +306,26 @@ func (s *SQLiteTeamStore) KnownUserIDs(ctx context.Context, teamID uuid.UUID, li
 
 func (s *SQLiteTeamStore) GrantTeamAccess(ctx context.Context, teamID uuid.UUID, userID, role, grantedBy string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO team_user_grants (id, team_id, user_id, role, granted_by, created_at, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO team_user_grants (id, team_id, user_id, role, granted_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (team_id, user_id) DO UPDATE SET role = excluded.role, granted_by = excluded.granted_by`,
-		store.GenNewID(), teamID, userID, role, grantedBy, time.Now(), tenantIDForInsert(ctx),
+		store.GenNewID(), teamID, userID, role, grantedBy, time.Now(),
 	)
 	return err
 }
 
 func (s *SQLiteTeamStore) RevokeTeamAccess(ctx context.Context, teamID uuid.UUID, userID string) error {
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx,
-		`DELETE FROM team_user_grants WHERE team_id = ? AND user_id = ?`+tClause,
-		append([]any{teamID, userID}, tArgs...)...)
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM team_user_grants WHERE team_id = ? AND user_id = ?`,
+		teamID, userID)
 	return err
 }
 
 func (s *SQLiteTeamStore) ListTeamGrants(ctx context.Context, teamID uuid.UUID) ([]store.TeamUserGrant, error) {
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, team_id, user_id, role, COALESCE(granted_by, ''), created_at
-		 FROM team_user_grants WHERE team_id = ?`+tClause+` ORDER BY created_at DESC`,
-		append([]any{teamID}, tArgs...)...)
+		 FROM team_user_grants WHERE team_id = ? ORDER BY created_at DESC`,
+		teamID)
 	if err != nil {
 		return nil, err
 	}
@@ -418,23 +345,13 @@ func (s *SQLiteTeamStore) ListTeamGrants(ctx context.Context, teamID uuid.UUID) 
 }
 
 func (s *SQLiteTeamStore) ListUserTeams(ctx context.Context, userID string) ([]store.TeamData, error) {
-	baseQuery := `SELECT ` + teamSelectCols + `
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+teamSelectCols+`
 		 FROM agent_teams t
 		 WHERE t.status = ?
-		   AND EXISTS (SELECT 1 FROM team_user_grants g WHERE g.team_id = t.id AND g.user_id = ?)`
-	args := []any{store.TeamStatusActive, userID}
-
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID == uuid.Nil {
-			return nil, nil
-		}
-		baseQuery += ` AND t.tenant_id = ?`
-		args = append(args, tenantID)
-	}
-	baseQuery += ` ORDER BY t.created_at DESC`
-
-	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
+		   AND EXISTS (SELECT 1 FROM team_user_grants g WHERE g.team_id = t.id AND g.user_id = ?)
+		 ORDER BY t.created_at DESC`,
+		store.TeamStatusActive, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +364,7 @@ func (s *SQLiteTeamStore) ListUserTeams(ctx context.Context, userID string) ([]s
 		createdAt, updatedAt := scanTimePair()
 		if err := rows.Scan(
 			&d.ID, &d.Name, &d.LeadAgentID, &desc, &d.Status,
-			&d.Settings, &d.CreatedBy, createdAt, updatedAt,
+			&d.Settings, &d.CreatedBy, &d.TeamKey, &d.Metadata, createdAt, updatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -462,14 +379,10 @@ func (s *SQLiteTeamStore) ListUserTeams(ctx context.Context, userID string) ([]s
 }
 
 func (s *SQLiteTeamStore) HasTeamAccess(ctx context.Context, teamID uuid.UUID, userID string) (bool, error) {
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return false, err
-	}
 	var exists bool
-	err = s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM team_user_grants WHERE team_id = ? AND user_id = ?`+tClause+`)`,
-		append([]any{teamID, userID}, tArgs...)...,
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM team_user_grants WHERE team_id = ? AND user_id = ?)`,
+		teamID, userID,
 	).Scan(&exists)
 	return exists, err
 }
@@ -491,7 +404,7 @@ func scanTeamRow(row *sql.Row) (*store.TeamData, error) {
 	createdAt, updatedAt := scanTimePair()
 	err := row.Scan(
 		&d.ID, &d.Name, &d.LeadAgentID, &desc, &d.Status,
-		&d.Settings, &d.CreatedBy, createdAt, updatedAt,
+		&d.Settings, &d.CreatedBy, &d.TeamKey, &d.Metadata, createdAt, updatedAt,
 	)
 	if err != nil {
 		return nil, err

@@ -31,6 +31,14 @@ func init() {
 		MsgUserIDRequired:    "user_id là bắt buộc",
 		MsgMsgRequired:       "tin nhắn là bắt buộc",
 
+		// Abort
+		MsgAbortStopped:         "đã dừng tác vụ",
+		MsgAbortForced:          "buộc dừng tác vụ (vượt quá thời gian chờ 3s)",
+		MsgAbortAlreadyAborting: "đang dừng tác vụ",
+		MsgAbortNotFound:        "không tìm thấy tác vụ hoặc đã kết thúc",
+		MsgAbortUnauthorized:    "không có quyền dừng tác vụ này",
+		MsgAbortFailed:          "không thể dừng tác vụ: %s",
+
 		// Channel instances
 		MsgInvalidChannelType: "loại channel không hợp lệ",
 		MsgInstanceNotFound:   "không tìm thấy phiên bản",
@@ -65,6 +73,8 @@ func init() {
 		MsgAlreadySummoning:      "agent đang được triệu hồi",
 		MsgSummoningUnavailable:  "triệu hồi không khả dụng",
 		MsgNoDescription:         "agent không có mô tả để triệu hồi lại",
+		MsgSummonCancelled:       "đã huỷ triệu hồi",
+		MsgCannotCancel:          "agent không trong trạng thái đang triệu hồi",
 		MsgInvalidPath:           "đường dẫn không hợp lệ",
 
 		// Scheduler
@@ -81,12 +91,12 @@ func init() {
 		MsgNotImplemented: "%s chưa được triển khai",
 
 		// Agent links
-		MsgLinksNotConfigured:   "liên kết agent chưa được cấu hình",
-		MsgInvalidDirection:     "hướng phải là outbound, inbound hoặc bidirectional",
-		MsgSourceTargetSame:     "nguồn và đích phải là các agent khác nhau",
-		MsgCannotDelegateOpen:   "không thể ủy quyền cho agent mở — chỉ agent định sẵn mới có thể là đích ủy quyền",
-		MsgNoUpdatesProvided:    "không có cập nhật nào được cung cấp",
-		MsgInvalidLinkStatus:    "trạng thái phải là active hoặc disabled",
+		MsgLinksNotConfigured: "liên kết agent chưa được cấu hình",
+		MsgInvalidDirection:   "hướng phải là outbound, inbound hoặc bidirectional",
+		MsgSourceTargetSame:   "nguồn và đích phải là các agent khác nhau",
+		MsgAgentTypeRejected:  "trường agent_type không còn được chấp nhận; v4 chỉ hỗ trợ agent định sẵn",
+		MsgNoUpdatesProvided:  "không có cập nhật nào được cung cấp",
+		MsgInvalidLinkStatus:  "trạng thái phải là active hoặc disabled",
 
 		// Teams
 		MsgTeamsNotConfigured:   "nhóm chưa được cấu hình",
@@ -100,13 +110,19 @@ func init() {
 		// Skills
 		MsgSkillsUpdateNotSupported: "skills.update không được hỗ trợ với skill dựa trên tệp",
 		MsgCannotResolveSkillID:     "không thể xác định ID skill dựa trên tệp",
+		MsgInvalidSkillSource:       "skill source không hợp lệ: phải là một trong builtin, hub-verified, hub-unverified, agent-created, user-uploaded",
+		MsgIsSystemDeprecated:       "trường is_system không còn được hỗ trợ; dùng source='builtin' thay thế",
+		MsgVersionAlreadyArchived:   "phiên bản skill đã được lưu trữ",
+		MsgCuratorInvalidTransition: "chuyển trạng thái curator run không hợp lệ: %s -> %s",
 
 		// Logs
 		MsgInvalidLogAction: "action phải là 'start' hoặc 'stop'",
 
 		// Config
-		MsgRawConfigRequired: "cấu hình raw là bắt buộc",
-		MsgRawPatchRequired:  "patch raw là bắt buộc",
+		MsgRawConfigRequired:     "cấu hình raw là bắt buộc",
+		MsgRawPatchRequired:      "patch raw là bắt buộc",
+		MsgConfigMasterScopeOnly: "config.* chỉ áp dụng cho master scope; dùng endpoint tenant tool config cho override theo tenant",
+		MsgMasterScopeRequired:   "thao tác này yêu cầu phạm vi tenant chính",
 
 		// Storage / File
 		MsgCannotDeleteSkillsDir: "không thể xóa thư mục skill",

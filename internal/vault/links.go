@@ -49,16 +49,16 @@ func ExtractWikilinks(content string) []WikilinkMatch {
 
 // ResolveWikilinkTarget finds a vault_document matching the wikilink target.
 // Strategy: exact path -> path+.md -> basename DB query -> nil.
-func ResolveWikilinkTarget(ctx context.Context, vs store.VaultStore, target, tenantID, agentID string) (*store.VaultDocument, error) {
+func ResolveWikilinkTarget(ctx context.Context, vs store.VaultStore, target, agentID string) (*store.VaultDocument, error) {
 	// 1. Exact path match
-	doc, err := vs.GetDocument(ctx, tenantID, agentID, target)
+	doc, err := vs.GetDocument(ctx, agentID, target)
 	if err == nil && doc != nil {
 		return doc, nil
 	}
 
 	// 2. With .md suffix
 	if !strings.HasSuffix(target, ".md") {
-		doc, err = vs.GetDocument(ctx, tenantID, agentID, target+".md")
+		doc, err = vs.GetDocument(ctx, agentID, target+".md")
 		if err == nil && doc != nil {
 			return doc, nil
 		}
@@ -66,13 +66,13 @@ func ResolveWikilinkTarget(ctx context.Context, vs store.VaultStore, target, ten
 
 	// 3. Basename search via targeted DB query (replaces ListDocuments N+1).
 	targetBase := filepath.Base(target)
-	doc, err = vs.GetDocumentByBasename(ctx, tenantID, agentID, targetBase)
+	doc, err = vs.GetDocumentByBasename(ctx, agentID, targetBase)
 	if err == nil && doc != nil {
 		return doc, nil
 	}
 	// Try with .md suffix.
 	if !strings.HasSuffix(targetBase, ".md") {
-		doc, err = vs.GetDocumentByBasename(ctx, tenantID, agentID, targetBase+".md")
+		doc, err = vs.GetDocumentByBasename(ctx, agentID, targetBase+".md")
 		if err == nil && doc != nil {
 			return doc, nil
 		}
@@ -83,23 +83,23 @@ func ResolveWikilinkTarget(ctx context.Context, vs store.VaultStore, target, ten
 
 // SyncDocLinks extracts wikilinks from content, resolves targets,
 // and replaces all vault_links for the source document.
-func SyncDocLinks(ctx context.Context, vs store.VaultStore, doc *store.VaultDocument, content, tenantID, agentID string) error {
+func SyncDocLinks(ctx context.Context, vs store.VaultStore, doc *store.VaultDocument, content, agentID string) error {
 	matches := ExtractWikilinks(content)
 	if len(matches) == 0 {
 		// No wikilinks — delete existing outbound wikilink-type links only.
-		return vs.DeleteDocLinksByType(ctx, tenantID, doc.ID, "wikilink")
+		return vs.DeleteDocLinksByType(ctx, doc.ID, "wikilink")
 	}
 
 	// Delete old outbound wikilink-type links first (replace strategy).
 	// Preserves semantic links created by auto-linking.
-	if err := vs.DeleteDocLinksByType(ctx, tenantID, doc.ID, "wikilink"); err != nil {
+	if err := vs.DeleteDocLinksByType(ctx, doc.ID, "wikilink"); err != nil {
 		return err
 	}
 
 	// Resolve all wikilinks, then batch-create links in a single call.
 	var links []store.VaultLink
 	for _, m := range matches {
-		target, err := ResolveWikilinkTarget(ctx, vs, m.Target, tenantID, agentID)
+		target, err := ResolveWikilinkTarget(ctx, vs, m.Target, agentID)
 		if err != nil {
 			slog.Debug("vault.link_resolve_error", "target", m.Target, "err", err)
 			continue

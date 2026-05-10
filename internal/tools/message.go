@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -27,20 +25,18 @@ type MessageTool struct {
 	restrict      bool
 	sender        ChannelSender
 	msgBus        *bus.MessageBus
-	tenantChecker ChannelTenantChecker
 }
 
 func NewMessageTool(workspace string, restrict bool) *MessageTool {
 	return &MessageTool{workspace: workspace, restrict: restrict}
 }
 
-func (t *MessageTool) SetChannelSender(s ChannelSender)              { t.sender = s }
-func (t *MessageTool) SetMessageBus(b *bus.MessageBus)               { t.msgBus = b }
-func (t *MessageTool) SetChannelTenantChecker(c ChannelTenantChecker) { t.tenantChecker = c }
+func (t *MessageTool) SetChannelSender(s ChannelSender) { t.sender = s }
+func (t *MessageTool) SetMessageBus(b *bus.MessageBus) { t.msgBus = b }
 
 func (t *MessageTool) Name() string { return "message" }
 func (t *MessageTool) Description() string {
-	return "Send a message to a channel (Telegram, Discord, Slack, Zalo, Feishu/Lark, WhatsApp, etc.) or the current chat. Channel and target are auto-filled from context."
+	return "Send a message to a channel (Telegram, Discord, Slack, Zalo, Feishu/Lark, WhatsApp, etc.). In a DM/group, omit `target` to reply to the current chat — DO NOT set a different target unless the user explicitly asked you to forward (then set `forward=true` + `forward_reason` quoting the request). In cron/heartbeat/subagent/team contexts, set `target` per job spec."
 }
 
 func (t *MessageTool) Parameters() map[string]any {
@@ -63,6 +59,14 @@ func (t *MessageTool) Parameters() map[string]any {
 			"message": map[string]any{
 				"type":        "string",
 				"description": "Message content to send. To send a file as attachment, use the prefix MEDIA: followed by the file path, e.g. 'MEDIA:docs/report.pdf' or 'MEDIA:/tmp/image.png'. The file will be uploaded as a document/photo/audio depending on its type.",
+			},
+			"forward": map[string]any{
+				"type":        "boolean",
+				"description": "Set true ONLY when the user explicitly asked to forward to a different chat than the current one. Required when target ≠ current chat in DM/group sessions.",
+			},
+			"forward_reason": map[string]any{
+				"type":        "string",
+				"description": "Quote the user's literal request when forward=true (e.g. 'gửi báo cáo này sang group dev'). Required when forward=true.",
 			},
 		},
 		"required": []string{"action", "message"},
@@ -129,14 +133,46 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *Result 
 		}
 	}
 
-	// Tenant isolation: validate channel belongs to current tenant.
-	if err := t.validateChannelTenant(ctx, channel, target); err != nil {
-		return err
+	// Cross-target guard: in DM/group/default sessions, prevent the agent from
+	// sending to a chat other than the one bound to its context. FREE session
+	// kinds (cron/heartbeat/subagent/team) compose targets per job spec and
+	// bypass this guard. Opt-in forwarding requires forward=true +
+	// non-empty forward_reason; notice is posted back to the origin chat and
+	// an slog audit line is emitted.
+	sessionKey := ToolSessionKeyFromCtx(ctx)
+	var forwardReason string // non-empty ⇒ guard allowed a cross-target forward; post notice on success
+	if MessageTargetEnforced(sessionKey) {
+		crossTarget := channel != ctxChannel || target != ctxChatID
+		if crossTarget && (ctxChannel != "" || ctxChatID != "") {
+			forward, _ := args["forward"].(bool)
+			reason := strings.TrimSpace(argString(args, "forward_reason"))
+			if !forward || reason == "" {
+				return ErrorResult(fmt.Sprintf(
+					"Cross-target send blocked. You are bound to %s/%s but tried to send to %s/%s. "+
+						"If the user explicitly asked you to forward, retry with forward=true AND forward_reason=\"<quote user's literal request>\".",
+					ctxChannel, ctxChatID, channel, target))
+			}
+			slog.Warn("message.cross_target_forward",
+				"session", sessionKey,
+				"from_channel", ctxChannel, "from", ctxChatID,
+				"to_channel", channel, "to", target,
+				"reason", reason)
+			forwardReason = reason
+		}
+	}
+	// noticeOnSuccess posts the cross-target breadcrumb back to origin iff the
+	// forward succeeded (res.IsError == false). Guarantees we never announce
+	// a fake delivery when the downstream sender/bus publish fails.
+	noticeOnSuccess := func(res *Result) *Result {
+		if forwardReason != "" && res != nil && !res.IsError {
+			t.postCrossTargetNotice(ctx, target, forwardReason)
+		}
+		return res
 	}
 
 	// Handle MEDIA: prefix — send file as attachment instead of text.
 	if filePath, ok := t.resolveMediaPath(ctx, message); ok {
-		return t.sendMedia(ctx, channel, target, filePath)
+		return noticeOnSuccess(t.sendMedia(ctx, channel, target, filePath))
 	}
 
 	// Extract embedded MEDIA: paths from multi-line messages.
@@ -155,7 +191,13 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *Result 
 			outMsg.Metadata = map[string]string{"group_id": target}
 		}
 		t.msgBus.PublishOutbound(outMsg)
-		return SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target))
+		// Mark each embedded media path as delivered.
+		if dm := DeliveredMediaFromCtx(ctx); dm != nil {
+			for _, att := range embeddedMedia {
+				dm.Mark(att.URL)
+			}
+		}
+		return noticeOnSuccess(SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target)))
 	}
 
 	// Prefer direct channel sender for immediate delivery.
@@ -164,7 +206,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *Result 
 		if err := t.sender(ctx, channel, target, message); err != nil {
 			return ErrorResult(fmt.Sprintf("failed to send message: %v", err))
 		}
-		return SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target))
+		return noticeOnSuccess(SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target)))
 	}
 
 	// Publish via message bus outbound queue.
@@ -180,7 +222,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *Result 
 			outMsg.Metadata = map[string]string{"group_id": target}
 		}
 		t.msgBus.PublishOutbound(outMsg)
-		return SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target))
+		return noticeOnSuccess(SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target)))
 	}
 
 	// Last resort: direct sender without group metadata.
@@ -188,37 +230,10 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *Result 
 		if err := t.sender(ctx, channel, target, message); err != nil {
 			return ErrorResult(fmt.Sprintf("failed to send message: %v", err))
 		}
-		return SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target))
+		return noticeOnSuccess(SilentResult(fmt.Sprintf(`{"status":"sent","channel":"%s","target":"%s"}`, channel, target)))
 	}
 
 	return ErrorResult("no channel sender or message bus available")
-}
-
-// validateChannelTenant checks the target channel belongs to the current tenant.
-// Returns an error Result if the send should be blocked, nil if allowed.
-func (t *MessageTool) validateChannelTenant(ctx context.Context, channel, target string) *Result {
-	if t.tenantChecker == nil {
-		return nil
-	}
-	chTenant, chExists := t.tenantChecker(channel)
-	if !chExists {
-		return ErrorResult(fmt.Sprintf("channel %q not found", channel))
-	}
-	// Allow: legacy/config-based channels (zero tenant) or master tenant context (system ops).
-	if chTenant == uuid.Nil {
-		return nil
-	}
-	ctxTenant := store.TenantIDFromContext(ctx)
-	if ctxTenant == uuid.Nil {
-		return nil // master tenant / system context
-	}
-	if chTenant != ctxTenant {
-		slog.Warn("security.cross_tenant_send_blocked",
-			"channel", channel, "target", target,
-			"ctx_tenant", ctxTenant, "ch_tenant", chTenant)
-		return ErrorResult("channel not accessible from this tenant")
-	}
-	return nil
 }
 
 // sendMedia sends a file as a media attachment via the outbound message bus.
@@ -242,6 +257,10 @@ func (t *MessageTool) sendMedia(ctx context.Context, channel, target, filePath s
 		Media:    []bus.MediaAttachment{{URL: filePath, ContentType: mimeFromPath(filePath)}},
 		Metadata: meta,
 	})
+	// Mark delivered so subsequent send_file or message(MEDIA:) calls detect the duplicate.
+	if dm := DeliveredMediaFromCtx(ctx); dm != nil {
+		dm.Mark(filePath)
+	}
 	out, _ := json.Marshal(map[string]string{
 		"status":  "sent",
 		"channel": channel,

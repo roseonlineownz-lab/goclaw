@@ -8,11 +8,13 @@ import (
 
 	"log/slog"
 
+	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
+	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
 // isUserFilePopulated checks if USER.md has been filled with actual user data
@@ -42,6 +44,14 @@ func (l *Loop) finalizeRun(
 	hadBootstrap bool,
 	toolTiming ToolTimingMap,
 ) *RunResult {
+	// Extract MEDIA:<path> tokens the LLM echoed in its final response
+	// BEFORE sanitize strips them. Covers cases where a tool returned its
+	// artifact via the ForLLM MEDIA: prefix but the agent relayed it as plain
+	// text (e.g. PDF from exec/weasyprint, TTS mp3 paths the LLM quotes back).
+	if extracted := extractMediaFromContent(rs.finalContent, tools.ToolWorkspaceFromCtx(ctx)); len(extracted) > 0 {
+		rs.mediaResults = append(rs.mediaResults, extracted...)
+	}
+
 	// 5. Full sanitization pipeline (matching TS extractAssistantText + sanitizeUserFacingText)
 	rs.finalContent = SanitizeAssistantContent(rs.finalContent)
 
@@ -148,7 +158,7 @@ func (l *Loop) finalizeRun(
 				slog.Info("bootstrap auto-cleanup completed", "agent", l.id, "user", req.UserID, "turns", userTurns)
 				// Check if USER.md is still the blank template — nudge agent to fill it
 				if l.contextFileLoader != nil {
-					files := l.contextFileLoader(ctx, l.agentUUID, req.UserID, l.agentType)
+					files := l.contextFileLoader(ctx, l.agentUUID, req.UserID)
 					for _, f := range files {
 						if f.Path == bootstrap.UserFile && !isUserFilePopulated(f.Content) {
 							rs.pendingMsgs = append(rs.pendingMsgs, providers.Message{
@@ -198,18 +208,26 @@ func (l *Loop) finalizeRun(
 
 	// V3: emit session.completed for consolidation pipeline (episodic → semantic → dreaming)
 	if l.domainBus != nil {
+		// Resolve 5D scope from context so downstream workers tag records correctly.
+		scPayload := &eventbus.SessionCompletedPayload{
+			SessionKey:      req.SessionKey,
+			MessageCount:    len(history) + len(rs.pendingMsgs),
+			TokensUsed:      rs.totalUsage.PromptTokens + rs.totalUsage.CompletionTokens,
+			CompactionCount: l.sessions.GetCompactionCount(ctx, req.SessionKey),
+			TeamID:          req.TeamID,
+		}
+		if cid := store.ContactIDFromContext(ctx); cid != uuid.Nil {
+			scPayload.ContactID = cid.String()
+		}
+		if pid := store.ProjectIDFromContext(ctx); pid != uuid.Nil {
+			scPayload.ProjectID = pid.String()
+		}
 		l.domainBus.Publish(eventbus.DomainEvent{
 			Type:     eventbus.EventSessionCompleted,
-			TenantID: l.tenantID.String(),
 			AgentID:  l.agentUUID.String(),
 			UserID:   req.UserID,
 			SourceID: req.SessionKey,
-			Payload: &eventbus.SessionCompletedPayload{
-				SessionKey:      req.SessionKey,
-				MessageCount:    len(history) + len(rs.pendingMsgs),
-				TokensUsed:      rs.totalUsage.PromptTokens + rs.totalUsage.CompletionTokens,
-				CompactionCount: l.sessions.GetCompactionCount(ctx, req.SessionKey),
-			},
+			Payload:  scPayload,
 		})
 	}
 

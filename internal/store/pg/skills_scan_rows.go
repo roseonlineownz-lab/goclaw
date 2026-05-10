@@ -20,7 +20,7 @@ type skillInfoRow struct {
 	Visibility string         `db:"visibility"`
 	Tags       pq.StringArray `db:"tags"`
 	Version    int            `db:"version"`
-	IsSystem   bool           `db:"is_system"`
+	Source     string         `db:"source"` // builtin | hub-verified | hub-unverified | agent-created | user-uploaded
 	Status     string         `db:"status"`
 	Enabled    bool           `db:"enabled"`
 	DepsRaw    []byte         `db:"deps"`
@@ -38,7 +38,7 @@ func (r *skillInfoRow) toSkillInfo(baseDir string) store.SkillInfo {
 	info := buildSkillInfo(r.ID.String(), r.Name, r.Slug, r.Desc, r.Version, baseDir, r.FilePath)
 	info.Visibility = r.Visibility
 	info.Tags = []string(r.Tags)
-	info.IsSystem = r.IsSystem
+	info.Source = r.Source
 	info.Status = r.Status
 	info.Enabled = r.Enabled
 	info.MissingDeps = parseDepsColumn(r.DepsRaw)

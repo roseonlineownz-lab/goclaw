@@ -8,7 +8,6 @@ func bailianModels() []ModelInfo {
 		{ID: "qwen3.6-plus", Name: "Qwen 3.6 Plus"},
 		{ID: "qwen3.5-plus", Name: "Qwen 3.5 Plus"},
 		{ID: "kimi-k2.5", Name: "Kimi K2.5"},
-		{ID: "GLM-5.1", Name: "GLM-5.1 (202K ctx, thinking+tools)"},
 		{ID: "GLM-5", Name: "GLM-5"},
 		{ID: "MiniMax-M2.5", Name: "MiniMax M2.5"},
 		{ID: "qwen3-max-2026-01-23", Name: "Qwen 3 Max (2026-01-23)"},
@@ -61,15 +60,6 @@ func dashScopeModels() []ModelInfo {
 		{ID: "wan2.1-image", Name: "Wan 2.1 Image"},
 		// Video generation
 		{ID: "wan2.6-video", Name: "Wan 2.6 Video"},
-	}
-}
-
-// sunoModels returns a hardcoded list of Suno music generation models.
-func sunoModels() []ModelInfo {
-	return []ModelInfo{
-		{ID: "v4.5", Name: "Suno V4.5"},
-		{ID: "v4", Name: "Suno V4"},
-		{ID: "v3.5", Name: "Suno V3.5"},
 	}
 }
 

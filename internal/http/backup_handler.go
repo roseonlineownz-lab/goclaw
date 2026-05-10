@@ -84,7 +84,9 @@ func (h *BackupHandler) handleBackup(w http.ResponseWriter, r *http.Request) {
 	userID := store.UserIDFromContext(r.Context())
 	locale := extractLocale(r)
 
-	if !h.isOwnerUser(userID) {
+	// Root role (DB-level super-admin) has the same privileges as a configured owner.
+	if !h.isOwnerUser(userID) && !store.IsRootRole(r.Context()) {
+		slog.Warn("security.backup_owner_denied", "user_id", userID)
 		writeError(w, http.StatusForbidden, protocol.ErrUnauthorized,
 			i18n.T(locale, i18n.MsgNoAccess, "system backup"))
 		return

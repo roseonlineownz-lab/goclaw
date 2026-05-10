@@ -59,18 +59,6 @@ func (s *SQLiteCronStore) GetRunLog(ctx context.Context, jobID string, limit, of
 
 	const cols = "r.job_id, r.status, r.error, r.summary, r.ran_at, COALESCE(r.duration_ms, 0), COALESCE(r.input_tokens, 0), COALESCE(r.output_tokens, 0)"
 
-	// Tenant isolation via JOIN with cron_jobs.
-	var tenantJoin, tenantWhere string
-	var tenantArgs []any
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			tenantJoin = " JOIN cron_jobs j ON r.job_id = j.id"
-			tenantWhere = " AND j.tenant_id = ?"
-			tenantArgs = append(tenantArgs, tid)
-		}
-	}
-
 	var total int
 	var rows *sql.Rows
 	var err error
@@ -80,22 +68,15 @@ func (s *SQLiteCronStore) GetRunLog(ctx context.Context, jobID string, limit, of
 		if parseErr != nil {
 			return nil, 0
 		}
-		countQ := fmt.Sprintf("SELECT COUNT(*) FROM cron_run_logs r%s WHERE r.job_id = ?%s", tenantJoin, tenantWhere)
-		countArgs := append(tenantArgs, id)
-		s.db.QueryRowContext(ctx, countQ, countArgs...).Scan(&total)
-
-		dataQ := fmt.Sprintf("SELECT %s FROM cron_run_logs r%s WHERE r.job_id = ?%s ORDER BY r.ran_at DESC LIMIT ? OFFSET ?",
-			cols, tenantJoin, tenantWhere)
-		dataArgs := append(tenantArgs, id, limit, offset)
-		rows, err = s.db.QueryContext(ctx, dataQ, dataArgs...)
+		s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cron_run_logs r WHERE r.job_id = ?", id).Scan(&total)
+		rows, err = s.db.QueryContext(ctx,
+			"SELECT "+cols+" FROM cron_run_logs r WHERE r.job_id = ? ORDER BY r.ran_at DESC LIMIT ? OFFSET ?",
+			id, limit, offset)
 	} else {
-		countQ := fmt.Sprintf("SELECT COUNT(*) FROM cron_run_logs r%s WHERE 1=1%s", tenantJoin, tenantWhere)
-		s.db.QueryRowContext(ctx, countQ, tenantArgs...).Scan(&total)
-
-		dataQ := fmt.Sprintf("SELECT %s FROM cron_run_logs r%s WHERE 1=1%s ORDER BY r.ran_at DESC LIMIT ? OFFSET ?",
-			cols, tenantJoin, tenantWhere)
-		dataArgs := append(tenantArgs, limit, offset)
-		rows, err = s.db.QueryContext(ctx, dataQ, dataArgs...)
+		s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cron_run_logs").Scan(&total)
+		rows, err = s.db.QueryContext(ctx,
+			"SELECT "+cols+" FROM cron_run_logs r ORDER BY r.ran_at DESC LIMIT ? OFFSET ?",
+			limit, offset)
 	}
 	if err != nil {
 		return nil, 0

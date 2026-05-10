@@ -13,9 +13,12 @@ import (
 type MediaFile struct {
 	Path     string `json:"path"`
 	MimeType string `json:"mime_type,omitempty"` // e.g. "application/pdf", "image/jpeg"
+	Filename string `json:"filename,omitempty"`  // original user-provided filename, e.g. "Báo cáo Q4.pdf"; empty → UUID fallback in persistMedia
 }
 
-// InboundMessage represents a message received from a channel (Telegram, Discord, etc.)
+// InboundMessage represents a message received from a channel (Telegram, Discord, etc.).
+// v4: UserID is the only scope axis (resolved to UUID at channel
+// boundary via ContactStore.ResolveTenantUserID).
 type InboundMessage struct {
 	Channel      string            `json:"channel"`
 	SenderID     string            `json:"sender_id"`
@@ -24,21 +27,23 @@ type InboundMessage struct {
 	Media        []MediaFile       `json:"media,omitempty"`
 	SessionKey   string            `json:"session_key"`             // deprecated: gateway builds canonical key
 	PeerKind     string            `json:"peer_kind,omitempty"`     // "direct" or "group" (used for session key)
-	TenantID     uuid.UUID         `json:"tenant_id,omitempty"`     // tenant scope from channel instance
 	AgentID      string            `json:"agent_id,omitempty"`      // target agent (for multi-agent routing)
-	UserID       string            `json:"user_id,omitempty"`       // external user ID for per-user scoping (memory, bootstrap)
+	UserID       string            `json:"user_id,omitempty"`       // resolved user UUID string (post-merge) or sender_id (pre-merge)
 	HistoryLimit int               `json:"history_limit,omitempty"` // max turns to keep in context (0=unlimited, from channel config)
 	ToolAllow    []string          `json:"tool_allow,omitempty"`    // per-group tool allow list (nil = no restriction)
 	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 // OutboundMessage represents a message to be sent to a channel.
+// v4: TTS voice/config flows via AgentOtherConfig only.
 type OutboundMessage struct {
-	Channel  string            `json:"channel"`
-	ChatID   string            `json:"chat_id"`
-	Content  string            `json:"content"`
-	Media    []MediaAttachment `json:"media,omitempty"`    // optional media attachments
-	Metadata map[string]string `json:"metadata,omitempty"` // channel-specific metadata
+	Channel          string            `json:"channel"`
+	ChatID           string            `json:"chat_id"`
+	Content          string            `json:"content"`
+	Media            []MediaAttachment `json:"media,omitempty"`              // optional media attachments
+	Metadata         map[string]string `json:"metadata,omitempty"`           // channel-specific metadata
+	AgentID          uuid.UUID         `json:"agent_id,omitempty"`           // agent scope for per-agent TTS voice override
+	AgentOtherConfig []byte            `json:"agent_other_config,omitempty"` // agent's other_config for TTS voice/model
 }
 
 // MediaAttachment represents a media file to be sent with a message.
@@ -50,9 +55,8 @@ type MediaAttachment struct {
 
 // Event represents a server-side event to broadcast to WebSocket clients.
 type Event struct {
-	Name     string    `json:"name"`              // event name (e.g. "agent", "chat", "health")
-	Payload  any       `json:"payload,omitempty"`
-	TenantID uuid.UUID `json:"-"` // tenant scope for event filtering (not serialized to clients)
+	Name    string `json:"name"`              // event name (e.g. "agent", "chat", "health")
+	Payload any    `json:"payload,omitempty"`
 }
 
 // Cache invalidation kind constants.
@@ -71,7 +75,6 @@ const (
 	CacheKindAPIKeys          = "api_keys"
 	CacheKindHeartbeat        = "heartbeat"
 	CacheKindConfigPerms      = "config_perms"
-	CacheKindTenantUsers      = "tenant_users"
 	CacheKindAgentAccess      = "agent_access"
 	CacheKindTeamAccess       = "team_access"
 	CacheKindTenants          = "tenants"
@@ -123,9 +126,8 @@ type AgentStatusChangedPayload struct {
 
 // AgentDeletedPayload carries agent deletion info for async cleanup (e.g. orphaned provider removal).
 type AgentDeletedPayload struct {
-	AgentKey string    `json:"agent_key"`
-	Provider string    `json:"provider,omitempty"` // provider name for orphan cleanup
-	TenantID uuid.UUID `json:"tenant_id,omitempty"`
+	AgentKey string `json:"agent_key"`
+	Provider string `json:"provider,omitempty"` // provider name for orphan cleanup
 }
 
 // AuditEventPayload carries audit log data emitted by handlers.
@@ -138,11 +140,11 @@ type AuditEventPayload struct {
 	EntityID   string          `json:"entity_id"`
 	IPAddress  string          `json:"ip_address,omitempty"`
 	Details    json.RawMessage `json:"details,omitempty"`
-	TenantID   uuid.UUID       `json:"tenant_id,omitempty"` // for async subscriber tenant scoping
 }
 
 // CacheInvalidatePayload signals cache layers to evict stale entries.
-// Used with protocol.EventCacheInvalidate events.
+// Used with protocol.EventCacheInvalidate events. Events are delivered
+// in-process via MessageBus and never marshaled to the wire.
 type CacheInvalidatePayload struct {
 	Kind string `json:"kind"` // CacheKind* constants
 	Key  string `json:"key"`  // agent_key, agent_id, etc. Empty = invalidate all
@@ -171,11 +173,13 @@ type MessageRouter interface {
 }
 
 // IsInternalSender returns true if the senderID belongs to an internal system
-// component (not a real channel user). These should not be stored as contacts.
+// component (not a real channel user). These should not be stored as contacts
+// and must be rejected by per-user permission checks in group contexts (#915).
 func IsInternalSender(senderID string) bool {
 	return strings.HasPrefix(senderID, "system:") ||
 		strings.HasPrefix(senderID, "notification:") ||
 		strings.HasPrefix(senderID, "teammate:") ||
 		strings.HasPrefix(senderID, "ticker:") ||
+		strings.HasPrefix(senderID, "subagent:") ||
 		senderID == "session_send_tool"
 }

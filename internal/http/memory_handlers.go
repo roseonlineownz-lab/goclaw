@@ -47,7 +47,11 @@ func (h *MemoryHandler) handleGetDocument(w http.ResponseWriter, r *http.Request
 	locale := extractLocale(r)
 	agentID := r.PathValue("agentID")
 	path := r.PathValue("path")
+	// Admin/root may override scope via user_id query param; authenticated users are scoped to themselves.
 	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		userID = store.UserIDFromContext(r.Context())
+	}
 
 	detail, err := h.store.GetDocumentDetail(r.Context(), agentID, userID, path)
 	if err != nil {
@@ -69,6 +73,11 @@ func (h *MemoryHandler) handlePutDocument(w http.ResponseWriter, r *http.Request
 	}
 	if !bindJSON(w, r, locale, &body) {
 		return
+	}
+	// Always scope to the authenticated caller. Admin/root may pass user_id in body
+	// to write on behalf of another user; if omitted, derive from auth context.
+	if body.UserID == "" {
+		body.UserID = store.UserIDFromContext(r.Context())
 	}
 
 	if err := h.store.PutDocument(r.Context(), agentID, body.UserID, path, body.Content); err != nil {

@@ -80,7 +80,7 @@ type UserOverrideExport struct {
 }
 
 // EpisodicSummaryExport is the portable representation of a Tier 2 episodic memory entry.
-// Excludes: id, tenant_id, agent_id (reconstructed on import), embedding (vector), promoted_at.
+// Excludes: id, agent_id (reconstructed on import), embedding (vector), promoted_at.
 type EpisodicSummaryExport struct {
 	UserID     string   `json:"user_id"`
 	SessionKey string   `json:"session_key"`
@@ -96,7 +96,7 @@ type EpisodicSummaryExport struct {
 }
 
 // VaultDocumentExport is the portable representation of a vault document.
-// Excludes: id, tenant_id, agent_id, team_id (reconstructed on import), embedding (re-indexed by FS sync).
+// Excludes: id, agent_id, team_id (reconstructed on import), embedding (re-indexed by FS sync).
 type VaultDocumentExport struct {
 	Scope       string          `json:"scope" db:"scope"`
 	CustomScope *string         `json:"custom_scope,omitempty" db:"custom_scope"`
@@ -121,7 +121,7 @@ type VaultLinkExport struct {
 }
 
 // EvolutionMetricExport is the portable representation of an evolution metric data point.
-// Excludes: id, tenant_id, agent_id (reconstructed on import).
+// Excludes: id, agent_id (reconstructed on import).
 type EvolutionMetricExport struct {
 	SessionKey string          `json:"session_key" db:"session_key"`
 	MetricType string          `json:"metric_type" db:"metric_type"`
@@ -131,7 +131,7 @@ type EvolutionMetricExport struct {
 }
 
 // EvolutionSuggestionExport is the portable representation of an evolution suggestion.
-// Excludes: id, tenant_id, agent_id (reconstructed on import).
+// Excludes: id, agent_id (reconstructed on import).
 type EvolutionSuggestionExport struct {
 	SuggestionType string          `json:"suggestion_type" db:"suggestion_type"`
 	Suggestion     string          `json:"suggestion" db:"suggestion"`
@@ -170,13 +170,9 @@ const exportBatchSize = 1000
 
 // ExportAgentContextFiles returns all agent-level context files for the given agent.
 func ExportAgentContextFiles(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]AgentContextFileExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := db.QueryContext(ctx,
-		"SELECT file_name, content FROM agent_context_files WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+		"SELECT file_name, content FROM agent_context_files WHERE agent_id = $1",
+		agentID,
 	)
 	if err != nil {
 		return nil, err
@@ -197,13 +193,9 @@ func ExportAgentContextFiles(ctx context.Context, db *sql.DB, agentID uuid.UUID)
 
 // ExportUserContextFiles returns all per-user context files for the given agent (all users).
 func ExportUserContextFiles(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]UserContextFileExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := db.QueryContext(ctx,
-		"SELECT user_id, file_name, content FROM user_context_files WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+		"SELECT user_id, file_name, content FROM user_context_files WHERE agent_id = $1",
+		agentID,
 	)
 	if err != nil {
 		return nil, err
@@ -225,26 +217,14 @@ func ExportUserContextFiles(ctx context.Context, db *sql.DB, agentID uuid.UUID) 
 // ExportMemoryDocuments returns all memory documents for the given agent across all users,
 // using cursor-based pagination to handle large datasets.
 func ExportMemoryDocuments(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]MemoryDocExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	baseArgs := append([]any{agentID}, tcArgs...)
-	cursorParam := len(baseArgs) + 1
-	limitParam := cursorParam + 1
-
 	var result []MemoryDocExport
 	cursor := uuid.Nil
 
 	for {
-		args := append(append([]any{}, baseArgs...), cursor, exportBatchSize)
 		rows, err := db.QueryContext(ctx,
 			"SELECT id, path, content, COALESCE(user_id, '') FROM memory_documents"+
-				" WHERE agent_id = $1"+tc+
-				" AND id > $"+itoa(cursorParam)+
-				" ORDER BY id LIMIT $"+itoa(limitParam),
-			args...,
+				" WHERE agent_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+			agentID, cursor, exportBatchSize,
 		)
 		if err != nil {
 			return nil, err
@@ -275,28 +255,16 @@ func ExportMemoryDocuments(ctx context.Context, db *sql.DB, agentID uuid.UUID) (
 // ExportKGEntities returns all KG entities for the given agent across all user scopes,
 // using cursor-based pagination.
 func ExportKGEntities(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]store.Entity, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	baseArgs := append([]any{agentID}, tcArgs...)
-	cursorParam := len(baseArgs) + 1
-	limitParam := cursorParam + 1
-
 	var result []store.Entity
 	cursor := uuid.Nil
 
 	for {
-		args := append(append([]any{}, baseArgs...), cursor, exportBatchSize)
 		var eRows []entityTemporalRow
 		if err := pkgSqlxDB.SelectContext(ctx, &eRows,
 			"SELECT id, agent_id, user_id, external_id, name, entity_type, description,"+
 				" properties, source_id, confidence, created_at, updated_at, valid_from, valid_until"+
-				" FROM kg_entities WHERE agent_id = $1"+tc+
-				" AND id > $"+itoa(cursorParam)+
-				" ORDER BY id LIMIT $"+itoa(limitParam),
-			args...,
+				" FROM kg_entities WHERE agent_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+			agentID, cursor, exportBatchSize,
 		); err != nil {
 			return nil, err
 		}
@@ -308,8 +276,7 @@ func ExportKGEntities(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]sto
 		if len(batch) < exportBatchSize {
 			break
 		}
-		// Advance cursor: last entity ID
-		lastID := mustParseUUID(batch[len(batch)-1].ID)
+		lastID := parseUUIDOrNil(batch[len(batch)-1].ID)
 		cursor = lastID
 	}
 	return result, nil
@@ -318,28 +285,16 @@ func ExportKGEntities(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]sto
 // ExportKGRelations returns all KG relations for the given agent across all user scopes,
 // using cursor-based pagination.
 func ExportKGRelations(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]store.Relation, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	baseArgs := append([]any{agentID}, tcArgs...)
-	cursorParam := len(baseArgs) + 1
-	limitParam := cursorParam + 1
-
 	var result []store.Relation
 	cursor := uuid.Nil
 
 	for {
-		args := append(append([]any{}, baseArgs...), cursor, exportBatchSize)
 		var rRows []relationExportRow
 		if err := pkgSqlxDB.SelectContext(ctx, &rRows,
 			"SELECT id, agent_id, user_id, source_entity_id, relation_type, target_entity_id,"+
 				" confidence, properties, created_at, valid_from, valid_until"+
-				" FROM kg_relations WHERE agent_id = $1"+tc+
-				" AND id > $"+itoa(cursorParam)+
-				" ORDER BY id LIMIT $"+itoa(limitParam),
-			args...,
+				" FROM kg_relations WHERE agent_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+			agentID, cursor, exportBatchSize,
 		); err != nil {
 			return nil, err
 		}
@@ -351,7 +306,7 @@ func ExportKGRelations(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]st
 		if len(batch) < exportBatchSize {
 			break
 		}
-		lastID := mustParseUUID(batch[len(batch)-1].ID)
+		lastID := parseUUIDOrNil(batch[len(batch)-1].ID)
 		cursor = lastID
 	}
 	return result, nil
@@ -359,28 +314,22 @@ func ExportKGRelations(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]st
 
 // ExportPreviewCounts returns aggregate counts for all exportable sections of an agent.
 func ExportPreviewCounts(ctx context.Context, db *sql.DB, agentID uuid.UUID) (*ExportPreview, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
-	args := append([]any{agentID}, tcArgs...)
-
 	var p ExportPreview
-	err = db.QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
 		SELECT
-			(SELECT COUNT(*) FROM agent_context_files    WHERE agent_id = $1`+tc+`) AS context_files,
-			(SELECT COUNT(DISTINCT user_id) FROM user_context_files WHERE agent_id = $1`+tc+`) AS user_context_files_users,
-			(SELECT COUNT(*) FROM memory_documents       WHERE agent_id = $1 AND user_id IS NULL`+tc+`) AS memory_global,
-			(SELECT COUNT(*) FROM memory_documents       WHERE agent_id = $1 AND user_id IS NOT NULL`+tc+`) AS memory_per_user,
-			(SELECT COUNT(*) FROM kg_entities            WHERE agent_id = $1`+tc+`) AS kg_entities,
-			(SELECT COUNT(*) FROM kg_relations           WHERE agent_id = $1`+tc+`) AS kg_relations,
-			(SELECT COUNT(*) FROM cron_jobs              WHERE agent_id = $1`+tc+`) AS cron_jobs,
-			(SELECT COUNT(*) FROM user_agent_profiles    WHERE agent_id = $1`+tc+`) AS user_profiles,
-			(SELECT COUNT(*) FROM user_agent_overrides   WHERE agent_id = $1`+tc+`) AS user_overrides,
-			(SELECT COUNT(*) FROM episodic_summaries         WHERE agent_id = $1`+tc+`) AS episodic_summaries,
-			(SELECT COUNT(*) FROM agent_evolution_metrics    WHERE agent_id = $1`+tc+`) AS evolution_metrics,
-			(SELECT COUNT(*) FROM agent_evolution_suggestions WHERE agent_id = $1`+tc+`) AS evolution_suggestions
-	`, args...).Scan(
+			(SELECT COUNT(*) FROM agent_context_files    WHERE agent_id = $1) AS context_files,
+			(SELECT COUNT(DISTINCT user_id) FROM user_context_files WHERE agent_id = $1) AS user_context_files_users,
+			(SELECT COUNT(*) FROM memory_documents       WHERE agent_id = $1 AND user_id IS NULL) AS memory_global,
+			(SELECT COUNT(*) FROM memory_documents       WHERE agent_id = $1 AND user_id IS NOT NULL) AS memory_per_user,
+			(SELECT COUNT(*) FROM kg_entities            WHERE agent_id = $1) AS kg_entities,
+			(SELECT COUNT(*) FROM kg_relations           WHERE agent_id = $1) AS kg_relations,
+			(SELECT COUNT(*) FROM cron_jobs              WHERE agent_id = $1) AS cron_jobs,
+			(SELECT COUNT(*) FROM user_agent_profiles    WHERE agent_id = $1) AS user_profiles,
+			(SELECT COUNT(*) FROM user_agent_overrides   WHERE agent_id = $1) AS user_overrides,
+			(SELECT COUNT(*) FROM episodic_summaries         WHERE agent_id = $1) AS episodic_summaries,
+			(SELECT COUNT(*) FROM agent_evolution_metrics    WHERE agent_id = $1) AS evolution_metrics,
+			(SELECT COUNT(*) FROM agent_evolution_suggestions WHERE agent_id = $1) AS evolution_suggestions
+	`, agentID).Scan(
 		&p.ContextFiles, &p.UserContextFiles,
 		&p.MemoryGlobal, &p.MemoryPerUser,
 		&p.KGEntities, &p.KGRelations,
@@ -399,11 +348,11 @@ func ExportPreviewCounts(ctx context.Context, db *sql.DB, agentID uuid.UUID) (*E
 	// Vault counts (separate query — vault_documents/links tables)
 	_ = db.QueryRowContext(ctx,
 		`SELECT
-			(SELECT COUNT(*) FROM vault_documents WHERE agent_id = $1`+tc+`) AS vault_documents,
+			(SELECT COUNT(*) FROM vault_documents WHERE agent_id = $1) AS vault_documents,
 			(SELECT COUNT(*) FROM vault_links vl
 			  JOIN vault_documents fd ON vl.from_doc_id = fd.id
-			  WHERE fd.agent_id = $1`+tc+`) AS vault_links`,
-		args...,
+			  WHERE fd.agent_id = $1) AS vault_links`,
+		agentID,
 	).Scan(&p.VaultDocuments, &p.VaultLinks)
 
 	return &p, nil
@@ -411,44 +360,32 @@ func ExportPreviewCounts(ctx context.Context, db *sql.DB, agentID uuid.UUID) (*E
 
 // ExportSkillGrants returns all skill grants for the given agent.
 func ExportSkillGrants(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]SkillGrantExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	var result []SkillGrantExport
-	err = pkgSqlxDB.SelectContext(ctx, &result,
-		"SELECT skill_id, pinned_version, granted_by FROM skill_agent_grants WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+	err := pkgSqlxDB.SelectContext(ctx, &result,
+		"SELECT skill_id, pinned_version, granted_by FROM skill_agent_grants WHERE agent_id = $1",
+		agentID,
 	)
 	return result, err
 }
 
 // ExportMCPGrants returns all MCP server grants for the given agent.
 func ExportMCPGrants(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]MCPGrantExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	var result []MCPGrantExport
-	err = pkgSqlxDB.SelectContext(ctx, &result,
+	err := pkgSqlxDB.SelectContext(ctx, &result,
 		"SELECT server_id, enabled, tool_allow, tool_deny, config_overrides, granted_by"+
-			" FROM mcp_agent_grants WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+			" FROM mcp_agent_grants WHERE agent_id = $1",
+		agentID,
 	)
 	return result, err
 }
 
 // ExportCronJobs returns all cron jobs for the given agent.
 func ExportCronJobs(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]CronJobExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := db.QueryContext(ctx,
 		"SELECT name, schedule_kind, cron_expression, interval_ms,"+
 			" to_char(run_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), timezone, payload, delete_after_run"+
-			" FROM cron_jobs WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+			" FROM cron_jobs WHERE agent_id = $1",
+		agentID,
 	)
 	if err != nil {
 		return nil, err
@@ -470,72 +407,48 @@ func ExportCronJobs(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]CronJ
 
 // ExportConfigPermissions returns all agent config permissions for the given agent.
 func ExportConfigPermissions(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]ConfigPermissionExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	var result []ConfigPermissionExport
-	err = pkgSqlxDB.SelectContext(ctx, &result,
+	err := pkgSqlxDB.SelectContext(ctx, &result,
 		"SELECT scope, config_type, user_id, permission, metadata, granted_by"+
-			" FROM agent_config_permissions WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+			" FROM agent_config_permissions WHERE agent_id = $1",
+		agentID,
 	)
 	return result, err
 }
 
 // ExportUserProfiles returns all user profiles for the given agent.
 func ExportUserProfiles(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]UserProfileExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	var result []UserProfileExport
-	err = pkgSqlxDB.SelectContext(ctx, &result,
-		"SELECT user_id, workspace FROM user_agent_profiles WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+	err := pkgSqlxDB.SelectContext(ctx, &result,
+		"SELECT user_id, workspace FROM user_agent_profiles WHERE agent_id = $1",
+		agentID,
 	)
 	return result, err
 }
 
 // ExportUserOverrides returns all user model overrides for the given agent.
 func ExportUserOverrides(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]UserOverrideExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	var result []UserOverrideExport
-	err = pkgSqlxDB.SelectContext(ctx, &result,
+	err := pkgSqlxDB.SelectContext(ctx, &result,
 		"SELECT user_id, provider, model, settings"+
-			" FROM user_agent_overrides WHERE agent_id = $1"+tc,
-		append([]any{agentID}, tcArgs...)...,
+			" FROM user_agent_overrides WHERE agent_id = $1",
+		agentID,
 	)
 	return result, err
 }
 
 // ExportEvolutionMetrics returns all evolution metrics for the given agent using cursor-based pagination.
-// Excludes: id, tenant_id, agent_id (reconstructed on import).
+// Excludes: id, agent_id (reconstructed on import).
 func ExportEvolutionMetrics(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]EvolutionMetricExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	baseArgs := append([]any{agentID}, tcArgs...)
-	cursorParam := len(baseArgs) + 1
-	limitParam := cursorParam + 1
-
 	var result []EvolutionMetricExport
 	cursor := uuid.Nil
 
 	for {
-		args := append(append([]any{}, baseArgs...), cursor, exportBatchSize)
 		rows, err := db.QueryContext(ctx,
 			"SELECT id, session_key, metric_type, metric_key, value,"+
 				" to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at"+
-				" FROM agent_evolution_metrics WHERE agent_id = $1"+tc+
-				" AND id > $"+itoa(cursorParam)+
-				" ORDER BY id LIMIT $"+itoa(limitParam),
-			args...,
+				" FROM agent_evolution_metrics WHERE agent_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+			agentID, cursor, exportBatchSize,
 		)
 		if err != nil {
 			return nil, err
@@ -566,20 +479,15 @@ func ExportEvolutionMetrics(ctx context.Context, db *sql.DB, agentID uuid.UUID) 
 
 // ExportEvolutionSuggestions returns all evolution suggestions for the given agent.
 // Low volume (suggestions are human-reviewed), so simple SELECT without cursor pagination.
-// Excludes: id, tenant_id, agent_id (reconstructed on import).
+// Excludes: id, agent_id (reconstructed on import).
 func ExportEvolutionSuggestions(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]EvolutionSuggestionExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := db.QueryContext(ctx,
 		"SELECT suggestion_type, suggestion, rationale, parameters, status,"+
 			" COALESCE(reviewed_by, ''),"+
 			" to_char(reviewed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),"+
 			" to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"+
-			" FROM agent_evolution_suggestions WHERE agent_id = $1"+tc+
-			" ORDER BY created_at",
-		append([]any{agentID}, tcArgs...)...,
+			" FROM agent_evolution_suggestions WHERE agent_id = $1 ORDER BY created_at",
+		agentID,
 	)
 	if err != nil {
 		return nil, err
@@ -602,32 +510,20 @@ func ExportEvolutionSuggestions(ctx context.Context, db *sql.DB, agentID uuid.UU
 }
 
 // ExportEpisodicSummaries returns all episodic summaries for the given agent using cursor-based pagination.
-// Excludes: id, tenant_id, agent_id (reconstructed), embedding, promoted_at.
+// Excludes: id, agent_id (reconstructed), embedding, promoted_at.
 func ExportEpisodicSummaries(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]EpisodicSummaryExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	baseArgs := append([]any{agentID}, tcArgs...)
-	cursorParam := len(baseArgs) + 1
-	limitParam := cursorParam + 1
-
 	var result []EpisodicSummaryExport
 	cursor := uuid.Nil
 
 	for {
-		args := append(append([]any{}, baseArgs...), cursor, exportBatchSize)
 		rows, err := db.QueryContext(ctx,
 			"SELECT user_id, session_key, summary, key_topics, l0_abstract,"+
 				" source_type, source_id, turn_count, token_count,"+
 				" to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at,"+
 				" to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS expires_at,"+
 				" id"+
-				" FROM episodic_summaries WHERE agent_id = $1"+tc+
-				" AND id > $"+itoa(cursorParam)+
-				" ORDER BY id LIMIT $"+itoa(limitParam),
-			args...,
+				" FROM episodic_summaries WHERE agent_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+			agentID, cursor, exportBatchSize,
 		)
 		if err != nil {
 			return nil, err
@@ -664,31 +560,19 @@ func ExportEpisodicSummaries(ctx context.Context, db *sql.DB, agentID uuid.UUID)
 }
 
 // ExportVaultDocuments returns all vault documents for the given agent using cursor-based pagination.
-// Excludes: id, tenant_id, agent_id, team_id (reconstructed on import), embedding (re-indexed by FS sync).
+// Excludes: id, agent_id, team_id (reconstructed on import), embedding (re-indexed by FS sync).
 func ExportVaultDocuments(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]VaultDocumentExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	baseArgs := append([]any{agentID}, tcArgs...)
-	cursorParam := len(baseArgs) + 1
-	limitParam := cursorParam + 1
-
 	var result []VaultDocumentExport
 	cursor := uuid.Nil
 
 	for {
-		args := append(append([]any{}, baseArgs...), cursor, exportBatchSize)
 		rows, err := db.QueryContext(ctx,
 			"SELECT scope, custom_scope, path, title, doc_type, content_hash, summary, metadata,"+
 				" to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at,"+
 				" to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS updated_at,"+
 				" id"+
-				" FROM vault_documents WHERE agent_id = $1"+tc+
-				" AND id > $"+itoa(cursorParam)+
-				" ORDER BY id LIMIT $"+itoa(limitParam),
-			args...,
+				" FROM vault_documents WHERE agent_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+			agentID, cursor, exportBatchSize,
 		)
 		if err != nil {
 			return nil, err
@@ -724,19 +608,14 @@ func ExportVaultDocuments(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([
 // ExportVaultLinks returns all vault links for the given agent, resolving doc UUIDs to paths.
 // Links are only exported where the source doc belongs to the agent.
 func ExportVaultLinks(ctx context.Context, db *sql.DB, agentID uuid.UUID) ([]VaultLinkExport, error) {
-	tc, tcArgs, _, err := scopeClause(ctx, 2)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := db.QueryContext(ctx,
 		"SELECT fd.path, td.path, vl.link_type, vl.context,"+
 			" to_char(vl.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"+
 			" FROM vault_links vl"+
 			" JOIN vault_documents fd ON vl.from_doc_id = fd.id"+
 			" JOIN vault_documents td ON vl.to_doc_id = td.id"+
-			" WHERE fd.agent_id = $1"+tc+
-			" ORDER BY vl.created_at",
-		append([]any{agentID}, tcArgs...)...,
+			" WHERE fd.agent_id = $1 ORDER BY vl.created_at",
+		agentID,
 	)
 	if err != nil {
 		return nil, err

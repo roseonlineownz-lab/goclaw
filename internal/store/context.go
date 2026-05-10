@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -13,8 +15,6 @@ const (
 	UserIDKey contextKey = "goclaw_user_id"
 	// AgentIDKey is the context key for the agent UUID.
 	AgentIDKey contextKey = "goclaw_agent_id"
-	// AgentTypeKey is the context key for the agent type ("open" or "predefined").
-	AgentTypeKey contextKey = "goclaw_agent_type"
 	// SenderIDKey is the original individual sender's ID (not group-scoped).
 	// In group chats, UserIDKey is group-scoped but SenderIDKey preserves
 	// the actual person who sent the message.
@@ -27,16 +27,12 @@ const (
 	SharedMemoryKey contextKey = "goclaw_shared_memory"
 	// SharedKGKey indicates KG should be shared across all users of the agent (no per-user scoping).
 	SharedKGKey contextKey = "goclaw_shared_kg"
+	// SharedSessionsKey indicates sessions should be shared across all users (no per-group scoping).
+	SharedSessionsKey contextKey = "goclaw_shared_sessions"
 	// ShellDenyGroupsKey holds per-agent shell deny group overrides.
 	ShellDenyGroupsKey contextKey = "goclaw_shell_deny_groups"
 	// AgentKeyKey is the context key for the agent key/name (string identifier, e.g. "default").
 	AgentKeyKey contextKey = "goclaw_agent_key"
-	// TenantIDKey is the context key for the tenant UUID.
-	TenantIDKey contextKey = "goclaw_tenant_id"
-	// CrossTenantKey indicates the caller has cross-tenant access (owner/system admin).
-	CrossTenantKey contextKey = "goclaw_cross_tenant"
-	// TenantSlugKey stores the tenant's URL-safe slug for filesystem paths.
-	TenantSlugKey contextKey = "goclaw_tenant_slug"
 	// RoleKey is the context key for the caller's permission role (e.g. "admin", "operator", "viewer").
 	RoleKey contextKey = "goclaw_role"
 	// CredentialUserIDKey holds the resolved tenant user identity for credential lookups.
@@ -44,7 +40,44 @@ const (
 	CredentialUserIDKey contextKey = "goclaw_credential_user_id"
 	// SenderNameKey is the display name from channel metadata (for bootstrap auto-contact).
 	SenderNameKey contextKey = "goclaw_sender_name"
+	// AgentAudioKey carries the immutable agent audio snapshot for TTS tool dispatch.
+	AgentAudioKey contextKey = "goclaw_agent_audio"
+	// ContactIDKey carries the resolved channel_contacts UUID for the current request.
+	// Set by channel ingress before the agent loop; used by trace/span emit to populate contact_id.
+	ContactIDKey contextKey = "goclaw_contact_id"
+	// ProjectIDKey carries the active project UUID for the current request.
+	// Set from session.ProjectID or channel contact.DefaultProjectID; used by subagent task dispatch.
+	ProjectIDKey contextKey = "goclaw_project_id"
+	// TeamIDKey carries the active agent_team UUID for the current request.
+	// Set from the team run context before the agent loop so that memory store
+	// queries can scope reads to the correct team bucket without a re-query.
+	TeamIDKey contextKey = "goclaw_team_id"
 )
+
+// AgentAudioSnapshot is an immutable snapshot of agent audio config carried through
+// the tool-dispatch context. OtherConfig is a defensive byte copy taken at insertion
+// time — callers MUST NOT mutate it after calling WithAgentAudio.
+type AgentAudioSnapshot struct {
+	AgentID     uuid.UUID
+	OtherConfig json.RawMessage // immutable byte copy — never mutate after insertion
+}
+
+// WithAgentAudio returns a new context with the given agent audio snapshot.
+// The snapshot is stored as-is — the CALLER is responsible for making a defensive
+// copy of OtherConfig before calling this function (use append([]byte(nil), src...)).
+func WithAgentAudio(ctx context.Context, snap AgentAudioSnapshot) context.Context {
+	return context.WithValue(ctx, AgentAudioKey, snap)
+}
+
+// AgentAudioFromCtx extracts the agent audio snapshot from context.
+// Returns ok=true only when the key is present AND AgentID != uuid.Nil.
+func AgentAudioFromCtx(ctx context.Context) (AgentAudioSnapshot, bool) {
+	snap, ok := ctx.Value(AgentAudioKey).(AgentAudioSnapshot)
+	if !ok || snap.AgentID == uuid.Nil {
+		return AgentAudioSnapshot{}, false
+	}
+	return snap, true
+}
 
 // WithShellDenyGroups returns a new context with shell deny group overrides.
 func WithShellDenyGroups(ctx context.Context, groups map[string]bool) context.Context {
@@ -111,22 +144,6 @@ func AgentIDFromContext(ctx context.Context) uuid.UUID {
 	return uuid.Nil
 }
 
-// WithAgentType returns a new context with the given agent type.
-func WithAgentType(ctx context.Context, t string) context.Context {
-	return context.WithValue(ctx, AgentTypeKey, t)
-}
-
-// AgentTypeFromContext extracts the agent type from context. Returns "" if not set.
-func AgentTypeFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(AgentTypeKey).(string); ok && v != "" {
-		return v
-	}
-	if rc := RunContextFromCtx(ctx); rc != nil {
-		return rc.AgentType
-	}
-	return ""
-}
-
 // WithAgentKey returns a new context with the agent key/name (string identifier).
 func WithAgentKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, AgentKeyKey, key)
@@ -168,6 +185,46 @@ func SenderIDFromContext(ctx context.Context) string {
 		return rc.SenderID
 	}
 	return ""
+}
+
+// ActorIDFromContext returns the acting principal — the entity performing
+// the action. The resolution is context-aware:
+//
+//   - Group / guild scope (UserID has "group:" or "guild:" prefix):
+//     returns SenderID (the individual sender) when set, else falls back
+//     to UserID. SenderID is the only stable actor identity in a group
+//     because UserID is the shared group principal.
+//
+//   - DM / HTTP / cron / anywhere UserID is a real user identifier:
+//     returns UserID. This preserves tenant-user merging — the gateway
+//     consumer rewrites UserID to the merged tenant identity (e.g.
+//     "viettx") for DMs via ContactCollector.ResolveTenantUserID, so
+//     ownership/audit records use the cross-channel stable identity
+//     rather than a channel-specific raw sender (e.g. "386246614").
+//     SenderID is used only as a fallback when UserID is empty.
+//
+// Use for:
+//   - permission checks (file writers, role gates)
+//   - audit trails (initiated_by, owner_id)
+//   - ownership fields (skill publisher, cron owner)
+//
+// DO NOT use for:
+//   - memory / KG / session scope (use UserIDFromContext / MemoryUserID / KGUserID)
+//   - file-system or per-scope isolation (scope = group principal on purpose)
+func ActorIDFromContext(ctx context.Context) string {
+	uid := UserIDFromContext(ctx)
+	// Group/guild: UserID is the scope namespace, not an actor. Prefer SenderID.
+	if strings.HasPrefix(uid, "group:") || strings.HasPrefix(uid, "guild:") {
+		if sid := SenderIDFromContext(ctx); sid != "" {
+			return sid
+		}
+		return uid
+	}
+	// DM / HTTP / cron: UserID is (possibly merged) actor identity.
+	if uid != "" {
+		return uid
+	}
+	return SenderIDFromContext(ctx)
 }
 
 // WithSelfEvolve returns a new context with the self-evolve flag.
@@ -236,6 +293,22 @@ func IsSharedKG(ctx context.Context) bool {
 	return false
 }
 
+// WithSharedSessions returns a context flagged for shared sessions (skip per-group scoping).
+func WithSharedSessions(ctx context.Context) context.Context {
+	return context.WithValue(ctx, SharedSessionsKey, true)
+}
+
+// IsSharedSessions returns true if sessions should be shared across users/groups.
+func IsSharedSessions(ctx context.Context) bool {
+	if v, ok := ctx.Value(SharedSessionsKey).(bool); ok {
+		return v
+	}
+	if rc := RunContextFromCtx(ctx); rc != nil {
+		return rc.SharedSessions
+	}
+	return false
+}
+
 // WithLocale returns a new context with the given locale.
 func WithLocale(ctx context.Context, locale string) context.Context {
 	return context.WithValue(ctx, LocaleKey, locale)
@@ -249,60 +322,25 @@ func LocaleFromContext(ctx context.Context) string {
 	return "en"
 }
 
-// WithTenantID returns a new context with the given tenant UUID.
-func WithTenantID(ctx context.Context, id uuid.UUID) context.Context {
-	return context.WithValue(ctx, TenantIDKey, id)
+// IsRootRole returns true if the caller has the "root" role.
+func IsRootRole(ctx context.Context) bool {
+	return RoleFromContext(ctx) == RoleRoot
 }
 
-// TenantIDFromContext extracts the tenant UUID from context.
-// Returns uuid.Nil if not set (fail-closed — callers must check).
-func TenantIDFromContext(ctx context.Context) uuid.UUID {
-	if v, ok := ctx.Value(TenantIDKey).(uuid.UUID); ok && v != uuid.Nil {
-		return v
-	}
-	if rc := RunContextFromCtx(ctx); rc != nil {
-		return rc.TenantID
-	}
-	return uuid.Nil
+// IsAdminRole returns true if the caller has the "admin" role.
+func IsAdminRole(ctx context.Context) bool {
+	return RoleFromContext(ctx) == "admin"
 }
 
-// WithCrossTenant returns a context flagged for cross-tenant access.
-// Deprecated: Only used by skills store (is_system dual-visibility pattern).
-// All other callers must use explicit tenant context or unscoped store methods.
-func WithCrossTenant(ctx context.Context) context.Context {
-	return context.WithValue(ctx, CrossTenantKey, true)
+// IsMasterScope reports whether ctx should be treated as master-scope:
+// root or admin role. v4 single-tenant: no tenant-ID check needed.
+func IsMasterScope(ctx context.Context) bool {
+	return IsRootRole(ctx) || IsAdminRole(ctx)
 }
 
-// IsCrossTenant returns true if the caller has cross-tenant access.
-// Deprecated: Only used by skills store and inline pg/*.go tenant checks.
-// Permission guards should use IsOwnerRole(). SQL queries use tenantClauseN() (no bypass).
-func IsCrossTenant(ctx context.Context) bool {
-	v, _ := ctx.Value(CrossTenantKey).(bool)
-	return v
-}
-
-// IsOwnerRole returns true if the caller has the "owner" role.
-// Replaces IsCrossTenant for permission guards.
-func IsOwnerRole(ctx context.Context) bool {
-	return RoleFromContext(ctx) == string(RoleOwner)
-}
-
-// RoleOwner is the owner role constant for context checks.
-// Must match permissions.RoleOwner.
-const RoleOwner = "owner"
-
-// WithTenantSlug returns a new context with the given tenant slug.
-func WithTenantSlug(ctx context.Context, slug string) context.Context {
-	return context.WithValue(ctx, TenantSlugKey, slug)
-}
-
-// TenantSlugFromContext extracts the tenant slug from context. Returns "" if not set.
-func TenantSlugFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(TenantSlugKey).(string); ok {
-		return v
-	}
-	return ""
-}
+// RoleRoot is the root role constant for context checks.
+// Must match permissions.RoleRoot.
+const RoleRoot = "root"
 
 // WithRole returns a new context with the caller's permission role.
 func WithRole(ctx context.Context, role string) context.Context {
@@ -315,4 +353,52 @@ func RoleFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// WithContactID returns a new context with the resolved channel contact UUID.
+// Call this in channel ingress before dispatching to the agent loop so that
+// trace/span emit can populate contact_id without an extra DB lookup.
+func WithContactID(ctx context.Context, id uuid.UUID) context.Context {
+	return context.WithValue(ctx, ContactIDKey, id)
+}
+
+// ContactIDFromContext extracts the channel contact UUID from context.
+// Returns uuid.Nil if not set (non-channel invocation paths).
+func ContactIDFromContext(ctx context.Context) uuid.UUID {
+	if v, ok := ctx.Value(ContactIDKey).(uuid.UUID); ok && v != uuid.Nil {
+		return v
+	}
+	return uuid.Nil
+}
+
+// WithProjectID returns a new context with the active project UUID.
+// Set from session.ProjectID or channel contact.DefaultProjectID so that
+// subagent task dispatch can inherit the project scope without a re-query.
+func WithProjectID(ctx context.Context, id uuid.UUID) context.Context {
+	return context.WithValue(ctx, ProjectIDKey, id)
+}
+
+// ProjectIDFromContext extracts the active project UUID from context.
+// Returns uuid.Nil when no project is bound (legacy sessions, non-project flows).
+func ProjectIDFromContext(ctx context.Context) uuid.UUID {
+	if v, ok := ctx.Value(ProjectIDKey).(uuid.UUID); ok && v != uuid.Nil {
+		return v
+	}
+	return uuid.Nil
+}
+
+// WithTeamID returns a new context with the active agent_team UUID.
+// Set this in the team run context before dispatching to the agent loop so that
+// memory store queries can scope reads to the correct team bucket.
+func WithTeamID(ctx context.Context, id uuid.UUID) context.Context {
+	return context.WithValue(ctx, TeamIDKey, id)
+}
+
+// TeamIDFromContext extracts the active team UUID from context.
+// Returns uuid.Nil when no team is bound (non-team invocation paths).
+func TeamIDFromContext(ctx context.Context) uuid.UUID {
+	if v, ok := ctx.Value(TeamIDKey).(uuid.UUID); ok && v != uuid.Nil {
+		return v
+	}
+	return uuid.Nil
 }

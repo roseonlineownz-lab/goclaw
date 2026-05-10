@@ -1,11 +1,11 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
-
-	"github.com/google/uuid"
+	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
@@ -17,15 +17,25 @@ import (
 // BuiltinToolsHandler handles built-in tool management endpoints.
 // Built-in tools are seeded at startup; only enabled and settings are editable.
 type BuiltinToolsHandler struct {
-	store          store.BuiltinToolStore
-	tenantCfgStore store.BuiltinToolTenantConfigStore
-	tenantStore    store.TenantStore
-	msgBus         *bus.MessageBus
+	store        store.BuiltinToolStore
+	secretsStore store.ConfigSecretsStore
+	msgBus       *bus.MessageBus
 }
 
 // NewBuiltinToolsHandler creates a handler for built-in tool management endpoints.
-func NewBuiltinToolsHandler(s store.BuiltinToolStore, tenantCfgs store.BuiltinToolTenantConfigStore, tenantStore store.TenantStore, msgBus *bus.MessageBus) *BuiltinToolsHandler {
-	return &BuiltinToolsHandler{store: s, tenantCfgStore: tenantCfgs, tenantStore: tenantStore, msgBus: msgBus}
+func NewBuiltinToolsHandler(s store.BuiltinToolStore, secretsStore store.ConfigSecretsStore, msgBus *bus.MessageBus) *BuiltinToolsHandler {
+	return &BuiltinToolsHandler{store: s, secretsStore: secretsStore, msgBus: msgBus}
+}
+
+// toolSecretKeys maps (tool_name, settings field path) → config_secrets key.
+// When saving settings, if a settings blob contains these fields, they are
+// extracted, saved to config_secrets, and stripped from the persisted settings.
+var toolSecretKeys = map[string]map[string]string{
+	"web_search": {
+		"exa.api_key":    "tools.web.exa.api_key",
+		"tavily.api_key": "tools.web.tavily.api_key",
+		"brave.api_key":  "tools.web.brave.api_key",
+	},
 }
 
 // RegisterRoutes registers all built-in tool routes on the given mux.
@@ -34,8 +44,6 @@ func (h *BuiltinToolsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/tools/builtin", h.auth(h.handleList))
 	mux.HandleFunc("GET /v1/tools/builtin/{name}", h.auth(h.handleGet))
 	mux.HandleFunc("PUT /v1/tools/builtin/{name}", h.adminAuth(h.handleUpdate))
-	mux.HandleFunc("PUT /v1/tools/builtin/{name}/tenant-config", h.adminAuth(h.handleSetTenantConfig))
-	mux.HandleFunc("DELETE /v1/tools/builtin/{name}/tenant-config", h.adminAuth(h.handleDeleteTenantConfig))
 }
 
 func (h *BuiltinToolsHandler) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -46,6 +54,7 @@ func (h *BuiltinToolsHandler) adminAuth(next http.HandlerFunc) http.HandlerFunc 
 	return requireAuth(permissions.RoleAdmin, next)
 }
 
+// emitCacheInvalidate broadcasts a cache invalidation event for a builtin tool.
 func (h *BuiltinToolsHandler) emitCacheInvalidate(key string) {
 	if h.msgBus == nil {
 		return
@@ -54,6 +63,95 @@ func (h *BuiltinToolsHandler) emitCacheInvalidate(key string) {
 		Name:    protocol.EventCacheInvalidate,
 		Payload: bus.CacheInvalidatePayload{Kind: bus.CacheKindBuiltinTools, Key: key},
 	})
+}
+
+// extractAndSaveSecrets extracts secret fields from a tool settings blob,
+// saves them to config_secrets, and returns the cleaned settings with
+// secrets stripped. Secret fields are identified by toolSecretKeys.
+func (h *BuiltinToolsHandler) extractAndSaveSecrets(ctx context.Context, toolName string, raw json.RawMessage) json.RawMessage {
+	if h.secretsStore == nil {
+		return raw
+	}
+	mapping, ok := toolSecretKeys[toolName]
+	if !ok || len(raw) == 0 {
+		return raw
+	}
+
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return raw
+	}
+
+	modified := false
+	for settingsPath, secretKey := range mapping {
+		parts := strings.SplitN(settingsPath, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		section, field := parts[0], parts[1]
+
+		sectionRaw, ok := settings[section]
+		if !ok {
+			continue
+		}
+
+		var sectionMap map[string]json.RawMessage
+		if err := json.Unmarshal(sectionRaw, &sectionMap); err != nil {
+			continue
+		}
+
+		keyRaw, ok := sectionMap[field]
+		if !ok {
+			continue
+		}
+
+		var keyValue string
+		if err := json.Unmarshal(keyRaw, &keyValue); err != nil {
+			continue
+		}
+
+		// Strip field regardless; save only non-empty, non-masked values
+		delete(sectionMap, field)
+		if rebuilt, err := json.Marshal(sectionMap); err == nil {
+			settings[section] = rebuilt
+		}
+		modified = true
+
+		if keyValue == "" || keyValue == "***" {
+			continue
+		}
+
+		if err := h.secretsStore.Set(ctx, secretKey, keyValue); err != nil {
+			slog.Warn("failed to save tool secret", "tool", toolName, "key", secretKey, "error", err)
+		}
+	}
+
+	if !modified {
+		return raw
+	}
+	cleaned, err := json.Marshal(settings)
+	if err != nil {
+		return raw
+	}
+	return cleaned
+}
+
+// getSecretsStatus returns which secret keys are set for a tool (boolean only, never raw values).
+func (h *BuiltinToolsHandler) getSecretsStatus(ctx context.Context, toolName string) map[string]bool {
+	if h.secretsStore == nil {
+		return nil
+	}
+	mapping, ok := toolSecretKeys[toolName]
+	if !ok {
+		return nil
+	}
+
+	status := make(map[string]bool, len(mapping))
+	for _, secretKey := range mapping {
+		val, err := h.secretsStore.Get(ctx, secretKey)
+		status[secretKey] = err == nil && val != ""
+	}
+	return status
 }
 
 func (h *BuiltinToolsHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -65,28 +163,19 @@ func (h *BuiltinToolsHandler) handleList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Merge per-tenant overrides into response when tenant-scoped
-	tid := store.TenantIDFromContext(r.Context())
-	if tid != uuid.Nil && h.tenantCfgStore != nil {
-		overrides, err := h.tenantCfgStore.ListAll(r.Context(), tid)
-		if err == nil && len(overrides) > 0 {
-			type toolWithTenant struct {
-				store.BuiltinToolDef
-				TenantEnabled *bool `json:"tenant_enabled"`
-			}
-			enriched := make([]toolWithTenant, len(result))
-			for i, t := range result {
-				enriched[i] = toolWithTenant{BuiltinToolDef: t}
-				if enabled, ok := overrides[t.Name]; ok {
-					enriched[i].TenantEnabled = &enabled
-				}
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"tools": enriched})
-			return
+	// Include secrets_set for tools that have secrets.
+	type toolWithSecrets struct {
+		store.BuiltinToolDef
+		SecretsSet map[string]bool `json:"secrets_set,omitempty"`
+	}
+	enriched := make([]toolWithSecrets, len(result))
+	for i, t := range result {
+		enriched[i] = toolWithSecrets{BuiltinToolDef: t}
+		if _, hasSecrets := toolSecretKeys[t.Name]; hasSecrets {
+			enriched[i].SecretsSet = h.getSecretsStatus(r.Context(), t.Name)
 		}
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"tools": result})
+	writeJSON(w, http.StatusOK, map[string]any{"tools": enriched})
 }
 
 func (h *BuiltinToolsHandler) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +196,12 @@ func (h *BuiltinToolsHandler) handleGet(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *BuiltinToolsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	// builtin_tools is a global table; writes must be restricted to master-scope callers.
+	// Non-owner users must go through PUT /v1/tools/builtin/{name}/tenant-config instead.
+	// See plans/reports/debugger-260412-0922-tenant-scope-audit.md CRITICAL-1.
+	if !requireMasterScope(w, r) {
+		return
+	}
 	locale := extractLocale(r)
 	name := r.PathValue("name")
 	if name == "" {
@@ -126,7 +221,18 @@ func (h *BuiltinToolsHandler) handleUpdate(w http.ResponseWriter, r *http.Reques
 		allowed["enabled"] = v
 	}
 	if v, ok := updates["settings"]; ok {
-		allowed["settings"] = v
+		// Extract secrets before saving settings
+		if settingsRaw, err := json.Marshal(v); err == nil {
+			cleaned := h.extractAndSaveSecrets(r.Context(), name, settingsRaw)
+			var cleanedMap any
+			if err2 := json.Unmarshal(cleaned, &cleanedMap); err2 == nil {
+				allowed["settings"] = cleanedMap
+			} else {
+				allowed["settings"] = v
+			}
+		} else {
+			allowed["settings"] = v
+		}
 	}
 
 	if len(allowed) == 0 {
@@ -145,53 +251,3 @@ func (h *BuiltinToolsHandler) handleUpdate(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
-// handleSetTenantConfig sets a per-tenant override for a builtin tool.
-func (h *BuiltinToolsHandler) handleSetTenantConfig(w http.ResponseWriter, r *http.Request) {
-	if h.tenantCfgStore == nil {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tenant config not available"})
-		return
-	}
-	if !requireTenantAdmin(w, r, h.tenantStore) {
-		return
-	}
-	name := r.PathValue("name")
-	tid := store.TenantIDFromContext(r.Context())
-
-	var body struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		return
-	}
-
-	if err := h.tenantCfgStore.Set(r.Context(), tid, name, body.Enabled); err != nil {
-		slog.Warn("set tenant tool config failed", "tool", name, "tenant", tid, "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	emitAudit(h.msgBus, r, "builtin_tool.tenant_config.set", "builtin_tool", name)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
-}
-
-// handleDeleteTenantConfig removes a per-tenant override (reverts to default).
-func (h *BuiltinToolsHandler) handleDeleteTenantConfig(w http.ResponseWriter, r *http.Request) {
-	if h.tenantCfgStore == nil {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tenant config not available"})
-		return
-	}
-	if !requireTenantAdmin(w, r, h.tenantStore) {
-		return
-	}
-	name := r.PathValue("name")
-	tid := store.TenantIDFromContext(r.Context())
-
-	if err := h.tenantCfgStore.Delete(r.Context(), tid, name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	emitAudit(h.msgBus, r, "builtin_tool.tenant_config.deleted", "builtin_tool", name)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}

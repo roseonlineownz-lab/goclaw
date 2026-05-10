@@ -30,8 +30,8 @@ func buildEnsureUserProfile(as store.AgentStore) agent.EnsureUserProfileFunc {
 // isNew=true seeds all files; isNew=false only seeds if user has zero files
 // (avoids re-seeding BOOTSTRAP.md after auto-cleanup on server restart).
 func buildSeedUserFiles(as store.AgentStore) agent.SeedUserFilesFunc {
-	return func(ctx context.Context, agentID uuid.UUID, userID, agentType string, isNew bool, channelMeta *bootstrap.ChannelMeta) error {
-		_, err := bootstrap.SeedUserFiles(ctx, as, agentID, userID, agentType, !isNew, channelMeta)
+	return func(ctx context.Context, agentID uuid.UUID, userID string, isNew bool, channelMeta *bootstrap.ChannelMeta) error {
+		_, err := bootstrap.SeedUserFiles(ctx, as, agentID, userID, !isNew, channelMeta)
 		return err
 	}
 }
@@ -60,7 +60,7 @@ func buildCacheInvalidate(intc *tools.ContextFileInterceptor) agent.CacheInvalid
 // buildContextFileLoader creates the per-request context file loader callback.
 // Delegates to the ContextFileInterceptor for type-aware routing.
 func buildContextFileLoader(intc *tools.ContextFileInterceptor) agent.ContextFileLoaderFunc {
-	return func(ctx context.Context, agentID uuid.UUID, userID, agentType string) []bootstrap.ContextFile {
-		return intc.LoadContextFiles(ctx, agentID, userID, agentType)
+	return func(ctx context.Context, agentID uuid.UUID, userID string) []bootstrap.ContextFile {
+		return intc.LoadContextFiles(ctx, agentID, userID)
 	}
 }

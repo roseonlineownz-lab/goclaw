@@ -11,7 +11,7 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
-	"github.com/nextlevelbuilder/goclaw/internal/sessions"
+	sessions "github.com/nextlevelbuilder/goclaw/internal/agentsessions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
@@ -55,7 +55,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	if !permissions.HasMinRole(auth.Role, permissions.RoleOperator) {
+	if !permissions.HasMinRole(auth.Role, permissions.RoleMember) {
 		http.Error(w, `{"error":"permission denied: insufficient role"}`, http.StatusForbidden)
 		return
 	}
@@ -90,7 +90,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var lastMessage string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
-			lastMessage = string(req.Messages[i].Content)
+			lastMessage = req.Messages[i].Content
 			break
 		}
 	}

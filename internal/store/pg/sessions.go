@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,7 +44,7 @@ func NewPGSessionStore(db *sql.DB) *PGSessionStore {
 // Idempotent — no-op if no legacy keys exist.
 func (s *PGSessionStore) migrateLegacyWSKeys() {
 	res, err := s.db.ExecContext(context.Background(), `
-		UPDATE sessions
+		UPDATE agent_sessions
 		SET session_key = regexp_replace(
 			session_key,
 			'^(agent:[^:]+):ws-.+-([^-]+)$',
@@ -65,12 +66,8 @@ func (s *PGSessionStore) migrateLegacyWSKeys() {
 // is replaced with "agent:{agentKey}:..." by JOINing with the agents table.
 // Idempotent — no-op if no UUID-based keys exist.
 func (s *PGSessionStore) migrateUUIDSessionKeys() {
-	// UUID pattern: 8-4-4-4-12 hex chars. Matches session keys where the agent segment is a UUID.
-	// Rewrites to use agents.agent_key instead.
-	// Build the target key and skip rows where the target already exists (avoids unique constraint violation
-	// when both UUID-keyed and agentKey-keyed sessions coexist for the same agent).
 	res, err := s.db.ExecContext(context.Background(), `
-		UPDATE sessions s
+		UPDATE agent_sessions s
 		SET session_key = 'agent:' || a.agent_key || ':' || split_part(s.session_key, ':', 3)
 			|| CASE WHEN array_length(string_to_array(s.session_key, ':'), 1) > 3
 				THEN ':' || (SELECT string_agg(part, ':') FROM unnest((string_to_array(s.session_key, ':'))[4:]) AS part)
@@ -80,12 +77,11 @@ func (s *PGSessionStore) migrateUUIDSessionKeys() {
 		  AND a.id = (split_part(s.session_key, ':', 2))::uuid
 		  AND a.deleted_at IS NULL
 		  AND NOT EXISTS (
-		    SELECT 1 FROM sessions s2
-		    WHERE s2.tenant_id = s.tenant_id
-		      AND s2.session_key = 'agent:' || a.agent_key || ':' || split_part(s.session_key, ':', 3)
-		        || CASE WHEN array_length(string_to_array(s.session_key, ':'), 1) > 3
-		            THEN ':' || (SELECT string_agg(p, ':') FROM unnest((string_to_array(s.session_key, ':'))[4:]) AS p)
-		            ELSE '' END
+		    SELECT 1 FROM agent_sessions s2
+		    WHERE s2.session_key = 'agent:' || a.agent_key || ':' || split_part(s.session_key, ':', 3)
+		      || CASE WHEN array_length(string_to_array(s.session_key, ':'), 1) > 3
+		          THEN ':' || (SELECT string_agg(p, ':') FROM unnest((string_to_array(s.session_key, ':'))[4:]) AS p)
+		          ELSE '' END
 		  )
 	`)
 	if err != nil {
@@ -97,14 +93,9 @@ func (s *PGSessionStore) migrateUUIDSessionKeys() {
 	}
 }
 
-// sessionCacheKey prefixes session key with tenant UUID to prevent cross-tenant cache collisions.
-// Two tenants with the same agent_key produce different cache keys.
-func sessionCacheKey(ctx context.Context, key string) string {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
-	return tid.String() + ":" + key
+// sessionCacheKey returns the cache key for a session.
+func sessionCacheKey(_ context.Context, key string) string {
+	return key
 }
 
 func (s *PGSessionStore) GetOrCreate(ctx context.Context, key string) *store.SessionData {
@@ -142,9 +133,9 @@ func (s *PGSessionStore) GetOrCreate(ctx context.Context, key string) *store.Ses
 
 	msgsJSON, _ := json.Marshal([]providers.Message{})
 	s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, session_key, messages, created_at, updated_at, team_id, tenant_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (tenant_id, session_key) DO NOTHING`,
-		uuid.Must(uuid.NewV7()), key, msgsJSON, now, now, teamID, tenantIDForInsert(ctx),
+		`INSERT INTO agent_sessions (id, session_key, messages, created_at, updated_at, team_id, project_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (session_key) DO NOTHING`,
+		uuid.Must(uuid.NewV7()), key, msgsJSON, now, now, teamID, nil,
 	)
 
 	return data
@@ -304,4 +295,127 @@ func (s *PGSessionStore) UpdateMetadata(ctx context.Context, key, model, provide
 			data.Channel = channel
 		}
 	}
+}
+
+// --- helpers ---
+
+func (s *PGSessionStore) getOrInit(ctx context.Context, key string) *store.SessionData {
+	if data, ok := s.cache[sessionCacheKey(ctx, key)]; ok {
+		return data
+	}
+
+	// Try loading from DB first to avoid overwriting existing messages
+	data := s.loadFromDB(ctx, key)
+	if data != nil {
+		s.cache[sessionCacheKey(ctx, key)] = data
+		return data
+	}
+
+	// Not in DB — create new
+	now := time.Now()
+	data = &store.SessionData{
+		Key:      key,
+		Messages: []providers.Message{},
+		Created:  now,
+		Updated:  now,
+	}
+	s.cache[sessionCacheKey(ctx, key)] = data
+
+	msgsJSON, _ := json.Marshal([]providers.Message{})
+	s.db.ExecContext(ctx,
+		`INSERT INTO agent_sessions (id, session_key, messages, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (session_key) DO NOTHING`,
+		uuid.Must(uuid.NewV7()), key, msgsJSON, now, now,
+	)
+	return data
+}
+
+func (s *PGSessionStore) loadFromDB(ctx context.Context, key string) *store.SessionData {
+	var sessionKey string
+	var msgsJSON []byte
+	var summary, model, provider, channel, label, spawnedBy *string
+	var agentID, userID, teamID, projectID *uuid.UUID
+	var inputTokens, outputTokens int64
+	var compactionCount, memoryFlushCompactionCount, spawnDepth int
+	var memoryFlushAt int64
+	var createdAt, updatedAt time.Time
+	var metaJSON *[]byte
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT session_key, messages, summary, model, provider, channel,
+		 input_tokens, output_tokens, compaction_count,
+		 memory_flush_compaction_count, memory_flush_at,
+		 label, spawned_by, spawn_depth, agent_id, user_id,
+		 COALESCE(metadata, '{}'), created_at, updated_at, team_id, project_id
+		 FROM agent_sessions WHERE session_key = $1`, key,
+	).Scan(&sessionKey, &msgsJSON, &summary, &model, &provider, &channel,
+		&inputTokens, &outputTokens, &compactionCount,
+		&memoryFlushCompactionCount, &memoryFlushAt,
+		&label, &spawnedBy, &spawnDepth, &agentID, &userID,
+		&metaJSON, &createdAt, &updatedAt, &teamID, &projectID)
+	if err != nil {
+		return nil
+	}
+
+	var msgs []providers.Message
+	json.Unmarshal(msgsJSON, &msgs)
+
+	var meta map[string]string
+	if metaJSON != nil {
+		json.Unmarshal(*metaJSON, &meta)
+	}
+
+	// Restore adaptive-throttle fields from metadata so GetLastPromptTokens()
+	// returns the persisted value after a server restart (clean cache).
+	var lastPromptTokens, lastMessageCount int
+	if meta != nil {
+		if v := meta["last_prompt_tokens"]; v != "" {
+			lastPromptTokens, _ = strconv.Atoi(v)
+		}
+		if v := meta["last_message_count"]; v != "" {
+			lastMessageCount, _ = strconv.Atoi(v)
+		}
+	}
+
+	return &store.SessionData{
+		Key:                        sessionKey,
+		Messages:                   msgs,
+		Summary:                    derefStr(summary),
+		Created:                    createdAt,
+		Updated:                    updatedAt,
+		AgentUUID:                  derefUUID(agentID),
+		UserID:                     uuidPtrToStr(userID),
+		TeamID:                     teamID,
+		ProjectID:                  projectID,
+		Model:                      derefStr(model),
+		Provider:                   derefStr(provider),
+		Channel:                    derefStr(channel),
+		InputTokens:                inputTokens,
+		OutputTokens:               outputTokens,
+		CompactionCount:            compactionCount,
+		MemoryFlushCompactionCount: memoryFlushCompactionCount,
+		MemoryFlushAt:              memoryFlushAt,
+		Label:                      derefStr(label),
+		SpawnedBy:                  derefStr(spawnedBy),
+		SpawnDepth:                 spawnDepth,
+		Metadata:                   meta,
+		LastPromptTokens:           lastPromptTokens,
+		LastMessageCount:           lastMessageCount,
+	}
+}
+
+func nilSessionUUID(u uuid.UUID) *uuid.UUID {
+	if u == uuid.Nil {
+		return nil
+	}
+	return &u
+}
+
+// uuidPtrToStr converts a nullable UUID pointer to its string representation.
+// Returns empty string for nil (no user_id set).
+func uuidPtrToStr(u *uuid.UUID) string {
+	if u == nil {
+		return ""
+	}
+	return u.String()
 }

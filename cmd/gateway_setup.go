@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
@@ -44,6 +45,7 @@ func setupToolRegistry(
 	browserMgr *browser.Manager,
 	webFetchTool *tools.WebFetchTool,
 	ttsTool *tools.TtsTool,
+	audioMgr *audio.Manager,
 	permPE *permissions.PolicyEngine,
 	toolPE *tools.PolicyEngine,
 	dataDir string,
@@ -73,12 +75,14 @@ func setupToolRegistry(
 		toolsReg.Register(tools.NewSandboxedWriteFileTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
 		toolsReg.Register(tools.NewSandboxedListFilesTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
 		toolsReg.Register(tools.NewSandboxedEditTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
+		toolsReg.Register(tools.NewDeleteFileTool(workspace, agentCfg.RestrictToWorkspace)) // no sandboxed variant: delete is host-only
 		toolsReg.Register(tools.NewSandboxedExecTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
 	} else {
 		toolsReg.Register(tools.NewReadFileTool(workspace, agentCfg.RestrictToWorkspace))
 		toolsReg.Register(tools.NewWriteFileTool(workspace, agentCfg.RestrictToWorkspace))
 		toolsReg.Register(tools.NewListFilesTool(workspace, agentCfg.RestrictToWorkspace))
 		toolsReg.Register(tools.NewEditTool(workspace, agentCfg.RestrictToWorkspace))
+		toolsReg.Register(tools.NewDeleteFileTool(workspace, agentCfg.RestrictToWorkspace))
 		toolsReg.Register(tools.NewExecTool(workspace, agentCfg.RestrictToWorkspace))
 	}
 
@@ -115,16 +119,7 @@ func setupToolRegistry(
 		toolsReg.Register(browser.NewBrowserTool(browserMgr))
 	}
 
-	// Web tools (web_search + web_fetch)
-	webSearchTool := tools.NewWebSearchTool(tools.WebSearchConfig{
-		BraveEnabled: cfg.Tools.Web.Brave.Enabled,
-		BraveAPIKey:  cfg.Tools.Web.Brave.APIKey,
-		DDGEnabled:   cfg.Tools.Web.DuckDuckGo.Enabled,
-	})
-	if webSearchTool != nil {
-		toolsReg.Register(webSearchTool)
-		slog.Info("web_search tool enabled")
-	}
+	// Web tools (web_fetch; web_search is registered in wireExtraTools after stores are ready)
 	webFetchTool = tools.NewWebFetchTool(tools.WebFetchConfig{
 		Policy:         cfg.Tools.WebFetch.Policy,
 		AllowedDomains: cfg.Tools.WebFetch.AllowedDomains,
@@ -137,15 +132,19 @@ func setupToolRegistry(
 	toolsReg.Register(tools.NewReadImageTool(providerRegistry))
 	toolsReg.Register(tools.NewCreateImageTool(providerRegistry))
 
-	// Audio generation tool (MiniMax music + ElevenLabs sound effects)
-	toolsReg.Register(tools.NewCreateAudioTool(providerRegistry,
-		cfg.Tts.ElevenLabs.APIKey, cfg.Tts.ElevenLabs.BaseURL))
-
-	// TTS (text-to-speech) system — always create TtsTool so config reload can populate it later
+	// Audio system: build Manager first so Music/SFX providers are registered
+	// before the create_audio tool is constructed.
 	ttsMgr := setupTTS(cfg)
 	if ttsMgr == nil {
 		ttsMgr = tts.NewManager(tts.ManagerConfig{})
 	}
+	setupAudioExtras(cfg, ttsMgr)      // Phase 3: registers Music + SFX providers.
+	audio.BridgeLegacySTT(ttsMgr, cfg) // Phase 4: bridge per-channel STTProxyURL → channel-scoped providers.
+	audioMgr = ttsMgr                  // expose to caller for channel STT wiring (Phase 5)
+
+	// Audio generation tool — backed by audio.Manager (Music + SFX).
+	toolsReg.Register(tools.NewCreateAudioTool(ttsMgr))
+
 	ttsTool = tools.NewTtsTool(ttsMgr)
 	toolsReg.Register(ttsTool)
 	if ttsMgr.HasProviders() {
@@ -214,6 +213,9 @@ func setupToolRegistry(
 	// Exception: .goclaw/skills-store/ is allowed (skills may contain executable scripts).
 	if execTool, ok := toolsReg.Get("exec"); ok {
 		if et, ok := execTool.(*tools.ExecTool); ok {
+			// Apply global shell deny-group toggles before any request can arrive.
+			// Per-agent overrides via store.WithShellDenyGroups still win per-key.
+			et.SetGlobalShellDenyGroups(cfg.Tools.ShellDenyGroups)
 			et.DenyPaths(dataDir, ".goclaw/")
 			// Allow skills execution: master-tenant skills-store + all tenant-scoped skills-store dirs.
 			et.AllowPathExemptions(
@@ -276,6 +278,11 @@ func setupToolRegistry(
 			t.DenyPaths(internalDenyPaths...)
 		}
 	}
+	if sf, ok := toolsReg.Get("send_file"); ok {
+		if t, ok := sf.(*tools.SendFileTool); ok {
+			t.DenyPaths(internalDenyPaths...)
+		}
+	}
 
 	return
 }
@@ -301,6 +308,13 @@ func wireTracingAndCron(
 				Payload: map[string]any{"trace_ids": ids},
 			})
 		}
+		// Immediate status broadcast on every successful status write (bypasses 5s flush).
+		traceCollector.SetStatusBroadcaster(func(p tracing.TraceStatusPayload) {
+			msgBus.Broadcast(bus.Event{
+				Name:    protocol.EventTraceStatusChanged,
+				Payload: p,
+			})
+		})
 		traceCollector.Start()
 		slog.Info("LLM tracing enabled")
 	}
@@ -413,10 +427,14 @@ func setupMemoryEmbeddings(
 	}
 }
 
-// seedSystemConfigs ensures system_configs has all expected keys for all tenants.
+// seedSystemConfigs ensures system_configs has all expected keys.
 // Inserts missing keys from config.json without overwriting existing values.
-func seedSystemConfigs(sc store.SystemConfigStore, ts store.TenantStore, cfg *config.Config) {
-	syncSystemConfigs(sc, ts, cfg, true) // onlyMissing=true
+// v4 single-user: writes only the master scope (uuid.Nil owner).
+func seedSystemConfigs(sc store.SystemConfigStore, cfg *config.Config) {
+	if sc == nil || cfg == nil {
+		return
+	}
+	seedConfigForContext(context.Background(), sc, cfg, true)
 }
 
 // loadBootstrapFiles loads bootstrap files for the default agent's system prompt from DB.
@@ -440,7 +458,7 @@ func loadBootstrapFiles(
 				slog.Info("bootstrap loaded from store", "count", len(dbFiles))
 			} else {
 				// DB empty → seed templates, then load
-				if _, seedErr := bootstrap.SeedToStore(bgCtx, pgStores.Agents, defaultAgent.ID, defaultAgent.AgentType); seedErr != nil {
+				if _, seedErr := bootstrap.SeedToStore(bgCtx, pgStores.Agents, defaultAgent.ID); seedErr != nil {
 					slog.Warn("failed to seed bootstrap to store", "error", seedErr)
 				} else {
 					contextFiles = bootstrap.LoadFromStore(bgCtx, pgStores.Agents, defaultAgent.ID)
@@ -507,7 +525,13 @@ func setupSkillsSystem(
 	skillsLoader := skills.NewLoader(workspace, globalSkillsDir, builtinSkillsDir)
 	skillSearchTool := tools.NewSkillSearchTool(skillsLoader)
 	toolsReg.Register(skillSearchTool)
-	toolsReg.Register(tools.NewUseSkillTool())
+	useSkillTool := tools.NewUseSkillTool()
+	if pgStores != nil {
+		if manageStore, ok := pgStores.Skills.(store.SkillManageStore); ok {
+			useSkillTool.SetSkillStore(manageStore)
+		}
+	}
+	toolsReg.Register(useSkillTool)
 	slog.Info("skill_search tool registered", "skills", len(skillsLoader.ListSkills(context.Background())))
 
 	// Wire skills-store directory into filesystem loader so agents

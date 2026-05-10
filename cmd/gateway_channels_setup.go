@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
+	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/discord"
@@ -95,7 +96,7 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 		if strings.Contains(fmt.Sprintf("%T", pgStores.DB.Driver()), "sqlite") {
 			waDialect = "sqlite3"
 		}
-		wa, err := whatsapp.New(cfg.Channels.WhatsApp, msgBus, pgStores.Pairing, pgStores.DB, pgStores.PendingMessages, waDialect)
+		wa, err := whatsapp.New(cfg.Channels.WhatsApp, msgBus, pgStores.Pairing, pgStores.DB, pgStores.PendingMessages, waDialect, audioMgr, pgStores.BuiltinTools)
 		if err != nil {
 			channelMgr.RecordFailure(channels.TypeWhatsApp, "", err)
 			slog.Error("failed to initialize whatsapp channel", "error", err)
@@ -149,9 +150,6 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 	if cfg.Channels.Feishu.Enabled {
 		if cfg.Channels.Feishu.AppID == "" {
 			recordMissingConfig(channels.TypeFeishu, "Set channels.feishu.app_id in config.")
-		} else if f, err := feishu.New(cfg.Channels.Feishu, msgBus, pgStores.Pairing, nil); err != nil {
-			channelMgr.RecordFailure(channels.TypeFeishu, "", err)
-			slog.Error("failed to initialize feishu channel", "error", err)
 		} else {
 			feishuOpts := []feishu.Option{
 				feishu.WithAgentStore(pgStores.Agents),
@@ -180,7 +178,7 @@ func wireChannelRPCMethods(server *gateway.Server, pgStores *store.Stores, chann
 
 	// Register channel instances WS RPC methods
 	if pgStores.ChannelInstances != nil {
-		methods.NewChannelInstancesMethods(pgStores.ChannelInstances, msgBus, msgBus).Register(server.Router())
+		methods.NewChannelInstancesMethods(pgStores.ChannelInstances, pgStores.Agents, msgBus, msgBus).Register(server.Router())
 		zalomethods.NewQRMethods(pgStores.ChannelInstances, msgBus).Register(server.Router())
 		zalomethods.NewContactsMethods(pgStores.ChannelInstances).Register(server.Router())
 		whatsapp.NewQRMethods(pgStores.ChannelInstances, channelMgr).Register(server.Router())
@@ -280,7 +278,7 @@ func wireChannelEventSubscribers(
 				disabled := 0
 				for _, inst := range all {
 					if inst.AgentID == agentID && inst.Enabled {
-						if err := ciStore.Update(store.WithTenantID(context.Background(), inst.TenantID), inst.ID, map[string]any{"enabled": false}); err != nil {
+						if err := ciStore.Update(context.Background(), inst.ID, map[string]any{"enabled": false}); err != nil {
 							slog.Warn("cascade disable: failed to disable channel instance", "name", inst.Name, "error", err)
 						} else {
 							disabled++

@@ -21,16 +21,15 @@ import (
 
 // Bootstrap filenames (matching TS workspace.ts constants).
 const (
-	AgentsFile         = "AGENTS.md"
-	SoulFile           = "SOUL.md"
-	ToolsFile          = "TOOLS.md"
-	IdentityFile       = "IDENTITY.md"
-	UserFile           = "USER.md"
-	UserPredefinedFile = "USER_PREDEFINED.md"
-	BootstrapFile      = "BOOTSTRAP.md"
-	CapabilitiesFile  = "CAPABILITIES.md"
-	AgentsCoreFile    = "AGENTS_CORE.md"
-	AgentsTaskFile    = "AGENTS_TASK.md"
+	AgentsFile       = "AGENTS.md"
+	SoulFile         = "SOUL.md"
+	ToolsFile        = "TOOLS.md"
+	IdentityFile     = "IDENTITY.md"
+	UserFile         = "USER.md"
+	BootstrapFile    = "BOOTSTRAP.md"
+	CapabilitiesFile = "CAPABILITIES.md"
+	AgentsCoreFile   = "AGENTS_CORE.md"
+	AgentsTaskFile   = "AGENTS_TASK.md"
 
 	// Deprecated: v1 remnant. Heartbeat uses AGENTS_CORE.md via ModeAllowlist("minimal").
 	AgentsMinimalFile = "AGENTS_MINIMAL.md"
@@ -59,7 +58,7 @@ var standardFiles = []string{
 var minimalAllowlist = map[string]bool{
 	AgentsFile:         true,
 	ToolsFile:          true,
-	UserPredefinedFile: true, // baseline language + communication rules
+	UserFile: true, // baseline language + communication rules
 	CapabilitiesFile:   true, // domain expertise always needed
 }
 

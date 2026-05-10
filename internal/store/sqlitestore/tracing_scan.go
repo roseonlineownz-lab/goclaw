@@ -14,7 +14,7 @@ import (
 
 func scanTraceRow(row *sql.Row) (*store.TraceData, error) {
 	var d store.TraceData
-	var parentTraceID, agentID, teamID *uuid.UUID
+	var parentTraceID, agentID, teamID, contactID *uuid.UUID
 	var userID, sessionKey, runID, name, channel, inputPreview, outputPreview, errStr *string
 	var endTime nullSqliteTime
 	var durationMS *int
@@ -25,7 +25,7 @@ func scanTraceRow(row *sql.Row) (*store.TraceData, error) {
 	err := row.Scan(&d.ID, &parentTraceID, &agentID, &userID, &sessionKey, &runID, &startTime, &endTime,
 		&durationMS, &name, &channel, &inputPreview, &outputPreview,
 		&d.TotalInputTokens, &d.TotalOutputTokens, &d.TotalCost, &d.SpanCount, &d.LLMCallCount, &d.ToolCallCount,
-		&d.Status, &errStr, &metadata, &tags, &teamID, &createdAt)
+		&d.Status, &errStr, &metadata, &tags, &teamID, &contactID, &createdAt)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func scanTraceRow(row *sql.Row) (*store.TraceData, error) {
 	if endTime.Valid {
 		endTimePtr = &endTime.Time
 	}
-	applyTraceNullables(&d, parentTraceID, agentID, teamID, userID, sessionKey, runID, name, channel, inputPreview, outputPreview, errStr, endTimePtr, durationMS, metadata, tags)
+	applyTraceNullables(&d, parentTraceID, agentID, teamID, contactID, userID, sessionKey, runID, name, channel, inputPreview, outputPreview, errStr, endTimePtr, durationMS, metadata, tags)
 	return &d, nil
 }
 
@@ -43,7 +43,7 @@ func scanTraceRows(rows *sql.Rows) ([]store.TraceData, error) {
 	var result []store.TraceData
 	for rows.Next() {
 		var d store.TraceData
-		var parentTraceID, agentID, teamID *uuid.UUID
+		var parentTraceID, agentID, teamID, contactID *uuid.UUID
 		var userID, sessionKey, runID, name, channel, inputPreview, outputPreview, errStr *string
 		var endTime nullSqliteTime
 		var durationMS *int
@@ -54,30 +54,31 @@ func scanTraceRows(rows *sql.Rows) ([]store.TraceData, error) {
 		if err := rows.Scan(&d.ID, &parentTraceID, &agentID, &userID, &sessionKey, &runID, &startTime, &endTime,
 			&durationMS, &name, &channel, &inputPreview, &outputPreview,
 			&d.TotalInputTokens, &d.TotalOutputTokens, &d.TotalCost, &d.SpanCount, &d.LLMCallCount, &d.ToolCallCount,
-			&d.Status, &errStr, &metadata, &tags, &teamID, &createdAt); err != nil {
+			&d.Status, &errStr, &metadata, &tags, &teamID, &contactID, &createdAt); err != nil {
 			slog.Warn("tracing: trace scan failed", "error", err)
 			continue
 		}
 		d.StartTime = startTime.Time
 		d.CreatedAt = createdAt.Time
 		var endTimePtr *time.Time
-	if endTime.Valid {
-		endTimePtr = &endTime.Time
-	}
-	applyTraceNullables(&d, parentTraceID, agentID, teamID, userID, sessionKey, runID, name, channel, inputPreview, outputPreview, errStr, endTimePtr, durationMS, metadata, tags)
+		if endTime.Valid {
+			endTimePtr = &endTime.Time
+		}
+		applyTraceNullables(&d, parentTraceID, agentID, teamID, contactID, userID, sessionKey, runID, name, channel, inputPreview, outputPreview, errStr, endTimePtr, durationMS, metadata, tags)
 		result = append(result, d)
 	}
 	return result, rows.Err()
 }
 
 func applyTraceNullables(d *store.TraceData,
-	parentTraceID, agentID, teamID *uuid.UUID,
+	parentTraceID, agentID, teamID, contactID *uuid.UUID,
 	userID, sessionKey, runID, name, channel, inputPreview, outputPreview, errStr *string,
 	endTime *time.Time, durationMS *int, metadata *[]byte, tags []byte,
 ) {
 	d.ParentTraceID = parentTraceID
 	d.AgentID = agentID
 	d.TeamID = teamID
+	d.ContactID = contactID
 	d.UserID = derefStr(userID)
 	d.SessionKey = derefStr(sessionKey)
 	d.RunID = derefStr(runID)

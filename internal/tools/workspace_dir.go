@@ -23,7 +23,6 @@ const (
 // WorkspaceDir returns the disk directory for a team workspace scope.
 // - chatID="" → team root: {baseDir}/teams/{teamID}/         (shared mode)
 // - chatID="x" → per-chat: {baseDir}/teams/{teamID}/{chatID}/ (isolated mode)
-// baseDir should already be tenant-scoped (via config.TenantDataDir for non-master tenants).
 // Creates directory with 0750 if not exists.
 func WorkspaceDir(baseDir string, teamID uuid.UUID, chatID string) (string, error) {
 	dir := filepath.Join(baseDir, "teams", teamID.String())

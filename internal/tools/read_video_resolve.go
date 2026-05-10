@@ -78,7 +78,7 @@ func (t *ReadVideoTool) callProvider(ctx context.Context, cp credentialProvider,
 	}
 
 	// Other providers: try standard Chat API with base64 as image_url (best effort).
-	p, err := t.registry.Get(ctx, providerName)
+	p, err := t.registry.GetByName(providerName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("provider %q not available: %w", providerName, err)
 	}

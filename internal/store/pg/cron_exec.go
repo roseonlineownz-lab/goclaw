@@ -70,18 +70,6 @@ func (s *PGCronStore) GetRunLog(ctx context.Context, jobID string, limit, offset
 		" COALESCE(r.input_tokens, 0) AS input_tokens," +
 		" COALESCE(r.output_tokens, 0) AS output_tokens"
 
-	// Build tenant-aware WHERE clause via JOIN with cron_jobs.
-	var tenantJoin, tenantWhere string
-	var tenantArgs []any
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			tenantJoin = " JOIN cron_jobs j ON r.job_id = j.id"
-			tenantWhere = " AND j.tenant_id = $1"
-			tenantArgs = append(tenantArgs, tid)
-		}
-	}
-
 	var total int
 	var dataQ string
 	var dataArgs []any
@@ -91,21 +79,15 @@ func (s *PGCronStore) GetRunLog(ctx context.Context, jobID string, limit, offset
 		if parseErr != nil {
 			return nil, 0
 		}
-		argIdx := len(tenantArgs) + 1
-		countQ := fmt.Sprintf("SELECT COUNT(*) FROM cron_run_logs r%s WHERE r.job_id = $%d%s", tenantJoin, argIdx, tenantWhere)
-		s.db.QueryRowContext(ctx, countQ, append(tenantArgs, id)...).Scan(&total) //nolint:errcheck
+		s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cron_run_logs r WHERE r.job_id = $1", id).Scan(&total) //nolint:errcheck
 
-		dataQ = fmt.Sprintf("SELECT %s FROM cron_run_logs r%s WHERE r.job_id = $%d%s ORDER BY r.ran_at DESC LIMIT $%d OFFSET $%d",
-			cols, tenantJoin, argIdx, tenantWhere, argIdx+1, argIdx+2)
-		dataArgs = append(tenantArgs, id, limit, offset)
+		dataQ = fmt.Sprintf("SELECT %s FROM cron_run_logs r WHERE r.job_id = $1 ORDER BY r.ran_at DESC LIMIT $2 OFFSET $3", cols)
+		dataArgs = []any{id, limit, offset}
 	} else {
-		argIdx := len(tenantArgs) + 1
-		countQ := fmt.Sprintf("SELECT COUNT(*) FROM cron_run_logs r%s WHERE 1=1%s", tenantJoin, tenantWhere)
-		s.db.QueryRowContext(ctx, countQ, tenantArgs...).Scan(&total) //nolint:errcheck
+		s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM cron_run_logs r").Scan(&total) //nolint:errcheck
 
-		dataQ = fmt.Sprintf("SELECT %s FROM cron_run_logs r%s WHERE 1=1%s ORDER BY r.ran_at DESC LIMIT $%d OFFSET $%d",
-			cols, tenantJoin, tenantWhere, argIdx, argIdx+1)
-		dataArgs = append(tenantArgs, limit, offset)
+		dataQ = fmt.Sprintf("SELECT %s FROM cron_run_logs r ORDER BY r.ran_at DESC LIMIT $1 OFFSET $2", cols)
+		dataArgs = []any{limit, offset}
 	}
 
 	var scanned []cronRunLogRow

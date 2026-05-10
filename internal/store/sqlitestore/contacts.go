@@ -56,22 +56,13 @@ func (s *SQLiteContactStore) UpsertContact(ctx context.Context, channelType, cha
 		contactType,
 		threadID, "",
 		threadType, "",
-		tenantID,
 	)
 	return err
 }
 
-func contactWhereSQLite(ctx context.Context, opts store.ContactListOpts) (string, []any) {
+func contactWhereSQLite(_ context.Context, opts store.ContactListOpts) (string, []any) {
 	var conditions []string
 	var args []any
-
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID != uuid.Nil {
-			conditions = append(conditions, "tenant_id = ?")
-			args = append(args, tenantID)
-		}
-	}
 
 	if opts.ChannelType != "" {
 		conditions = append(conditions, "channel_type = ?")
@@ -101,15 +92,22 @@ func contactWhereSQLite(ctx context.Context, opts store.ContactListOpts) (string
 
 const contactSelectCols = `id, channel_type, channel_instance, sender_id, user_id,
 		display_name, username, avatar_url, peer_kind, contact_type, thread_id, thread_type, merged_id,
-		first_seen_at, last_seen_at`
+		default_project_id, first_seen_at, last_seen_at`
 
 func scanContact(rows *sql.Rows) (store.ChannelContact, error) {
 	var c store.ChannelContact
+	firstSeen, lastSeen := &sqliteTime{}, &sqliteTime{}
 	err := rows.Scan(
 		&c.ID, &c.ChannelType, &c.ChannelInstance, &c.SenderID, &c.UserID,
-		&c.DisplayName, &c.Username, &c.AvatarURL, &c.PeerKind, &c.ContactType, &c.ThreadID, &c.ThreadType, &c.MergedID,
-		&c.FirstSeenAt, &c.LastSeenAt,
+		&c.DisplayName, &c.Username, &c.AvatarURL, &c.PeerKind, &c.ContactType,
+		&c.ThreadID, &c.ThreadType, &c.MergedID,
+		&c.DefaultProjectID,
+		firstSeen, lastSeen,
 	)
+	if err == nil {
+		c.FirstSeenAt = firstSeen.Time
+		c.LastSeenAt = lastSeen.Time
+	}
 	return c, err
 }
 
@@ -187,35 +185,54 @@ func (s *SQLiteContactStore) GetContactsBySenderIDs(ctx context.Context, senderI
 }
 
 func (s *SQLiteContactStore) GetContactByID(ctx context.Context, id uuid.UUID) (*store.ChannelContact, error) {
-	tid := store.TenantIDFromContext(ctx)
-	row := s.db.QueryRowContext(ctx,
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+contactSelectCols+`
-		FROM channel_contacts WHERE id = ? AND tenant_id = ?`, id, tid)
-	var c store.ChannelContact
-	if err := row.Scan(
-		&c.ID, &c.ChannelType, &c.ChannelInstance, &c.SenderID, &c.UserID,
-		&c.DisplayName, &c.Username, &c.AvatarURL, &c.PeerKind, &c.ContactType,
-		&c.ThreadID, &c.ThreadType, &c.MergedID,
-		&c.FirstSeenAt, &c.LastSeenAt,
-	); err != nil {
+		FROM channel_contacts WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, sql.ErrNoRows
+	}
+	c, err := scanContact(rows)
+	if err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// UpdateDefaultProject sets or clears the default_project_id on a channel contact.
+// Pass nil to clear the binding. Permission check is the caller's responsibility.
+func (s *SQLiteContactStore) UpdateDefaultProject(ctx context.Context, contactID uuid.UUID, projectID *uuid.UUID) error {
+	if projectID == nil {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE channel_contacts SET default_project_id = NULL WHERE id = ?`,
+			contactID,
+		)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE channel_contacts SET default_project_id = ? WHERE id = ?`,
+		*projectID, contactID,
+	)
+	return err
 }
 
 func (s *SQLiteContactStore) GetSenderIDsByContactIDs(ctx context.Context, contactIDs []uuid.UUID) ([]string, error) {
 	if len(contactIDs) == 0 {
 		return nil, nil
 	}
-	tid := store.TenantIDFromContext(ctx)
 	placeholders := make([]string, len(contactIDs))
-	args := make([]any, len(contactIDs)+1)
+	args := make([]any, len(contactIDs))
 	for i, id := range contactIDs {
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	args[len(contactIDs)] = tid
-	q := fmt.Sprintf("SELECT sender_id FROM channel_contacts WHERE id IN (%s) AND tenant_id = ?",
+	q := fmt.Sprintf("SELECT sender_id FROM channel_contacts WHERE id IN (%s)",
 		strings.Join(placeholders, ","))
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -296,78 +313,15 @@ func (s *SQLiteContactStore) ResolveTenantUserID(ctx context.Context, channelTyp
 	if channelType == "" || senderID == "" {
 		return "", nil
 	}
-	tid := store.TenantIDFromContext(ctx)
-
-	placeholders := make([]string, len(contactIDs))
-	args := make([]any, len(contactIDs))
-	for i, id := range contactIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	args = append(args, tenantUserID, tid)
-	q := fmt.Sprintf(
-		"UPDATE channel_contacts SET merged_id = ? WHERE id IN (%s) AND tenant_id = ?",
-		strings.Join(placeholders, ","),
-	)
-	_, err := s.db.ExecContext(ctx, q, args...)
-	return err
-}
-
-func (s *SQLiteContactStore) UnmergeContacts(ctx context.Context, contactIDs []uuid.UUID) error {
-	if len(contactIDs) == 0 {
-		return nil
-	}
-	tid := store.TenantIDFromContext(ctx)
-
-	placeholders := make([]string, len(contactIDs))
-	args := make([]any, len(contactIDs))
-	for i, id := range contactIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	args = append(args, tid)
-	q := fmt.Sprintf(
-		"UPDATE channel_contacts SET merged_id = NULL WHERE id IN (%s) AND tenant_id = ?",
-		strings.Join(placeholders, ","),
-	)
-	_, err := s.db.ExecContext(ctx, q, args...)
-	return err
-}
-
-func (s *SQLiteContactStore) GetContactsByMergedID(ctx context.Context, mergedID uuid.UUID) ([]store.ChannelContact, error) {
-	tid := store.TenantIDFromContext(ctx)
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+contactSelectCols+`
-		FROM channel_contacts WHERE merged_id = ? AND tenant_id = ?
-		ORDER BY last_seen_at DESC`, mergedID, tid)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var contacts []store.ChannelContact
-	for rows.Next() {
-		c, err := scanContact(rows)
-		if err != nil {
-			return nil, err
-		}
-		contacts = append(contacts, c)
-	}
-	return contacts, rows.Err()
-}
-
-func (s *SQLiteContactStore) ResolveTenantUserID(ctx context.Context, channelType, senderID string) (string, error) {
-	tid := store.TenantIDFromContext(ctx)
-	var tenantUserID string
+	var merged string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT tu.user_id FROM channel_contacts cc
-		 JOIN tenant_users tu ON cc.merged_id = tu.id
-		 WHERE cc.tenant_id = ? AND cc.channel_type = ? AND cc.sender_id = ?
-		 AND cc.merged_id IS NOT NULL`,
-		tid, channelType, senderID,
-	).Scan(&tenantUserID)
+		`SELECT merged_id FROM channel_contacts
+		  WHERE channel_type = ? AND sender_id = ? AND merged_id IS NOT NULL
+		  LIMIT 1`,
+		channelType, senderID,
+	).Scan(&merged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
-	return tenantUserID, err
+	return merged, err
 }

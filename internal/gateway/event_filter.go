@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
@@ -25,24 +24,10 @@ func clientCanReceiveEvent(c *Client, event bus.Event) bool {
 		return true
 	}
 
-	// Tenant isolation: fail-closed, 2-mode filtering.
-	//
-	// All clients (including owners) always have a concrete tenantID after connect.
-	// Mode 1: Owner role (role=owner) → see tenant X events + system events (tenantID=Nil on event)
-	// Mode 2: Regular client (tenantID=X) → ONLY tenant X events (fail-closed)
-	if c.tenantID == uuid.Nil {
-		return false // fail-closed: no tenant assigned
-	}
-	// Event has explicit tenant → must match client's tenant
-	if event.TenantID != uuid.Nil && event.TenantID != c.tenantID {
-		return false
-	}
-	// Event has no tenant → only owner role can see unscoped events
-	if event.TenantID == uuid.Nil && !c.IsOwner() {
-		return false // fail-closed: regular users blocked from unscoped events
-	}
+	// v4 single-user: no tenant scope. Authorization is performed per
+	// event-type below (userID, teamID, role gates).
 
-	// Admin sees everything (when not tenant-scoped, handled above).
+	// Admin sees everything past the system-event short-circuit above.
 	if permissions.HasMinRole(c.role, permissions.RoleAdmin) {
 		return true
 	}
@@ -79,6 +64,11 @@ func clientCanReceiveEvent(c *Client, event bus.Event) bool {
 		if uid := extractMapField(event.Payload, "userId"); uid != "" {
 			return uid == c.userID
 		}
+		return true
+	}
+
+	// Immediate trace status events: broadcast to all tenant clients (no per-user routing).
+	if event.Name == protocol.EventTraceStatusChanged {
 		return true
 	}
 
@@ -147,7 +137,8 @@ func isAdminOnlyEvent(name string) bool {
 	case protocol.EventNodePairRequested, protocol.EventNodePairResolved,
 		protocol.EventDevicePairReq, protocol.EventDevicePairRes,
 		protocol.EventAgentLinkCreated, protocol.EventAgentLinkUpdated, protocol.EventAgentLinkDeleted,
-		protocol.EventWorkspaceFileChanged:
+		protocol.EventWorkspaceFileChanged,
+		protocol.EventBackgroundError:
 		return true
 	}
 	return false

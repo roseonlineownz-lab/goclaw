@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
@@ -47,13 +46,13 @@ type poolEntry struct {
 }
 
 // Pool manages shared MCP server connections across agents.
-// Connections are keyed by tenantID/serverName for tenant isolation.
-// Per-user connections are keyed by tenantID/serverName/user:userID.
+// Single-tenant: connections are keyed by serverName.
+// Per-user connections are keyed by serverName/user:userID.
 type Pool struct {
 	mu          sync.Mutex
-	servers     map[string]*poolEntry            // shared connections: tenantID/serverName
-	userServers map[string]*poolEntry            // user connections: tenantID/serverName/user:userID
-	userSlots   map[string]chan struct{}          // per-server semaphores: tenantID/serverName → capacity MaxUserConns
+	servers     map[string]*poolEntry    // shared connections: serverName
+	userServers map[string]*poolEntry    // user connections: serverName/user:userID
+	userSlots   map[string]chan struct{} // per-server semaphores: serverName → capacity MaxUserConns
 	cfg         PoolConfig
 	slot        chan struct{} // semaphore for MaxSize
 	stopCh      chan struct{}
@@ -95,27 +94,17 @@ func NewPool(cfg PoolConfig) *Pool {
 	return p
 }
 
-// poolKey builds a tenant-scoped key for pool lookups.
-func poolKey(tenantID uuid.UUID, name string) string {
-	return tenantID.String() + "/" + name
-}
-
-// UserPoolKey builds a tenant+user-scoped key for user pool lookups.
+// UserPoolKey builds a user-scoped key for user pool lookups.
 // Exported for callers that need to construct release keys.
-func UserPoolKey(tenantID uuid.UUID, serverName, userID string) string {
-	return tenantID.String() + "/" + serverName + "/user:" + userID
+func UserPoolKey(serverName, userID string) string {
+	return serverName + "/user:" + userID
 }
 
-// userSlotKey returns the per-server semaphore key (tenantID/serverName).
-func userSlotKey(tenantID uuid.UUID, serverName string) string {
-	return tenantID.String() + "/" + serverName
-}
-
-// Acquire returns a shared connection for the named server scoped to a tenant.
+// Acquire returns a shared connection for the named server.
 // If no connection exists, it connects using the provided config.
 // Blocks up to AcquireTimeout if pool is at MaxSize.
-func (p *Pool) Acquire(ctx context.Context, tenantID uuid.UUID, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, timeoutSec int) (*poolEntry, error) {
-	key := poolKey(tenantID, name)
+func (p *Pool) Acquire(ctx context.Context, name, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, timeoutSec int) (*poolEntry, error) {
+	key := name
 
 	p.mu.Lock()
 	if entry, ok := p.servers[key]; ok && entry.state.connected.Load() {
@@ -195,12 +184,12 @@ func (p *Pool) Acquire(ctx context.Context, tenantID uuid.UUID, name, transportT
 	return entry, nil
 }
 
-// AcquireUser returns a per-user connection for the named server scoped to a tenant+user.
+// AcquireUser returns a per-user connection for the named server scoped to a user.
 // If no connection exists, it connects using the provided config.
 // Blocks up to UserAcquireTimeout if per-server user slot limit is reached.
-func (p *Pool) AcquireUser(ctx context.Context, tenantID uuid.UUID, name, userID, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, timeoutSec int) (*poolEntry, error) {
-	key := UserPoolKey(tenantID, name, userID)
-	slotKey := userSlotKey(tenantID, name)
+func (p *Pool) AcquireUser(ctx context.Context, name, userID, transportType, command string, args []string, env map[string]string, url string, headers map[string]string, timeoutSec int) (*poolEntry, error) {
+	key := UserPoolKey(name, userID)
+	slotKey := name
 
 	p.mu.Lock()
 	if entry, ok := p.userServers[key]; ok && entry.state.connected.Load() {
@@ -348,7 +337,7 @@ func (p *Pool) acquireUserSlot(ctx context.Context, sem chan struct{}, slotKey s
 }
 
 // Release decrements the reference count for a server.
-// Accepts the same key format as Acquire (tenantID + name).
+// Accepts the same key format as Acquire (scope + name).
 func (p *Pool) Release(key string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -364,7 +353,7 @@ func (p *Pool) Release(key string) {
 }
 
 // ReleaseUser decrements the reference count for a user-scoped connection.
-// Accepts the same key format as AcquireUser (tenantID + serverName + userID).
+// Accepts the same key format as AcquireUser (scope + serverName + userID).
 func (p *Pool) ReleaseUser(key string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -409,10 +398,10 @@ func (p *Pool) Stop() {
 	p.userServers = make(map[string]*poolEntry)
 }
 
-// Evict closes a specific pooled connection by tenant + server name.
+// Evict closes a specific pooled connection by server name.
 // Called when server credentials are rotated to force reconnection with new credentials.
-func (p *Pool) Evict(tenantID uuid.UUID, serverName string) {
-	key := poolKey(tenantID, serverName)
+func (p *Pool) Evict(serverName string) {
+	key := serverName
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -504,7 +493,7 @@ func (p *Pool) evictIdle() {
 			}
 			delete(p.userServers, key)
 			// Return slot to per-server semaphore
-			// Extract slotKey from user key: "tenantID/serverName/user:userID" → "tenantID/serverName"
+			// Extract slotKey from user key: "scope/serverName/user:userID" → "scope/serverName"
 			// We search userSlots by iterating — key format guarantees prefix match
 			for slotKey, sem := range p.userSlots {
 				if strings.HasPrefix(key, slotKey+"/") {

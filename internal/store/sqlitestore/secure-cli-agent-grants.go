@@ -35,35 +35,21 @@ func (s *SQLiteSecureCLIAgentGrantStore) Create(ctx context.Context, g *store.Se
 	g.UpdatedAt = now
 	nowStr := now.Format(time.RFC3339Nano)
 
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
-	}
-
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO secure_cli_agent_grants
-		 (id, binary_id, agent_id, deny_args, deny_verbose, timeout_seconds, tips, enabled, tenant_id, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		 (id, binary_id, agent_id, deny_args, deny_verbose, timeout_seconds, tips, enabled, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		g.ID, g.BinaryID, g.AgentID,
 		nullableJSONRaw(g.DenyArgs), nullableJSONRaw(g.DenyVerbose),
 		g.TimeoutSeconds, g.Tips,
-		g.Enabled, tenantID, nowStr, nowStr,
+		g.Enabled, nowStr, nowStr,
 	)
 	return err
 }
 
 func (s *SQLiteSecureCLIAgentGrantStore) Get(ctx context.Context, id uuid.UUID) (*store.SecureCLIAgentGrant, error) {
-	query := `SELECT ` + grantSelectCols + ` FROM secure_cli_agent_grants WHERE id = ?`
-	args := []any{id}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, sql.ErrNoRows
-		}
-		query += ` AND tenant_id = ?`
-		args = append(args, tid)
-	}
-	row := s.db.QueryRowContext(ctx, query, args...)
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+grantSelectCols+` FROM secure_cli_agent_grants WHERE id = ?`, id)
 	return s.scanRow(row)
 }
 
@@ -79,43 +65,17 @@ func (s *SQLiteSecureCLIAgentGrantStore) Update(ctx context.Context, id uuid.UUI
 		}
 	}
 	updates["updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
-
-	if store.IsCrossTenant(ctx) {
-		return execMapUpdate(ctx, s.db, "secure_cli_agent_grants", id, updates)
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required")
-	}
-	return execMapUpdateWhereTenant(ctx, s.db, "secure_cli_agent_grants", updates, id, tid)
+	return execMapUpdate(ctx, s.db, "secure_cli_agent_grants", id, updates)
 }
 
 func (s *SQLiteSecureCLIAgentGrantStore) Delete(ctx context.Context, id uuid.UUID) error {
-	if store.IsCrossTenant(ctx) {
-		_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_agent_grants WHERE id = ?", id)
-		return err
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required")
-	}
-	_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_agent_grants WHERE id = ? AND tenant_id = ?", id, tid)
+	_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_agent_grants WHERE id = ?", id)
 	return err
 }
 
 func (s *SQLiteSecureCLIAgentGrantStore) ListByBinary(ctx context.Context, binaryID uuid.UUID) ([]store.SecureCLIAgentGrant, error) {
-	query := `SELECT ` + grantSelectCols + ` FROM secure_cli_agent_grants WHERE binary_id = ?`
-	args := []any{binaryID}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, nil
-		}
-		query += ` AND tenant_id = ?`
-		args = append(args, tid)
-	}
-	query += ` ORDER BY created_at`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+grantSelectCols+` FROM secure_cli_agent_grants WHERE binary_id = ? ORDER BY created_at`, binaryID)
 	if err != nil {
 		return nil, err
 	}
@@ -123,18 +83,8 @@ func (s *SQLiteSecureCLIAgentGrantStore) ListByBinary(ctx context.Context, binar
 }
 
 func (s *SQLiteSecureCLIAgentGrantStore) ListByAgent(ctx context.Context, agentID uuid.UUID) ([]store.SecureCLIAgentGrant, error) {
-	query := `SELECT ` + grantSelectCols + ` FROM secure_cli_agent_grants WHERE agent_id = ?`
-	args := []any{agentID}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, nil
-		}
-		query += ` AND tenant_id = ?`
-		args = append(args, tid)
-	}
-	query += ` ORDER BY created_at`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+grantSelectCols+` FROM secure_cli_agent_grants WHERE agent_id = ? ORDER BY created_at`, agentID)
 	if err != nil {
 		return nil, err
 	}

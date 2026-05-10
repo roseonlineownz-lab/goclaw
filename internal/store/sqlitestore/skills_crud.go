@@ -16,9 +16,9 @@ func (s *SQLiteSkillStore) CreateSkill(name, slug string, description *string, o
 	id := store.GenNewID()
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		`INSERT INTO skills (id, name, slug, description, owner_id, visibility, version, status, file_path, file_size, file_hash, tenant_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
-		id, name, slug, description, ownerID, visibility, version, filePath, fileSize, fileHash, store.MasterTenantID, now, now,
+		`INSERT INTO skills (id, name, slug, description, owner_id, visibility, version, status, file_path, file_size, file_hash, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+		id, name, slug, description, ownerID, visibility, version, filePath, fileSize, fileHash, now, now,
 	)
 	if err == nil {
 		s.BumpVersion()
@@ -27,17 +27,7 @@ func (s *SQLiteSkillStore) CreateSkill(name, slug string, description *string, o
 }
 
 func (s *SQLiteSkillStore) UpdateSkill(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	var err error
-	if store.IsCrossTenant(ctx) {
-		err = execMapUpdate(ctx, s.db, "skills", id, updates)
-	} else {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return fmt.Errorf("tenant_id required for update")
-		}
-		err = execMapUpdateWhereTenant(ctx, s.db, "skills", updates, id, tid)
-	}
-	if err != nil {
+	if err := execMapUpdate(ctx, s.db, "skills", id, updates); err != nil {
 		return err
 	}
 	s.BumpVersion()
@@ -45,26 +35,12 @@ func (s *SQLiteSkillStore) UpdateSkill(ctx context.Context, id uuid.UUID, update
 }
 
 func (s *SQLiteSkillStore) DeleteSkill(ctx context.Context, id uuid.UUID) error {
-	var isSystem bool
-	if err := s.db.QueryRowContext(ctx, "SELECT is_system FROM skills WHERE id = ?", id).Scan(&isSystem); err != nil {
+	var source string
+	if err := s.db.QueryRowContext(ctx, "SELECT source FROM skills WHERE id = ?", id).Scan(&source); err != nil {
 		return fmt.Errorf("check skill: %w", err)
 	}
-	if isSystem {
+	if source == "builtin" {
 		return fmt.Errorf("cannot delete system skill")
-	}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return fmt.Errorf("tenant_id required")
-		}
-		var skillTenantID uuid.UUID
-		if err := s.db.QueryRowContext(ctx, "SELECT tenant_id FROM skills WHERE id = ?", id).Scan(&skillTenantID); err != nil {
-			return fmt.Errorf("skill not found")
-		}
-		if skillTenantID != tid {
-			return fmt.Errorf("skill not found")
-		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -106,10 +82,9 @@ func (s *SQLiteSkillStore) CreateSkillManaged(ctx context.Context, p store.Skill
 	if status == "" {
 		status = "active"
 	}
-
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
+	source := p.Source
+	if source == "" {
+		source = "user-uploaded"
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -128,10 +103,10 @@ func (s *SQLiteSkillStore) CreateSkillManaged(ctx context.Context, p store.Skill
 
 	now := time.Now().UTC()
 
-	// Check for existing skill with same tenant+slug (for upsert).
+	// Check for existing skill with same slug (for upsert).
 	var existingID uuid.UUID
 	err = tx.QueryRowContext(ctx,
-		"SELECT id FROM skills WHERE tenant_id = ? AND slug = ?", tenantID, p.Slug,
+		"SELECT id FROM skills WHERE slug = ?", p.Slug,
 	).Scan(&existingID)
 
 	var returnedID uuid.UUID
@@ -153,10 +128,10 @@ func (s *SQLiteSkillStore) CreateSkillManaged(ctx context.Context, p store.Skill
 		// Insert new.
 		newID := store.GenNewID()
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO skills (id, name, slug, description, owner_id, tenant_id, visibility, version, status, deps, frontmatter, file_path, file_size, file_hash, created_at, updated_at)
+			`INSERT INTO skills (id, name, slug, description, owner_id, visibility, version, status, source, deps, frontmatter, file_path, file_size, file_hash, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			newID, p.Name, p.Slug, p.Description, p.OwnerID, tenantID, p.Visibility, version,
-			status, depsJSON, fmJSON, p.FilePath, p.FileSize, p.FileHash, now, now,
+			newID, p.Name, p.Slug, p.Description, p.OwnerID, p.Visibility, version,
+			status, source, depsJSON, fmJSON, p.FilePath, p.FileSize, p.FileHash, now, now,
 		)
 		if err != nil {
 			return uuid.Nil, fmt.Errorf("insert skill: %w", err)
@@ -172,19 +147,55 @@ func (s *SQLiteSkillStore) CreateSkillManaged(ctx context.Context, p store.Skill
 	return returnedID, nil
 }
 
-func (s *SQLiteSkillStore) GetSkillFilePath(ctx context.Context, id uuid.UUID) (filePath string, slug string, version int, isSystem bool, ok bool) {
-	q := "SELECT file_path, slug, version, is_system FROM skills WHERE id = ? AND status = 'active'"
-	args := []any{id}
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			tid = store.MasterTenantID
-		}
-		q += " AND (is_system = 1 OR tenant_id = ?)"
-		args = append(args, tid)
+func (s *SQLiteSkillStore) GetSkillFilePath(ctx context.Context, id uuid.UUID) (filePath string, slug string, version int, source string, ok bool) {
+	err := s.db.QueryRowContext(ctx,
+		"SELECT file_path, slug, version, source FROM skills WHERE id = ? AND status = 'active'", id,
+	).Scan(&filePath, &slug, &version, &source)
+	return filePath, slug, version, source, err == nil
+}
+
+// MarkSkillUsed updates last_used_at and increments usage_count (best-effort sidecar).
+func (s *SQLiteSkillStore) MarkSkillUsed(ctx context.Context, id uuid.UUID) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE skills SET last_used_at = ?, usage_count = usage_count + 1 WHERE id = ?`,
+		now.Format(time.RFC3339Nano), id)
+	return err
+}
+
+// MarkSkillViewed updates last_viewed_at (best-effort sidecar).
+func (s *SQLiteSkillStore) MarkSkillViewed(ctx context.Context, id uuid.UUID) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE skills SET last_viewed_at = ? WHERE id = ?`,
+		now.Format(time.RFC3339Nano), id)
+	return err
+}
+
+// PinSkill sets the pinned flag for a skill.
+func (s *SQLiteSkillStore) PinSkill(ctx context.Context, id uuid.UUID, pinned bool) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE skills SET pinned = ?, updated_at = ? WHERE id = ?`,
+		pinned, now.Format(time.RFC3339Nano), id)
+	if err == nil {
+		s.BumpVersion()
 	}
-	err := s.db.QueryRowContext(ctx, q, args...).Scan(&filePath, &slug, &version, &isSystem)
-	return filePath, slug, version, isSystem, err == nil
+	return err
+}
+
+// GetSkillHashBySlug returns the file_hash and version of the latest non-deleted skill
+// version for the given slug. Returns ok=false when no matching row exists.
+func (s *SQLiteSkillStore) GetSkillHashBySlug(ctx context.Context, slug string) (string, int, bool) {
+	var hash string
+	var version int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(file_hash, ''), version FROM skills
+		 WHERE slug = ? AND status != 'deleted'
+		 ORDER BY version DESC LIMIT 1`,
+		slug,
+	).Scan(&hash, &version)
+	return hash, version, err == nil
 }
 
 func (s *SQLiteSkillStore) GetNextVersion(ctx context.Context, slug string) int {
@@ -201,18 +212,8 @@ func (s *SQLiteSkillStore) GetNextVersionLocked(ctx context.Context, slug string
 
 func (s *SQLiteSkillStore) ToggleSkill(ctx context.Context, id uuid.UUID, enabled bool) error {
 	now := time.Now().UTC()
-	q := `UPDATE skills SET enabled = ?, updated_at = ? WHERE id = ?`
-	args := []any{enabled, now, id}
-
-	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			q += " AND tenant_id = ?"
-			args = append(args, tid)
-		}
-	}
-
-	_, err := s.db.ExecContext(ctx, q, args...)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE skills SET enabled = ?, updated_at = ? WHERE id = ?`, enabled, now, id)
 	if err == nil {
 		s.BumpVersion()
 	}

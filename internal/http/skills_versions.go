@@ -135,7 +135,7 @@ func (h *SkillsHandler) handleListFiles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	filePath, slug, currentVersion, isSystem, ok := h.skills.GetSkillFilePath(r.Context(), id)
+	filePath, slug, currentVersion, source, ok := h.skills.GetSkillFilePath(r.Context(), id)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "skill", id.String())})
 		return
@@ -167,7 +167,7 @@ func (h *SkillsHandler) handleListFiles(w http.ResponseWriter, r *http.Request) 
 
 	// Fallback: if managed dir has no files (seeder CopyDir may have failed),
 	// try the bundled skills dir — only for system skills to prevent slug collision attacks.
-	if len(files) == 0 && isSystem && h.bundledDir != "" {
+	if len(files) == 0 && source == "builtin" && h.bundledDir != "" {
 		bundledDir := filepath.Join(h.bundledDir, slug)
 		if _, err := os.Stat(bundledDir); err == nil {
 			files = walkSkillFiles(bundledDir)
@@ -200,7 +200,7 @@ func (h *SkillsHandler) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath, slug, currentVersion, isSystem, ok := h.skills.GetSkillFilePath(r.Context(), id)
+	filePath, slug, currentVersion, source, ok := h.skills.GetSkillFilePath(r.Context(), id)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "skill", id.String())})
 		return
@@ -234,7 +234,7 @@ func (h *SkillsHandler) handleReadFile(w http.ResponseWriter, r *http.Request) {
 
 	// Try reading from managed dir; fall back to bundled dir for system skills.
 	data, info, readErr := readSkillFile(absPath)
-	if readErr != nil && isSystem && h.bundledDir != "" {
+	if readErr != nil && source == "builtin" && h.bundledDir != "" {
 		bundledPath := filepath.Join(h.bundledDir, slug, filepath.Clean(relPath))
 		bundledRoot := filepath.Join(h.bundledDir, slug)
 		if strings.HasPrefix(bundledPath, bundledRoot+string(filepath.Separator)) {

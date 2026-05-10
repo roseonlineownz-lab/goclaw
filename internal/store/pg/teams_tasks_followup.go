@@ -16,12 +16,11 @@ import (
 
 func (s *PGTeamStore) SetTaskFollowup(ctx context.Context, taskID, teamID uuid.UUID, followupAt time.Time, max int, message, channel, chatID string) error {
 	now := time.Now()
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET followup_at = $1, followup_max = $2, followup_message = $3, followup_channel = $4, followup_chat_id = $5, updated_at = $6
-		 WHERE id = $7 AND team_id = $8 AND status = $9 AND tenant_id = $10`,
+		 WHERE id = $7 AND team_id = $8 AND status = $9`,
 		followupAt, max, message, channel, chatID, now,
-		taskID, teamID, store.TeamTaskStatusInProgress, tid,
+		taskID, teamID, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
 		return err
@@ -37,11 +36,10 @@ func (s *PGTeamStore) SetTaskFollowup(ctx context.Context, taskID, teamID uuid.U
 }
 
 func (s *PGTeamStore) ClearTaskFollowup(ctx context.Context, taskID uuid.UUID) error {
-	tid := tenantIDForInsert(ctx)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET followup_at = NULL, followup_count = 0, followup_message = NULL, followup_channel = NULL, followup_chat_id = NULL, updated_at = $1
-		 WHERE id = $2 AND tenant_id = $3`,
-		time.Now(), taskID, tid,
+		 WHERE id = $2`,
+		time.Now(), taskID,
 	)
 	return err
 }
@@ -69,24 +67,22 @@ func (s *PGTeamStore) ListAllFollowupDueTasks(ctx context.Context) ([]store.Team
 }
 
 func (s *PGTeamStore) IncrementFollowupCount(ctx context.Context, taskID uuid.UUID, nextAt *time.Time) error {
-	tid := tenantIDForInsert(ctx)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET followup_count = followup_count + 1, followup_at = $1, updated_at = $2
-		 WHERE id = $3 AND tenant_id = $4`,
-		nextAt, time.Now(), taskID, tid,
+		 WHERE id = $3`,
+		nextAt, time.Now(), taskID,
 	)
 	return err
 }
 
 func (s *PGTeamStore) ClearFollowupByScope(ctx context.Context, channel, chatID string) (int, error) {
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks
 		 SET followup_at = NULL, followup_count = 0, followup_message = NULL,
 		     followup_channel = NULL, followup_chat_id = NULL, updated_at = NOW()
 		 WHERE followup_channel = $1 AND followup_chat_id = $2
-		   AND followup_at IS NOT NULL AND status = $3 AND tenant_id = $4`,
-		channel, chatID, store.TeamTaskStatusInProgress, tid,
+		   AND followup_at IS NOT NULL AND status = $3`,
+		channel, chatID, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
 		return 0, err
@@ -96,7 +92,6 @@ func (s *PGTeamStore) ClearFollowupByScope(ctx context.Context, channel, chatID 
 }
 
 func (s *PGTeamStore) SetFollowupForActiveTasks(ctx context.Context, teamID uuid.UUID, channel, chatID string, followupAt time.Time, max int, message string) (int, error) {
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks
 		 SET followup_at = $4, followup_max = $5, followup_message = $6,
@@ -104,13 +99,12 @@ func (s *PGTeamStore) SetFollowupForActiveTasks(ctx context.Context, teamID uuid
 		 WHERE team_id = $1
 		   AND status = $7
 		   AND followup_at IS NULL
-		   AND tenant_id = $8
 		   AND (
 		     (COALESCE(channel,'') = $2 AND COALESCE(chat_id,'') = $3)
 		     OR followup_channel = $2
 		     OR (COALESCE(channel,'') IN ('', 'system', 'delegate') AND COALESCE(chat_id,'') = '')
 		   )`,
-		teamID, channel, chatID, followupAt, max, message, store.TeamTaskStatusInProgress, tid,
+		teamID, channel, chatID, followupAt, max, message, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
 		return 0, err
@@ -120,7 +114,6 @@ func (s *PGTeamStore) SetFollowupForActiveTasks(ctx context.Context, teamID uuid
 }
 
 func (s *PGTeamStore) HasActiveMemberTasks(ctx context.Context, teamID uuid.UUID, excludeAgentID uuid.UUID) (bool, error) {
-	tid := tenantIDForInsert(ctx)
 	var exists bool
 	err := s.db.QueryRowContext(ctx,
 		`SELECT EXISTS(
@@ -129,10 +122,9 @@ func (s *PGTeamStore) HasActiveMemberTasks(ctx context.Context, teamID uuid.UUID
 			  AND owner_agent_id IS NOT NULL
 			  AND owner_agent_id != $2
 			  AND status IN ($3, $4, $5)
-			  AND tenant_id = $6
 		)`,
 		teamID, excludeAgentID,
-		store.TeamTaskStatusPending, store.TeamTaskStatusInProgress, store.TeamTaskStatusBlocked, tid,
+		store.TeamTaskStatusPending, store.TeamTaskStatusInProgress, store.TeamTaskStatusBlocked,
 	).Scan(&exists)
 	return exists, err
 }

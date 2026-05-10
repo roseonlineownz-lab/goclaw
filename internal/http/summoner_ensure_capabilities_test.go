@@ -42,7 +42,7 @@ func TestEnsureBackfillFiles_SeedsBothWhenMissing(t *testing.T) {
 	if n := stub.setCalls.Load(); n != 2 {
 		t.Fatalf("expected 2 SetAgentContextFile calls, got %d", n)
 	}
-	want := map[string]bool{bootstrap.UserPredefinedFile: true, bootstrap.CapabilitiesFile: true}
+	want := map[string]bool{bootstrap.UserFile: true, bootstrap.CapabilitiesFile: true}
 	for _, f := range stub.setFiles {
 		if !want[f] {
 			t.Errorf("unexpected file seeded: %s", f)
@@ -58,7 +58,7 @@ func TestEnsureBackfillFiles_SkipsWhenAllExist(t *testing.T) {
 	stub := &backfillStubStore{
 		files: []store.AgentContextFileData{
 			{FileName: "SOUL.md", Content: "style info"},
-			{FileName: bootstrap.UserPredefinedFile, Content: "predefined rules"},
+			{FileName: bootstrap.UserFile, Content: "predefined rules"},
 			{FileName: bootstrap.CapabilitiesFile, Content: "existing capabilities"},
 		},
 	}
@@ -74,7 +74,7 @@ func TestEnsureBackfillFiles_SkipsWhenAllExist(t *testing.T) {
 func TestEnsureBackfillFiles_SeedsOnlyMissing(t *testing.T) {
 	stub := &backfillStubStore{
 		files: []store.AgentContextFileData{
-			{FileName: bootstrap.UserPredefinedFile, Content: "predefined rules"},
+			{FileName: bootstrap.UserFile, Content: "predefined rules"},
 		},
 	}
 	s := &AgentSummoner{agents: stub}

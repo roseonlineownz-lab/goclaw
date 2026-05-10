@@ -30,25 +30,13 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: config.json or $GOCLAW_CONFIG)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
 
-	rootCmd.AddCommand(onboardCmd())
 	rootCmd.AddCommand(versionCmd())
-	rootCmd.AddCommand(pairingCmd())
-	rootCmd.AddCommand(agentCmd())
 	rootCmd.AddCommand(doctorCmd())
-	rootCmd.AddCommand(configCmd())
-	rootCmd.AddCommand(providersCmd())
-	rootCmd.AddCommand(channelsCmd())
-	rootCmd.AddCommand(cronCmd())
-	rootCmd.AddCommand(skillsCmd())
-	rootCmd.AddCommand(sessionsCmd())
 	rootCmd.AddCommand(migrateCmd())
 	rootCmd.AddCommand(upgradeCmd())
 	rootCmd.AddCommand(backupCmd())
 	rootCmd.AddCommand(restoreCmd())
-	rootCmd.AddCommand(tenantBackupCmd())
-	rootCmd.AddCommand(tenantRestoreCmd())
-	rootCmd.AddCommand(authCmd())
-	rootCmd.AddCommand(setupCmd())
+	rootCmd.AddCommand(resetPasswordCmd())
 }
 
 func versionCmd() *cobra.Command {

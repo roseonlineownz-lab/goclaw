@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // TestResolve_EnforcementLabel verifies the human-readable workspace label
@@ -21,6 +23,7 @@ func TestResolve_EnforcementLabel(t *testing.T) {
 		{"team_shared", ScopeTeam, true, "shared team workspace"},
 		{"team_isolated", ScopeTeam, false, "isolated team workspace"},
 		{"delegate", ScopeDelegate, false, "delegated task"},
+		{"project", ScopeProject, false, "project workspace"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

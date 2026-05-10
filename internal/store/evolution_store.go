@@ -18,9 +18,8 @@ const (
 
 // EvolutionMetric is a single recorded metric data point.
 type EvolutionMetric struct {
-	ID         uuid.UUID       `json:"id" db:"id"`
-	TenantID   uuid.UUID       `json:"tenant_id" db:"tenant_id"`
-	AgentID    uuid.UUID       `json:"agent_id" db:"agent_id"`
+	ID      uuid.UUID `json:"id" db:"id"`
+	AgentID uuid.UUID `json:"agent_id" db:"agent_id"`
 	SessionKey string          `json:"session_key" db:"session_key"`
 	MetricType MetricType      `json:"metric_type" db:"metric_type"`
 	MetricKey  string          `json:"metric_key" db:"metric_key"`
@@ -64,9 +63,8 @@ const (
 
 // EvolutionSuggestion is a data-driven suggestion for agent improvement.
 type EvolutionSuggestion struct {
-	ID             uuid.UUID       `json:"id" db:"id"`
-	TenantID       uuid.UUID       `json:"tenant_id" db:"tenant_id"`
-	AgentID        uuid.UUID       `json:"agent_id" db:"agent_id"`
+	ID      uuid.UUID `json:"id" db:"id"`
+	AgentID uuid.UUID `json:"agent_id" db:"agent_id"`
 	SuggestionType SuggestionType  `json:"suggestion_type" db:"suggestion_type"`
 	Suggestion     string          `json:"suggestion" db:"suggestion"`
 	Rationale      string          `json:"rationale" db:"rationale"`

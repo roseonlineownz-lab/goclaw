@@ -30,31 +30,34 @@ func (s *PGKnowledgeGraphStore) SetEmbeddingProvider(provider store.EmbeddingPro
 }
 
 func (s *PGKnowledgeGraphStore) UpsertEntity(ctx context.Context, entity *store.Entity) error {
-	aid := mustParseUUID(entity.AgentID)
+	aid, err := parseUUID(entity.AgentID)
+	if err != nil {
+		return fmt.Errorf("kg upsert entity: %w", err)
+	}
 	props, err := json.Marshal(entity.Properties)
 	if err != nil {
 		props = []byte("{}")
 	}
 	now := time.Now()
 	id := uuid.Must(uuid.NewV7())
-	tid := tenantIDForInsert(ctx)
 	var actualID uuid.UUID
 	if err = s.db.QueryRowContext(ctx, `
 		INSERT INTO kg_entities
-			(id, agent_id, user_id, external_id, name, entity_type, description, properties, source_id, confidence, tenant_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
-		ON CONFLICT (agent_id, user_id, external_id) DO UPDATE SET
+			(id, agent_id, user_id, team_id, contact_id, project_id,
+			 external_id, name, entity_type, description, properties, source_id, confidence, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+		ON CONFLICT (agent_id, (COALESCE(user_id::text, '')), external_id) DO UPDATE SET
 			name        = EXCLUDED.name,
 			entity_type = EXCLUDED.entity_type,
 			description = EXCLUDED.description,
 			properties  = EXCLUDED.properties,
 			source_id   = EXCLUDED.source_id,
 			confidence  = EXCLUDED.confidence,
-			tenant_id   = EXCLUDED.tenant_id,
 			updated_at  = EXCLUDED.updated_at
 		RETURNING id`,
-		id, aid, entity.UserID, entity.ExternalID, entity.Name, entity.EntityType,
-		entity.Description, props, entity.SourceID, entity.Confidence, tid, now,
+		id, aid, nilStr(entity.UserID), nilStr(entity.TeamID), nilStr(entity.ContactID), nilStr(entity.ProjectID),
+		entity.ExternalID, entity.Name, entity.EntityType,
+		entity.Description, props, entity.SourceID, entity.Confidence, now,
 	).Scan(&actualID); err != nil {
 		return err
 	}
@@ -65,8 +68,14 @@ func (s *PGKnowledgeGraphStore) UpsertEntity(ctx context.Context, entity *store.
 }
 
 func (s *PGKnowledgeGraphStore) GetEntity(ctx context.Context, agentID, userID, entityID string) (*store.Entity, error) {
-	aid := mustParseUUID(agentID)
-	eid := mustParseUUID(entityID)
+	aid, err := parseUUID(agentID)
+	if err != nil {
+		return nil, fmt.Errorf("kg get entity: agent: %w", err)
+	}
+	eid, err := parseUUID(entityID)
+	if err != nil {
+		return nil, fmt.Errorf("kg get entity: id: %w", err)
+	}
 
 	var row entityRow
 	if store.IsSharedKG(ctx) {
@@ -103,8 +112,14 @@ func (s *PGKnowledgeGraphStore) GetEntity(ctx context.Context, agentID, userID, 
 }
 
 func (s *PGKnowledgeGraphStore) DeleteEntity(ctx context.Context, agentID, userID, entityID string) error {
-	aid := mustParseUUID(agentID)
-	eid := mustParseUUID(entityID)
+	aid, err := parseUUID(agentID)
+	if err != nil {
+		return fmt.Errorf("kg delete entity: agent: %w", err)
+	}
+	eid, err := parseUUID(entityID)
+	if err != nil {
+		return fmt.Errorf("kg delete entity: id: %w", err)
+	}
 	if store.IsSharedKG(ctx) {
 		tc, tcArgs, _, err := scopeClause(ctx, 3)
 		if err != nil {
@@ -128,7 +143,10 @@ func (s *PGKnowledgeGraphStore) DeleteEntity(ctx context.Context, agentID, userI
 }
 
 func (s *PGKnowledgeGraphStore) ListEntities(ctx context.Context, agentID, userID string, opts store.EntityListOptions) ([]store.Entity, error) {
-	aid := mustParseUUID(agentID)
+	aid, err := parseUUID(agentID)
+	if err != nil {
+		return nil, fmt.Errorf("kg list entities: %w", err)
+	}
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 50
@@ -140,7 +158,8 @@ func (s *PGKnowledgeGraphStore) ListEntities(ctx context.Context, agentID, userI
 	args := []any{aid}
 	idx := 2
 	if !store.IsSharedKG(ctx) && userID != "" {
-		where += fmt.Sprintf(" AND user_id = $%d", idx)
+		// Include own entities (user_id=caller) AND agent-level shared entities (user_id IS NULL).
+		where += fmt.Sprintf(" AND (user_id = $%d OR user_id IS NULL)", idx)
 		args = append(args, userID)
 		idx++
 	}
@@ -177,7 +196,10 @@ func (s *PGKnowledgeGraphStore) ListEntities(ctx context.Context, agentID, userI
 }
 
 func (s *PGKnowledgeGraphStore) SearchEntities(ctx context.Context, agentID, userID, query string, limit int) ([]store.Entity, error) {
-	aid := mustParseUUID(agentID)
+	aid, err := parseUUID(agentID)
+	if err != nil {
+		return nil, fmt.Errorf("kg search entities: %w", err)
+	}
 	if limit <= 0 {
 		limit = 20
 	}
@@ -294,10 +316,10 @@ func (s *PGKnowledgeGraphStore) vectorSearchEntities(ctx context.Context, embedd
 	q := fmt.Sprintf(`
 		SELECT id, agent_id, user_id, external_id, name, entity_type, description,
 		       properties, source_id, confidence, created_at, updated_at,
-		       1 - (embedding <=> $%d::vector) AS score
+		       1 - (embedding <=> $%d::halfvec) AS score
 		FROM kg_entities
 		WHERE %s
-		ORDER BY embedding <=> $%d::vector LIMIT $%d`, idx, where, idx, idx+1)
+		ORDER BY embedding <=> $%d::halfvec LIMIT $%d`, idx, where, idx, idx+1)
 
 	var sRows []scoredEntityRow
 	if err = pkgSqlxDB.SelectContext(ctx, &sRows, q, args...); err != nil {

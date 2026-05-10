@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/edition"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tracing"
@@ -41,11 +43,10 @@ func (sm *SubagentManager) Spawn(
 		return "", fmt.Errorf("spawn depth limit reached (%d/%d)", depth, cfg.MaxSpawnDepth)
 	}
 
-	// Check concurrent limit (scoped per tenant for isolation).
-	tenantID := store.TenantIDFromContext(ctx)
+	// Check concurrent limit.
 	running := 0
 	for _, t := range sm.tasks {
-		if t.Status == TaskStatusRunning && t.OriginTenantID == tenantID {
+		if t.Status == TaskStatusRunning {
 			running++
 		}
 	}
@@ -84,12 +85,18 @@ func (sm *SubagentManager) Spawn(
 		OriginPeerKind:   peerKind,
 		OriginLocalKey:    ToolLocalKeyFromCtx(ctx),
 		OriginUserID:      store.UserIDFromContext(ctx),
+		OriginSenderID:    store.SenderIDFromContext(ctx),
+		OriginRole:        store.RoleFromContext(ctx),
 		OriginSessionKey:  ToolSessionKeyFromCtx(ctx),
-		OriginTenantID:    store.TenantIDFromContext(ctx),
 		OriginTraceID:     tracing.TraceIDFromContext(ctx),
 		OriginRootSpanID:  tracing.ParentSpanIDFromContext(ctx),
 		CreatedAt:         time.Now().UnixMilli(),
 		spawnConfig:       cfg,
+	}
+	// Inherit project scope from parent agent context so sub-agent tasks remain
+	// scoped to the same project as the parent run.
+	if pid := store.ProjectIDFromContext(ctx); pid != uuid.Nil {
+		subTask.ProjectID = &pid
 	}
 	// Detach from parent's cancellation chain so subagent survives after parent run completes.
 	// WithoutCancel preserves all context values (agent ID, workspace, trace info, etc.)
@@ -161,12 +168,17 @@ func (sm *SubagentManager) RunSync(
 		OriginChatID:     chatID,
 		OriginLocalKey:   ToolLocalKeyFromCtx(ctx),
 		OriginUserID:     store.UserIDFromContext(ctx),
+		OriginSenderID:   store.SenderIDFromContext(ctx),
+		OriginRole:       store.RoleFromContext(ctx),
 		OriginSessionKey: ToolSessionKeyFromCtx(ctx),
-		OriginTenantID:   store.TenantIDFromContext(ctx),
 		OriginTraceID:    tracing.TraceIDFromContext(ctx),
 		OriginRootSpanID: tracing.ParentSpanIDFromContext(ctx),
 		CreatedAt:        time.Now().UnixMilli(),
 		spawnConfig:      cfg,
+	}
+	// Inherit project scope from parent agent context.
+	if pid := store.ProjectIDFromContext(ctx); pid != uuid.Nil {
+		subTask.ProjectID = &pid
 	}
 	if sm.taskStore != nil {
 		subTask.dbID = store.GenNewID()

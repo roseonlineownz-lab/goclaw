@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,6 +44,10 @@ func (s *SQLiteSecureCLIStore) Create(ctx context.Context, b *store.SecureCLIBin
 		b.ID = store.GenNewID()
 	}
 
+	// Normalize binary_name to lowercase so IsRegisteredBinary (which lowercases
+	// the candidate) can match. Admin entering "Gh" becomes "gh".
+	b.BinaryName = strings.ToLower(strings.TrimSpace(b.BinaryName))
+
 	var envBytes []byte
 	if len(b.EncryptedEnv) > 0 && s.encKey != "" {
 		encrypted, err := crypto.Encrypt(string(b.EncryptedEnv), s.encKey)
@@ -59,37 +64,23 @@ func (s *SQLiteSecureCLIStore) Create(ctx context.Context, b *store.SecureCLIBin
 	b.UpdatedAt = now
 	nowStr := now.Format(time.RFC3339Nano)
 
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
-	}
-
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO secure_cli_binaries (id, binary_name, binary_path, description, encrypted_env,
-		 deny_args, deny_verbose, timeout_seconds, tips, is_global, enabled, created_by, created_at, updated_at, tenant_id)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 deny_args, deny_verbose, timeout_seconds, tips, is_global, enabled, created_by, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		b.ID, b.BinaryName, nilStr(derefStr(b.BinaryPath)), b.Description,
 		envBytes,
 		jsonOrEmptyArray(b.DenyArgs), jsonOrEmptyArray(b.DenyVerbose),
 		b.TimeoutSeconds, b.Tips,
 		b.IsGlobal, b.Enabled,
-		b.CreatedBy, nowStr, nowStr, tenantID,
+		b.CreatedBy, nowStr, nowStr,
 	)
 	return err
 }
 
 func (s *SQLiteSecureCLIStore) Get(ctx context.Context, id uuid.UUID) (*store.SecureCLIBinary, error) {
-	if store.IsCrossTenant(ctx) {
-		row := s.db.QueryRowContext(ctx,
-			`SELECT `+secureCLISelectCols+` FROM secure_cli_binaries WHERE id = ?`, id)
-		return s.scanRow(row)
-	}
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		return nil, sql.ErrNoRows
-	}
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+secureCLISelectCols+` FROM secure_cli_binaries WHERE id = ? AND tenant_id = ?`, id, tenantID)
+		`SELECT `+secureCLISelectCols+` FROM secure_cli_binaries WHERE id = ?`, id)
 	return s.scanRow(row)
 }
 
@@ -191,6 +182,13 @@ func (s *SQLiteSecureCLIStore) Update(ctx context.Context, id uuid.UUID, updates
 		}
 	}
 
+	// Normalize binary_name to lowercase if updated (parity with Create).
+	if nameVal, ok := updates["binary_name"]; ok {
+		if nameStr, isStr := nameVal.(string); isStr {
+			updates["binary_name"] = strings.ToLower(strings.TrimSpace(nameStr))
+		}
+	}
+
 	// Encrypt env if present in updates
 	if envVal, ok := updates["encrypted_env"]; ok {
 		if envStr, isStr := envVal.(string); isStr && envStr != "" && s.encKey != "" {
@@ -202,42 +200,17 @@ func (s *SQLiteSecureCLIStore) Update(ctx context.Context, id uuid.UUID, updates
 		}
 	}
 	updates["updated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
-	if store.IsCrossTenant(ctx) {
-		return execMapUpdate(ctx, s.db, "secure_cli_binaries", id, updates)
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required for update")
-	}
-	return execMapUpdateWhereTenant(ctx, s.db, "secure_cli_binaries", updates, id, tid)
+	return execMapUpdate(ctx, s.db, "secure_cli_binaries", id, updates)
 }
 
 func (s *SQLiteSecureCLIStore) Delete(ctx context.Context, id uuid.UUID) error {
-	if store.IsCrossTenant(ctx) {
-		_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_binaries WHERE id = ?", id)
-		return err
-	}
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return fmt.Errorf("tenant_id required")
-	}
-	_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_binaries WHERE id = ? AND tenant_id = ?", id, tid)
+	_, err := s.db.ExecContext(ctx, "DELETE FROM secure_cli_binaries WHERE id = ?", id)
 	return err
 }
 
 func (s *SQLiteSecureCLIStore) List(ctx context.Context) ([]store.SecureCLIBinary, error) {
-	query := `SELECT ` + secureCLISelectCols + ` FROM secure_cli_binaries`
-	var qArgs []any
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID == uuid.Nil {
-			return nil, nil
-		}
-		query += ` WHERE tenant_id = ?`
-		qArgs = append(qArgs, tenantID)
-	}
-	query += ` ORDER BY binary_name`
-	rows, err := s.db.QueryContext(ctx, query, qArgs...)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+secureCLISelectCols+` FROM secure_cli_binaries ORDER BY binary_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -247,17 +220,10 @@ func (s *SQLiteSecureCLIStore) List(ctx context.Context) ([]store.SecureCLIBinar
 // LookupByBinary finds the credential config for a binary name.
 // LEFT JOINs grant overrides and per-user credentials.
 func (s *SQLiteSecureCLIStore) LookupByBinary(ctx context.Context, binaryName string, agentID *uuid.UUID, userID string) (*store.SecureCLIBinary, error) {
-	tid := store.TenantIDFromContext(ctx)
-	isCross := store.IsCrossTenant(ctx)
-	if !isCross && tid == uuid.Nil {
-		return nil, nil
-	}
-
 	selectCols := secureCLISelectColsAliased
 	selectCols += `, g.deny_args AS grant_deny_args, g.deny_verbose AS grant_deny_verbose, g.timeout_seconds AS grant_timeout, g.tips AS grant_tips, g.enabled AS grant_enabled, g.id AS grant_id`
 
 	var args []any
-
 	query := `SELECT ` + selectCols
 
 	// LEFT JOIN agent grant
@@ -272,33 +238,15 @@ func (s *SQLiteSecureCLIStore) LookupByBinary(ctx context.Context, binaryName st
 
 	// LEFT JOIN user credentials
 	if userID != "" {
-		if isCross {
-			query += ` LEFT JOIN secure_cli_user_credentials uc_user ON uc_user.binary_id = b.id AND uc_user.user_id = ?`
-			args = append(args, userID)
-		} else {
-			query += ` LEFT JOIN secure_cli_user_credentials uc_user ON uc_user.binary_id = b.id AND uc_user.user_id = ? AND uc_user.tenant_id = ?`
-			args = append(args, userID, tid)
-		}
-	} else {
-		// Rewrite: no user_env JOIN needed, replace alias reference
-		// Already handled by NULL above — but need to adjust query structure
-		// We need uc_user alias to not appear in FROM if no userID
-		// Simplest: LEFT JOIN on impossible condition
-		if agentID == nil {
-			// already have NULL AS user_env, skip join
-		} else {
-			query += ` LEFT JOIN secure_cli_user_credentials uc_user ON 0`
-		}
+		query += ` LEFT JOIN secure_cli_user_credentials uc_user ON uc_user.binary_id = b.id AND uc_user.user_id = ?`
+		args = append(args, userID)
+	} else if agentID != nil {
+		query += ` LEFT JOIN secure_cli_user_credentials uc_user ON 0`
 	}
 
 	// WHERE
 	query += ` WHERE b.binary_name = ? AND b.enabled = 1`
 	args = append(args, binaryName)
-
-	if !isCross {
-		query += ` AND b.tenant_id = ?`
-		args = append(args, tid)
-	}
 
 	// Authorization
 	if agentID != nil {
@@ -392,33 +340,36 @@ func (s *SQLiteSecureCLIStore) scanRowWithGrantAndUserEnv(row *sql.Row) (*store.
 
 // ListEnabled returns all enabled configs.
 func (s *SQLiteSecureCLIStore) ListEnabled(ctx context.Context) ([]store.SecureCLIBinary, error) {
-	query := `SELECT ` + secureCLISelectCols + ` FROM secure_cli_binaries WHERE enabled = 1`
-	var qArgs []any
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID == uuid.Nil {
-			return nil, nil
-		}
-		query += ` AND tenant_id = ?`
-		qArgs = append(qArgs, tenantID)
-	}
-	query += ` ORDER BY binary_name`
-	rows, err := s.db.QueryContext(ctx, query, qArgs...)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+secureCLISelectCols+` FROM secure_cli_binaries WHERE enabled = 1 ORDER BY binary_name`)
 	if err != nil {
 		return nil, err
 	}
 	return s.scanRows(rows)
 }
 
+// IsRegisteredBinary reports whether a binary requires a grant (is_global=0)
+// and is enabled. See interface godoc for rationale.
+func (s *SQLiteSecureCLIStore) IsRegisteredBinary(ctx context.Context, binaryName string) (bool, error) {
+	name := strings.ToLower(strings.TrimSpace(binaryName))
+	if name == "" {
+		return false, nil
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM secure_cli_binaries
+		WHERE LOWER(binary_name) = ?
+		  AND enabled = 1
+		  AND is_global = 0)`, name).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
 // ListForAgent returns all CLIs accessible by an agent (global + granted),
 // with grant overrides merged into the returned configs.
 func (s *SQLiteSecureCLIStore) ListForAgent(ctx context.Context, agentID uuid.UUID) ([]store.SecureCLIBinary, error) {
-	tid := store.TenantIDFromContext(ctx)
-	isCross := store.IsCrossTenant(ctx)
-	if !isCross && tid == uuid.Nil {
-		return nil, nil
-	}
-
 	selectCols := secureCLISelectColsAliased +
 		`, g.deny_args AS grant_deny_args, g.deny_verbose AS grant_deny_verbose,
 		   g.timeout_seconds AS grant_timeout, g.tips AS grant_tips, g.id AS grant_id`
@@ -429,14 +380,10 @@ func (s *SQLiteSecureCLIStore) ListForAgent(ctx context.Context, agentID uuid.UU
 		  AND (
 		    b.is_global = 1
 		    OR (b.id IN (SELECT binary_id FROM secure_cli_agent_grants WHERE agent_id = ? AND enabled = 1))
-		  )`
+		  )
+		ORDER BY b.binary_name`
 
 	args := []any{agentID, agentID}
-	if !isCross {
-		query += ` AND b.tenant_id = ?`
-		args = append(args, tid)
-	}
-	query += ` ORDER BY b.binary_name`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

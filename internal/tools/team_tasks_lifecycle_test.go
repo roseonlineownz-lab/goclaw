@@ -95,7 +95,7 @@ func TestClaim(t *testing.T) {
 
 		emptyCtx := WithTaskActionFlags(
 			WithToolChannel(
-				store.WithAgentID(store.WithTenantID(t.Context(), uuid.Nil), uuid.Nil),
+				store.WithAgentID(t.Context(), uuid.Nil),
 				ChannelDashboard,
 			),
 			&TaskActionFlags{},

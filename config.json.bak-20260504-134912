@@ -1,0 +1,214 @@
+{
+  "providers": {
+    "ollama": {
+      "base_url": "http://127.0.0.1:11434",
+      "models": [
+        "deepseek-v3.2:cloud",
+        "nemotron-3-super:cloud",
+        "kimi-k2.5:cloud",
+        "kimi-k2.6:cloud",
+        "glm-5.1:cloud",
+        "glm-5:cloud",
+        "gemma4:31b-cloud",
+        "qwen3-coder-next:cloud",
+        "qwen3-coder:480b-cloud",
+        "qwen3.5:cloud",
+        "kimi-k2-thinking:cloud",
+        "gemini-3-flash-preview:cloud",
+        "minimax-m2.7:cloud",
+        "minimax-m2.5:cloud",
+        "devstral-small-2:24b-cloud",
+        "gpt-oss:120b-cloud",
+        "deepseek-v4-flash:cloud",
+        "deepseek-v4-pro:cloud"
+      ]
+    },
+    "metaclaw": {
+      "base_url": "http://127.0.0.1:30000/v1",
+      "api_key": "metaclaw",
+      "models": [
+        "z-ai/glm-5.1-20260406"
+      ]
+    },
+    "google": {
+      "base_url": "https://generativelanguage.googleapis.com",
+      "api_key": "${GEMINI_API_KEY}",
+      "models": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-preview"
+      ]
+    },
+    "anthropic": {
+      "base_url": "https://api.anthropic.com",
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "models": [
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4",
+        "claude-3.7-sonnet"
+      ]
+    },
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "${DEEPSEEK_API_KEY}",
+      "models": [
+        "deepseek-reasoner",
+        "deepseek-chat"
+      ]
+    },
+    "groq": {
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "${GROQ_API_KEY}",
+      "models": [
+        "llama-4-scout-17b",
+        "llama-3.3-70b-versatile",
+        "deepseek-r1-distill-llama-70b",
+        "qwen-qwq-32b"
+      ]
+    },
+    "xai": {
+      "base_url": "https://api.x.ai/v1",
+      "api_key": "${XAI_API_KEY}",
+      "models": [
+        "grok-4",
+        "grok-3",
+        "grok-3-mini",
+        "grok-3-fast"
+      ]
+    },
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "${OPENAI_API_KEY}",
+      "models": [
+        "gpt-5.4",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "o4-mini",
+        "o3-mini"
+      ]
+    },
+    "perplexity": {
+      "base_url": "https://api.perplexity.ai",
+      "api_key": "${PERPLEXITY_API_KEY}",
+      "models": [
+        "sonar-pro",
+        "sonar",
+        "r1-1776"
+      ]
+    },
+    "nvidia": {
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key": "${NVIDIA_API_KEY}",
+      "models": [
+        "nvidia/llama-3.3-nemotron-super-1.0",
+        "nvidia/nemotron-3-super"
+      ]
+    }
+  },
+  "database": {
+    "type": "postgres",
+    "dsn": "postgres://goclaw:novamaster123@localhost:5432/goclaw?sslmode=disable"
+  },
+  "gateway": {
+    "port": 18790,
+    "host": "0.0.0.0"
+  },
+  "default_provider": "google",
+  "default_model": "gemini-2.5-flash",
+  "fallback_provider": "ollama",
+  "fallback_model": "deepseek-v3.2:cloud",
+  "fallbacks": [
+    {
+      "provider": "google",
+      "model": "gemini-2.5-flash"
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-chat"
+    },
+    {
+      "provider": "xai",
+      "model": "grok-3-mini"
+    },
+    {
+      "provider": "ollama",
+      "model": "kimi-k2.5:cloud"
+    }
+  ],
+  "agents": {
+    "nova": {
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "display_name": "Nova Default",
+      "is_default": true,
+      "fallbacks": [
+        {
+          "provider": "deepseek",
+          "model": "deepseek-chat"
+        },
+        {
+          "provider": "xai",
+          "model": "grok-3-mini"
+        },
+        {
+          "provider": "ollama",
+          "model": "kimi-k2.5:cloud"
+        }
+      ]
+    },
+    "nova-automation": {
+      "provider": "ollama",
+      "model": "gemma4:31b-cloud",
+      "display_name": "Nova Automation",
+      "is_default": false
+    },
+    "nova-coding": {
+      "provider": "ollama",
+      "model": "qwen3-coder-next:cloud",
+      "display_name": "Nova Coding",
+      "is_default": false
+    },
+    "nova-reasoning": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "display_name": "Nova Reasoning",
+      "is_default": false,
+      "fallbacks": [
+        {
+          "provider": "deepseek",
+          "model": "deepseek-reasoner"
+        },
+        {
+          "provider": "xai",
+          "model": "grok-3-mini"
+        }
+      ]
+    },
+    "nova-fast": {
+      "provider": "groq",
+      "model": "llama-3.3-70b-versatile",
+      "display_name": "Nova Fast",
+      "is_default": false
+    }
+  },
+  "performance": {
+    "connectionPool": {
+      "enabled": true,
+      "maxConnections": 100,
+      "idleTimeout": 30000,
+      "acquireTimeout": 5000
+    },
+    "responseCache": {
+      "enabled": true,
+      "backend": "redis",
+      "ttl": 3600
+    },
+    "circuitBreaker": {
+      "enabled": true,
+      "failureThreshold": 5,
+      "resetTimeout": 60000
+    }
+  }
+}

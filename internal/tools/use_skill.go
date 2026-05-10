@@ -4,15 +4,23 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+
+	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 // UseSkillTool is a marker tool for observability.
 // It generates tool.call / tool.result events in spans and realtime
 // so skill activation is visible in tracing. The actual skill content
 // is still loaded via read_file — this tool is a deliberate no-op.
-type UseSkillTool struct{}
+type UseSkillTool struct {
+	skills store.SkillManageStore // optional; used for best-effort MarkSkillUsed sidecar
+}
 
 func NewUseSkillTool() *UseSkillTool { return &UseSkillTool{} }
+
+// SetSkillStore sets the optional skill store for best-effort usage tracking.
+func (t *UseSkillTool) SetSkillStore(s store.SkillManageStore) { t.skills = s }
 
 func (t *UseSkillTool) Name() string { return "use_skill" }
 
@@ -37,13 +45,24 @@ func (t *UseSkillTool) Parameters() map[string]any {
 	}
 }
 
-func (t *UseSkillTool) Execute(_ context.Context, args map[string]any) *Result {
+func (t *UseSkillTool) Execute(ctx context.Context, args map[string]any) *Result {
 	name, _ := args["name"].(string)
 	if name == "" {
 		return ErrorResult("name parameter is required")
 	}
 
 	slog.Info("skill.activated", "skill", name)
+
+	// Best-effort usage sidecar — non-blocking, does not affect tool result.
+	if t.skills != nil {
+		if info, ok := t.skills.GetSkill(ctx, name); ok && info.ID != "" {
+			if id, err := uuid.Parse(info.ID); err == nil {
+				if err := t.skills.MarkSkillUsed(ctx, id); err != nil {
+					slog.Debug("use_skill: mark_used failed", "skill", name, "err", err)
+				}
+			}
+		}
+	}
 
 	return NewResult(fmt.Sprintf("Skill %q activated. Proceed to read the skill's SKILL.md with read_file.", name))
 }

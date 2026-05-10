@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -21,7 +19,7 @@ func NewPGSnapshotStore(db *sql.DB) *PGSnapshotStore {
 	return &PGSnapshotStore{db: db}
 }
 
-const snapshotFieldCount = 22
+const snapshotFieldCount = 21
 
 // maxBatchRows limits each INSERT to stay under PG's 65535 param limit (65535 / 21 ≈ 3120).
 const maxBatchRows = 3000
@@ -40,11 +38,6 @@ func (s *PGSnapshotStore) UpsertSnapshots(ctx context.Context, snapshots []store
 }
 
 func (s *PGSnapshotStore) upsertBatch(ctx context.Context, snapshots []store.UsageSnapshot) error {
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
-	}
-
 	var vals []string
 	var args []any
 	for i, snap := range snapshots {
@@ -60,7 +53,6 @@ func (s *PGSnapshotStore) upsertBatch(ctx context.Context, snapshots []store.Usa
 			snap.TotalCost, snap.RequestCount, snap.LLMCallCount, snap.ToolCallCount,
 			snap.ErrorCount, snap.UniqueUsers, snap.AvgDurationMS,
 			snap.MemoryDocs, snap.MemoryChunks, snap.KGEntities, snap.KGRelations,
-			tenantID,
 		)
 	}
 
@@ -69,10 +61,9 @@ func (s *PGSnapshotStore) upsertBatch(ctx context.Context, snapshots []store.Usa
 		input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, thinking_tokens,
 		total_cost, request_count, llm_call_count, tool_call_count,
 		error_count, unique_users, avg_duration_ms,
-		memory_docs, memory_chunks, kg_entities, kg_relations,
-		tenant_id
+		memory_docs, memory_chunks, kg_entities, kg_relations
 	) VALUES ` + strings.Join(vals, ", ") + `
-	ON CONFLICT (bucket_hour, COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'), provider, model, channel, tenant_id)
+	ON CONFLICT (bucket_hour, COALESCE(agent_id::text, '00000000-0000-0000-0000-000000000000'), provider, model, channel)
 	DO UPDATE SET
 		input_tokens = EXCLUDED.input_tokens,
 		output_tokens = EXCLUDED.output_tokens,
@@ -263,15 +254,6 @@ func buildSnapshotWhere(ctx context.Context, q store.SnapshotQuery) (string, []a
 	var conds []string
 	var args []any
 	idx := 1
-
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID != uuid.Nil {
-			conds = append(conds, fmt.Sprintf("tenant_id = $%d", idx))
-			args = append(args, tenantID)
-			idx++
-		}
-	}
 
 	if !q.From.IsZero() {
 		conds = append(conds, fmt.Sprintf("bucket_hour >= $%d", idx))

@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
@@ -63,13 +62,9 @@ func resolveWorkspacePath(scopeDir, fileName string) (string, error) {
 }
 
 // teamWorkspaceDir returns the base directory for a team's workspace files.
-// Scoped to tenant via config.TenantTeamDir: {dataDir}/tenants/{slug}/teams/{teamID}/
-// Master tenant: {dataDir}/teams/{teamID}/ (backward compat).
-// If chatID is provided, further scopes to .../{chatID}/
-func teamWorkspaceDir(ctx context.Context, dataDir string, teamID uuid.UUID, chatID string) string {
-	tid := store.TenantIDFromContext(ctx)
-	slug := store.TenantSlugFromContext(ctx)
-	base := config.TenantTeamDir(dataDir, tid, slug, teamID)
+// v4 single-tenant: {dataDir}/teams/{teamID}/[{chatID}/]
+func teamWorkspaceDir(_ context.Context, dataDir string, teamID uuid.UUID, chatID string) string {
+	base := filepath.Join(dataDir, "teams", teamID.String())
 	if chatID != "" {
 		return filepath.Join(base, chatID)
 	}

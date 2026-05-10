@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -151,8 +150,7 @@ func (h *AgentsHandler) importKG(ctx context.Context, ag *store.AgentData, arc *
 }
 
 func (h *AgentsHandler) importCron(ctx context.Context, ag *store.AgentData, arc *importArchive, summary *ImportSummary, progressFn func(ProgressEvent)) {
-	tid := importTenantID(ctx)
-	const paramsPerRow = 10 // agent_id, name, schedule_kind, cron_expression, interval_ms, run_at, timezone, payload, delete_after_run, tenant_id (enabled is literal false)
+	const paramsPerRow = 9 // agent_id, name, schedule_kind, cron_expression, interval_ms, run_at, timezone, payload, delete_after_run (enabled is literal false)
 	const chunkSize = 5000
 
 	for start := 0; start < len(arc.cronJobs); start += chunkSize {
@@ -164,19 +162,19 @@ func (h *AgentsHandler) importCron(ctx context.Context, ag *store.AgentData, arc
 		for i, j := range chunk {
 			base := i * paramsPerRow
 			placeholders = append(placeholders, fmt.Sprintf(
-				"($%d,$%d,false,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10,
+				"($%d,$%d,false,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9,
 			))
 			args = append(args, ag.ID, j.Name, j.ScheduleKind,
 				j.CronExpression, j.IntervalMS, nullStr(j.RunAt), j.Timezone,
-				j.Payload, j.DeleteAfterRun, tid,
+				j.Payload, j.DeleteAfterRun,
 			)
 		}
 
 		q := `INSERT INTO cron_jobs
-			(agent_id, name, enabled, schedule_kind, cron_expression, interval_ms, run_at, timezone, payload, delete_after_run, tenant_id)
+			(agent_id, name, enabled, schedule_kind, cron_expression, interval_ms, run_at, timezone, payload, delete_after_run)
 			VALUES ` + strings.Join(placeholders, ",") + `
-			ON CONFLICT (agent_id, tenant_id, name) DO UPDATE SET
+			ON CONFLICT (agent_id, name) DO UPDATE SET
 				schedule_kind = EXCLUDED.schedule_kind,
 				cron_expression = EXCLUDED.cron_expression,
 				interval_ms = EXCLUDED.interval_ms,
@@ -196,8 +194,7 @@ func (h *AgentsHandler) importCron(ctx context.Context, ag *store.AgentData, arc
 
 func (h *AgentsHandler) importUserProfiles(ctx context.Context, ag *store.AgentData, arc *importArchive, summary *ImportSummary, progressFn func(ProgressEvent)) {
 	// workspace=NULL for portability (auto-created via GetOrCreateUserProfile on first user access)
-	tid := importTenantID(ctx)
-	const colsPerRow = 3 // agent_id, user_id, tenant_id
+	const colsPerRow = 2 // agent_id, user_id
 	const chunkSize = 5000
 
 	for start := 0; start < len(arc.userProfiles); start += chunkSize {
@@ -208,11 +205,11 @@ func (h *AgentsHandler) importUserProfiles(ctx context.Context, ag *store.AgentD
 		placeholders := make([]string, 0, len(chunk))
 		for i, p := range chunk {
 			base := i * colsPerRow
-			placeholders = append(placeholders, fmt.Sprintf("($%d,$%d,NULL,$%d)", base+1, base+2, base+3))
-			args = append(args, ag.ID, p.UserID, tid)
+			placeholders = append(placeholders, fmt.Sprintf("($%d,$%d,NULL)", base+1, base+2))
+			args = append(args, ag.ID, p.UserID)
 		}
 
-		q := `INSERT INTO user_agent_profiles (agent_id, user_id, workspace, tenant_id)
+		q := `INSERT INTO user_agent_profiles (agent_id, user_id, workspace)
 			VALUES ` + strings.Join(placeholders, ",") + `
 			ON CONFLICT (agent_id, user_id) DO NOTHING`
 		if _, err := h.db.ExecContext(ctx, q, args...); err != nil {
@@ -226,8 +223,7 @@ func (h *AgentsHandler) importUserProfiles(ctx context.Context, ag *store.AgentD
 }
 
 func (h *AgentsHandler) importUserOverrides(ctx context.Context, ag *store.AgentData, arc *importArchive, summary *ImportSummary, progressFn func(ProgressEvent)) {
-	tid := importTenantID(ctx)
-	const colsPerRow = 6 // agent_id, user_id, provider, model, settings, tenant_id
+	const colsPerRow = 5 // agent_id, user_id, provider, model, settings
 	const chunkSize = 5000
 
 	for start := 0; start < len(arc.userOverrides); start += chunkSize {
@@ -239,13 +235,13 @@ func (h *AgentsHandler) importUserOverrides(ctx context.Context, ag *store.Agent
 		for i, o := range chunk {
 			base := i * colsPerRow
 			placeholders = append(placeholders, fmt.Sprintf(
-				"($%d,$%d,$%d,$%d,$%d,$%d)",
-				base+1, base+2, base+3, base+4, base+5, base+6,
+				"($%d,$%d,$%d,$%d,$%d)",
+				base+1, base+2, base+3, base+4, base+5,
 			))
-			args = append(args, ag.ID, o.UserID, o.Provider, o.Model, coalesceJSON(o.Settings), tid)
+			args = append(args, ag.ID, o.UserID, o.Provider, o.Model, coalesceJSON(o.Settings))
 		}
 
-		q := `INSERT INTO user_agent_overrides (agent_id, user_id, provider, model, settings, tenant_id)
+		q := `INSERT INTO user_agent_overrides (agent_id, user_id, provider, model, settings)
 			VALUES ` + strings.Join(placeholders, ",") + `
 			ON CONFLICT (agent_id, user_id) DO UPDATE SET
 				provider = EXCLUDED.provider,
@@ -278,14 +274,12 @@ func (h *AgentsHandler) importEpisodic(ctx context.Context, ag *store.AgentData,
 	if progressFn != nil {
 		progressFn(ProgressEvent{Phase: "episodic", Status: "running", Total: len(arc.episodicSummaries)})
 	}
-	tid := importTenantID(ctx)
 	for _, ep := range arc.episodicSummaries {
 		exists, _ := h.episodicStore.ExistsBySourceID(ctx, ag.ID.String(), ep.UserID, ep.SourceID)
 		if exists {
 			continue
 		}
 		epSum := &store.EpisodicSummary{
-			TenantID:   tid,
 			AgentID:    ag.ID,
 			UserID:     ep.UserID,
 			SessionKey: ep.SessionKey,
@@ -311,8 +305,6 @@ func (h *AgentsHandler) importEpisodic(ctx context.Context, ag *store.AgentData,
 }
 
 func (h *AgentsHandler) importEvolution(ctx context.Context, ag *store.AgentData, arc *importArchive, summary *ImportSummary, progressFn func(ProgressEvent)) {
-	tid := importTenantID(ctx)
-
 	// Metrics are time-series: re-import duplicates are acceptable for v1.
 	if len(arc.evolutionMetrics) > 0 {
 		if progressFn != nil {
@@ -321,10 +313,10 @@ func (h *AgentsHandler) importEvolution(ctx context.Context, ag *store.AgentData
 		for _, m := range arc.evolutionMetrics {
 			_, err := h.db.ExecContext(ctx,
 				`INSERT INTO agent_evolution_metrics
-				   (agent_id, session_key, metric_type, metric_key, value, created_at, tenant_id)
-				 VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7)`,
+				   (agent_id, session_key, metric_type, metric_key, value, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6::timestamptz)`,
 				ag.ID, m.SessionKey, m.MetricType, m.MetricKey,
-				nullJSON(m.Value), m.CreatedAt, tid,
+				nullJSON(m.Value), m.CreatedAt,
 			)
 			if err != nil {
 				slog.Warn("agents.import.evolution_metric", "agent_id", ag.ID, "error", err)
@@ -346,8 +338,8 @@ func (h *AgentsHandler) importEvolution(ctx context.Context, ag *store.AgentData
 			var exists bool
 			_ = h.db.QueryRowContext(ctx,
 				`SELECT EXISTS(SELECT 1 FROM agent_evolution_suggestions
-				  WHERE agent_id = $1 AND suggestion_type = $2 AND suggestion = $3 AND tenant_id = $4)`,
-				ag.ID, s.SuggestionType, s.Suggestion, tid,
+				  WHERE agent_id = $1 AND suggestion_type = $2 AND suggestion = $3)`,
+				ag.ID, s.SuggestionType, s.Suggestion,
 			).Scan(&exists)
 			if exists {
 				continue
@@ -355,12 +347,12 @@ func (h *AgentsHandler) importEvolution(ctx context.Context, ag *store.AgentData
 			_, err := h.db.ExecContext(ctx,
 				`INSERT INTO agent_evolution_suggestions
 				   (agent_id, suggestion_type, suggestion, rationale, parameters,
-				    status, reviewed_by, reviewed_at, created_at, tenant_id)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10)`,
+				    status, reviewed_by, reviewed_at, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz)`,
 				ag.ID, s.SuggestionType, s.Suggestion, s.Rationale,
 				nullJSON(s.Parameters), s.Status,
 				nullStrVal(s.ReviewedBy), nullStr(s.ReviewedAt),
-				s.CreatedAt, tid,
+				s.CreatedAt,
 			)
 			if err != nil {
 				slog.Warn("agents.import.evolution_suggestion", "agent_id", ag.ID, "type", s.SuggestionType, "error", err)
@@ -375,14 +367,12 @@ func (h *AgentsHandler) importEvolution(ctx context.Context, ag *store.AgentData
 }
 
 func (h *AgentsHandler) importVault(ctx context.Context, ag *store.AgentData, arc *importArchive, summary *ImportSummary, progressFn func(ProgressEvent)) {
-	tid := importTenantID(ctx)
 	if progressFn != nil {
 		progressFn(ProgressEvent{Phase: "vault_documents", Status: "running", Total: len(arc.vaultDocuments)})
 	}
 	for _, d := range arc.vaultDocuments {
 		agentIDStr := ag.ID.String()
 		doc := &store.VaultDocument{
-			TenantID:    tid.String(),
 			AgentID:     &agentIDStr,
 			TeamID:      nil, // team_id not portable
 			Scope:       d.Scope,
@@ -411,18 +401,18 @@ func (h *AgentsHandler) importVault(ctx context.Context, ag *store.AgentData, ar
 
 	// Two-pass link import: build pathToID map first
 	if len(arc.vaultLinks) > 0 {
-		h.importVaultLinks(ctx, ag, arc, summary, tid, progressFn)
+		h.importVaultLinks(ctx, ag, arc, summary, progressFn)
 	}
 }
 
-func (h *AgentsHandler) importVaultLinks(ctx context.Context, ag *store.AgentData, arc *importArchive, summary *ImportSummary, tid uuid.UUID, progressFn func(ProgressEvent)) {
+func (h *AgentsHandler) importVaultLinks(ctx context.Context, ag *store.AgentData, arc *importArchive, summary *ImportSummary, progressFn func(ProgressEvent)) {
 	if progressFn != nil {
 		progressFn(ProgressEvent{Phase: "vault_links", Status: "running", Total: len(arc.vaultLinks)})
 	}
 	pathToID := make(map[string]string)
 	rows, qErr := h.db.QueryContext(ctx,
-		`SELECT id, path FROM vault_documents WHERE agent_id = $1 AND tenant_id = $2`,
-		ag.ID, tid,
+		`SELECT id, path FROM vault_documents WHERE agent_id = $1`,
+		ag.ID,
 	)
 	if qErr == nil {
 		for rows.Next() {

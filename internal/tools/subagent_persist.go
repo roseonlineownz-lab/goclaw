@@ -9,14 +9,10 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
-// detachedCtx creates a context that won't be cancelled but preserves tenant ID.
+// detachedCtx creates a context that won't be cancelled.
 // Used for fire-and-forget DB writes that must succeed even after the parent ctx is cancelled.
-func detachedCtx(ctx context.Context) context.Context {
-	bg := context.Background()
-	if tid := store.TenantIDFromContext(ctx); tid != uuid.Nil {
-		bg = store.WithTenantID(bg, tid)
-	}
-	return bg
+func detachedCtx(_ context.Context) context.Context {
+	return context.Background()
 }
 
 // persistCreate writes a new subagent task to the DB (fire-and-forget).
@@ -54,7 +50,6 @@ func (sm *SubagentManager) persistCreate(ctx context.Context, task *SubagentTask
 
 	data := &store.SubagentTaskData{
 		BaseModel:      store.BaseModel{ID: task.dbID},
-		TenantID:       task.OriginTenantID,
 		ParentAgentKey: task.ParentID,
 		SessionKey:     sessionKey,
 		Subject:        task.Label,
@@ -67,6 +62,7 @@ func (sm *SubagentManager) persistCreate(ctx context.Context, task *SubagentTask
 		OriginChatID:   originChatID,
 		OriginPeerKind: originPeerKind,
 		OriginUserID:   originUserID,
+		ProjectID:      task.ProjectID,
 	}
 
 	if err := sm.taskStore.Create(dbCtx, data); err != nil {

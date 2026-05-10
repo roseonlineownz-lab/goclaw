@@ -17,14 +17,13 @@ import (
 // GetUserCredentials returns per-user credential overrides for an MCP server.
 // Returns (nil, nil) if no per-user credentials exist.
 func (s *PGMCPServerStore) GetUserCredentials(ctx context.Context, serverID uuid.UUID, userID string) (*store.MCPUserCredentials, error) {
-	tid := tenantIDForInsert(ctx)
 	var apiKey sql.NullString
 	var headersEnc, envEnc []byte
 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT api_key, headers, env FROM mcp_user_credentials
-		 WHERE server_id = $1 AND user_id = $2 AND tenant_id = $3`,
-		serverID, userID, tid,
+		 WHERE server_id = $1 AND user_id = $2`,
+		serverID, userID,
 	).Scan(&apiKey, &headersEnc, &envEnc)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -55,8 +54,6 @@ func (s *PGMCPServerStore) GetUserCredentials(ctx context.Context, serverID uuid
 
 // SetUserCredentials creates or updates per-user MCP credentials.
 func (s *PGMCPServerStore) SetUserCredentials(ctx context.Context, serverID uuid.UUID, userID string, creds store.MCPUserCredentials) error {
-	tid := tenantIDForInsert(ctx)
-
 	var apiKeyEnc sql.NullString
 	if creds.APIKey != "" && s.encKey != "" {
 		enc, err := crypto.Encrypt(creds.APIKey, s.encKey)
@@ -80,21 +77,20 @@ func (s *PGMCPServerStore) SetUserCredentials(ctx context.Context, serverID uuid
 
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO mcp_user_credentials (id, server_id, user_id, api_key, headers, env, tenant_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
-		 ON CONFLICT (server_id, user_id, tenant_id) DO UPDATE SET
-		   api_key = $4, headers = $5, env = $6, updated_at = $8`,
-		uuid.Must(uuid.NewV7()), serverID, userID, apiKeyEnc, headersEnc, envEnc, tid, now,
+		`INSERT INTO mcp_user_credentials (id, server_id, user_id, api_key, headers, env, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+		 ON CONFLICT (server_id, user_id) DO UPDATE SET
+		   api_key = $4, headers = $5, env = $6, updated_at = $7`,
+		uuid.Must(uuid.NewV7()), serverID, userID, apiKeyEnc, headersEnc, envEnc, now,
 	)
 	return err
 }
 
 // DeleteUserCredentials removes per-user MCP credentials.
 func (s *PGMCPServerStore) DeleteUserCredentials(ctx context.Context, serverID uuid.UUID, userID string) error {
-	tid := tenantIDForInsert(ctx)
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM mcp_user_credentials WHERE server_id = $1 AND user_id = $2 AND tenant_id = $3`,
-		serverID, userID, tid,
+		`DELETE FROM mcp_user_credentials WHERE server_id = $1 AND user_id = $2`,
+		serverID, userID,
 	)
 	return err
 }

@@ -18,15 +18,14 @@ type agentAccessEntry struct {
 // PermissionCache provides short-TTL caching for hot permission lookups.
 // Uses InMemoryCache[V] caches with pubsub invalidation.
 type PermissionCache struct {
-	tenantRole  *InMemoryCache[string]
 	agentAccess *InMemoryCache[agentAccessEntry]
 	teamAccess  *InMemoryCache[bool]
 }
 
 // permissionCacheSweepInterval and permissionCacheMaxSize bound background
 // growth of per-user cache entries. Without these, long-running gateways with
-// many distinct users would accumulate unbounded entries (tenant_roles, agent
-// access, team access) even with a 30s TTL — lazy eviction only fires on Get,
+// many distinct users would accumulate unbounded entries (agent access,
+// team access) even with a 30s TTL — lazy eviction only fires on Get,
 // so entries for disconnected users never get reclaimed.
 const (
 	permissionCacheSweepInterval = 60 * time.Second
@@ -34,14 +33,10 @@ const (
 )
 
 // NewPermissionCache creates a new permission cache with periodic sweep
-// goroutines for all three inner caches. Call Close() on gateway shutdown to
+// goroutines for the inner caches. Call Close() on gateway shutdown to
 // stop the sweep goroutines.
 func NewPermissionCache() *PermissionCache {
 	return &PermissionCache{
-		tenantRole: NewInMemoryCache[string](
-			WithSweepInterval[string](permissionCacheSweepInterval),
-			WithMaxSize[string](permissionCacheMaxSize),
-		),
 		agentAccess: NewInMemoryCache[agentAccessEntry](
 			WithSweepInterval[agentAccessEntry](permissionCacheSweepInterval),
 			WithMaxSize[agentAccessEntry](permissionCacheMaxSize),
@@ -55,26 +50,14 @@ func NewPermissionCache() *PermissionCache {
 
 // Close stops all background sweep goroutines. Safe to call multiple times.
 func (pc *PermissionCache) Close() {
-	pc.tenantRole.Close()
 	pc.agentAccess.Close()
 	pc.teamAccess.Close()
 }
 
 const (
-	tenantRoleTTL  = 30 * time.Second
 	agentAccessTTL = 30 * time.Second
 	teamAccessTTL  = 30 * time.Second
 )
-
-// --- Tenant Role ---
-
-func (pc *PermissionCache) GetTenantRole(ctx context.Context, tenantID uuid.UUID, userID string) (string, bool) {
-	return pc.tenantRole.Get(ctx, tenantID.String()+":"+userID)
-}
-
-func (pc *PermissionCache) SetTenantRole(ctx context.Context, tenantID uuid.UUID, userID, role string) {
-	pc.tenantRole.Set(ctx, tenantID.String()+":"+userID, role, tenantRoleTTL)
-}
 
 // --- Agent Access ---
 
@@ -107,11 +90,6 @@ func (pc *PermissionCache) HandleInvalidation(p bus.CacheInvalidatePayload) {
 	slog.Debug("perm_cache.invalidated", "kind", string(p.Kind), "key", p.Key)
 	ctx := context.Background()
 	switch p.Kind {
-	case bus.CacheKindTenantUsers:
-		// Key is userID — invalidate all tenant roles.
-		// Can't efficiently delete all tenantRole entries for a user by prefix,
-		// so clear all tenant roles (short TTL makes this acceptable).
-		pc.tenantRole.Clear(ctx)
 	case bus.CacheKindAgentAccess:
 		// Key is agentID — delete all access entries for this agent.
 		if p.Key != "" {

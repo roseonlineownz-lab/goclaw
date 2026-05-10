@@ -24,16 +24,12 @@ func NewSQLiteActivityStore(db *sql.DB) *SQLiteActivityStore {
 }
 
 func (s *SQLiteActivityStore) Log(ctx context.Context, entry *store.ActivityLog) error {
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
-	}
 	id := uuid.New()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO activity_logs (id, actor_type, actor_id, action, entity_type, entity_id, details, ip_address, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO activity_logs (id, actor_type, actor_id, action, entity_type, entity_id, details, ip_address)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, entry.ActorType, entry.ActorID, entry.Action,
-		entry.EntityType, entry.EntityID, entry.Details, entry.IPAddress, tenantID,
+		entry.EntityType, entry.EntityID, entry.Details, entry.IPAddress,
 	)
 	return err
 }
@@ -80,17 +76,9 @@ func (s *SQLiteActivityStore) Count(ctx context.Context, opts store.ActivityList
 	return count, err
 }
 
-func buildActivityWhere(ctx context.Context, opts store.ActivityListOpts) (string, []any) {
+func buildActivityWhere(_ context.Context, opts store.ActivityListOpts) (string, []any) {
 	var conditions []string
 	var args []any
-
-	if !store.IsCrossTenant(ctx) {
-		tenantID := store.TenantIDFromContext(ctx)
-		if tenantID != uuid.Nil {
-			conditions = append(conditions, "tenant_id = ?")
-			args = append(args, tenantID)
-		}
-	}
 
 	if opts.ActorType != "" {
 		conditions = append(conditions, "actor_type = ?")

@@ -12,8 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/nextlevelbuilder/goclaw/internal/config"
+	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
+	"github.com/nextlevelbuilder/goclaw/internal/skills"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/store/pg"
 )
@@ -54,6 +55,11 @@ func (h *SkillsHandler) handleSkillsImport(w http.ResponseWriter, r *http.Reques
 			sendSSE(w, flusher, "error", ProgressEvent{Phase: "import", Status: "error", Detail: importErr.Error()})
 			return
 		}
+		// Import affects the importer's tenant scope — invalidate that
+		// tenant's cached agents so they pick up the new skill set. If
+		// imported under master, tid is the master tenant UUID, which
+		// still yields a correct per-tenant router wipe.
+		h.emitCacheInvalidate(bus.CacheKindSkills, "")
 		sendSSE(w, flusher, "complete", summary)
 		return
 	}
@@ -64,6 +70,7 @@ func (h *SkillsHandler) handleSkillsImport(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, err.Error())})
 		return
 	}
+	h.emitCacheInvalidate(bus.CacheKindSkills, "")
 	writeJSON(w, http.StatusCreated, summary)
 }
 
@@ -125,6 +132,19 @@ func (h *SkillsHandler) doSkillsImport(ctx context.Context, r io.Reader, userID 
 			continue
 		}
 
+		// Security guard: scan SKILL.md for malicious content BEFORE any disk/DB write
+		if entry.skillMD != nil {
+			violations, safe := skills.GuardSkillContent(string(entry.skillMD))
+			if !safe {
+				slog.Warn("security.skills.import_rejected",
+					"slug", slug,
+					"violations", len(violations),
+					"first_rule", violations[0].Reason)
+				summary.SkillsSkipped++
+				continue
+			}
+		}
+
 		var meta struct {
 			Name        string   `json:"name"`
 			Slug        string   `json:"slug"`
@@ -145,17 +165,16 @@ func (h *SkillsHandler) doSkillsImport(ctx context.Context, r io.Reader, userID 
 		skillDir := filepath.Join(skillsDir, sanitizeName(slug))
 		skillFilePath := filepath.Join(skillDir, "SKILL.md")
 
-		// Check if slug already exists in this tenant before writing files
-		tid := tenantIDForSkillImport(ctx)
+		// Check if slug already exists before writing files (v4: single-tenant)
 		var existing bool
 		_ = h.db.QueryRowContext(ctx,
-			"SELECT EXISTS(SELECT 1 FROM skills WHERE slug = $1 AND tenant_id = $2)", slug, tid,
+			"SELECT EXISTS(SELECT 1 FROM skills WHERE slug = $1)", slug,
 		).Scan(&existing)
 
 		var skillID uuid.UUID
 		if existing {
 			_ = h.db.QueryRowContext(ctx,
-				"SELECT id FROM skills WHERE slug = $1 AND tenant_id = $2", slug, tid,
+				"SELECT id FROM skills WHERE slug = $1", slug,
 			).Scan(&skillID)
 			summary.SkillsSkipped++
 		} else {
@@ -181,10 +200,10 @@ func (h *SkillsHandler) doSkillsImport(ctx context.Context, r io.Reader, userID 
 			}
 			_, err := h.db.ExecContext(ctx,
 				`INSERT INTO skills (id, name, slug, description, owner_id, visibility, version, status,
-				 is_system, file_path, file_size, tenant_id, created_at, updated_at)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,'active',false,$8,0,$9,NOW(),NOW())`,
+				 source, file_path, file_size, created_at, updated_at)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,'active','user-uploaded',$8,0,NOW(),NOW())`,
 				skillID, meta.Name, slug, meta.Description,
-				userID, visibility, version, skillFilePath, tid,
+				userID, visibility, version, skillFilePath,
 			)
 			if err != nil {
 				slog.Warn("skills.import: insert skill", "slug", slug, "error", err)
@@ -202,7 +221,7 @@ func (h *SkillsHandler) doSkillsImport(ctx context.Context, r io.Reader, userID 
 			for _, g := range grants {
 				var agentID uuid.UUID
 				if err := h.db.QueryRowContext(ctx,
-					"SELECT id FROM agents WHERE agent_key = $1 AND tenant_id = $2", g.AgentKey, tid,
+					"SELECT id FROM agents WHERE agent_key = $1", g.AgentKey,
 				).Scan(&agentID); err != nil {
 					slog.Warn("skills.import: agent not found for grant", "key", g.AgentKey)
 					continue
@@ -225,18 +244,8 @@ func (h *SkillsHandler) doSkillsImport(ctx context.Context, r io.Reader, userID 
 	return summary, nil
 }
 
-// tenantSkillsDirForImport returns the skills filesystem directory for import, scoped to tenant.
-func (h *SkillsHandler) tenantSkillsDirForImport(ctx context.Context) string {
-	tid := store.TenantIDFromContext(ctx)
-	slug := store.TenantSlugFromContext(ctx)
-	return config.TenantSkillsStoreDir(h.dataDir, tid, slug)
-}
-
-// tenantIDForSkillImport returns tenant UUID for skill INSERT, falling back to MasterTenantID.
-func tenantIDForSkillImport(ctx context.Context) uuid.UUID {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		return store.MasterTenantID
-	}
-	return tid
+// tenantSkillsDirForImport returns the skills filesystem directory for import.
+// v4 single-tenant: always returns skills-store root.
+func (h *SkillsHandler) tenantSkillsDirForImport(_ context.Context) string {
+	return filepath.Join(h.dataDir, "skills-store")
 }

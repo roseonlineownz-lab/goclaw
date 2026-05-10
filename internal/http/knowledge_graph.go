@@ -25,7 +25,7 @@ func (h *KnowledgeGraphHandler) NewExtractor(ctx context.Context, providerName, 
 	if h.providerReg == nil || providerName == "" || model == "" {
 		return nil
 	}
-	p, err := h.providerReg.Get(ctx, providerName)
+	p, err := h.providerReg.GetByName(providerName)
 	if err != nil {
 		return nil
 	}
@@ -50,10 +50,13 @@ func (h *KnowledgeGraphHandler) RegisterRoutes(mux *http.ServeMux) {
 
 func (h *KnowledgeGraphHandler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return requireAuth("", func(w http.ResponseWriter, r *http.Request) {
-		// KG management endpoints serve the admin UI — use shared KG context
-		// so queries don't require exact user_id match. Tenant isolation is
-		// still enforced via scopeClause (tenant_id filter).
-		ctx := store.WithSharedKG(r.Context())
+		// Admin/root callers see every row (shared KG); regular users see
+		// only their own rows + agent-level (user_id IS NULL). Without this
+		// gate every member would read every other user's KG entries.
+		ctx := r.Context()
+		if store.IsMasterScope(ctx) {
+			ctx = store.WithSharedKG(ctx)
+		}
 		next(w, r.WithContext(ctx))
 	})
 }

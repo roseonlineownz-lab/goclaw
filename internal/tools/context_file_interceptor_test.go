@@ -66,13 +66,15 @@ func (s *stubAgentStore) GetByIDs(_ context.Context, _ []uuid.UUID) ([]store.Age
 	return nil, nil
 }
 func (s *stubAgentStore) GetDefault(_ context.Context) (*store.AgentData, error)        { return nil, nil }
+func (s *stubAgentStore) ResetStuckSummoning(_ context.Context) (int64, error)           { return 0, nil }
 func (s *stubAgentStore) Update(_ context.Context, _ uuid.UUID, _ map[string]any) error { return nil }
 func (s *stubAgentStore) Delete(_ context.Context, _ uuid.UUID) error                   { return nil }
 func (s *stubAgentStore) List(_ context.Context, _ string) ([]store.AgentData, error) {
 	return nil, nil
 }
-func (s *stubAgentStore) ShareAgent(_ context.Context, _ uuid.UUID, _, _, _ string) error { return nil }
-func (s *stubAgentStore) RevokeShare(_ context.Context, _ uuid.UUID, _ string) error      { return nil }
+func (s *stubAgentStore) CreateShare(_ context.Context, _ store.AgentShareInput) error { return nil }
+func (s *stubAgentStore) RevokeShareByUser(_ context.Context, _, _ uuid.UUID) error    { return nil }
+func (s *stubAgentStore) RevokeShareByTeam(_ context.Context, _, _ uuid.UUID) error    { return nil }
 func (s *stubAgentStore) ListShares(_ context.Context, _ uuid.UUID) ([]store.AgentShareData, error) {
 	return nil, nil
 }
@@ -304,7 +306,6 @@ func TestInterceptor_AllowsCapabilitiesWrite(t *testing.T) {
 	)
 
 	ctx := store.WithAgentID(context.Background(), agentID)
-	ctx = store.WithAgentType(ctx, store.AgentTypePredefined)
 	ctx = store.WithUserID(ctx, "user-1")
 	ctx = store.WithSelfEvolve(ctx, true)
 
@@ -331,7 +332,6 @@ func TestInterceptor_BlocksCapabilitiesWithoutSelfEvolve(t *testing.T) {
 	)
 
 	ctx := store.WithAgentID(context.Background(), agentID)
-	ctx = store.WithAgentType(ctx, store.AgentTypePredefined)
 	ctx = store.WithUserID(ctx, "user-1")
 	// self_evolve NOT set (defaults to false)
 
@@ -362,7 +362,6 @@ func TestInterceptor_AllowsCapabilitiesRead(t *testing.T) {
 	)
 
 	ctx := store.WithAgentID(context.Background(), agentID)
-	ctx = store.WithAgentType(ctx, store.AgentTypePredefined)
 	ctx = store.WithUserID(ctx, "user-1")
 	ctx = store.WithSelfEvolve(ctx, true)
 
@@ -389,7 +388,6 @@ func TestInterceptor_BlocksCapabilitiesReadWithoutSelfEvolve(t *testing.T) {
 	)
 
 	ctx := store.WithAgentID(context.Background(), agentID)
-	ctx = store.WithAgentType(ctx, store.AgentTypePredefined)
 	ctx = store.WithUserID(ctx, "user-1")
 
 	_, _, err := intc.ReadFile(ctx, "CAPABILITIES.md")

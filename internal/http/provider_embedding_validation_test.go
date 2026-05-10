@@ -32,7 +32,7 @@ func TestValidateProviderEmbeddingSettings(t *testing.T) {
 		{"dimensions omitted (0)", &store.LLMProviderData{
 			Settings: json.RawMessage(`{"embedding":{"enabled":true,"model":"m"}}`),
 		}, false},
-		{"dimensions 1536", embeddingProvider(1536), false},
+		{"dimensions 3072", embeddingProvider(3072), false},
 		{"dimensions 2048", embeddingProvider(2048), true},
 		{"dimensions 1024", embeddingProvider(1024), true},
 		{"dimensions negative", embeddingProvider(-1), true},

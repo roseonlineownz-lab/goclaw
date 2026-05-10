@@ -29,7 +29,7 @@ type permCacheEntry struct {
 	fetched time.Time
 }
 
-type fwCacheEntry struct {
+type writerCacheEntry struct {
 	rows    []store.ConfigPermission
 	fetched time.Time
 }
@@ -37,18 +37,39 @@ type fwCacheEntry struct {
 // SQLiteConfigPermissionStore implements store.ConfigPermissionStore backed by SQLite.
 // Includes a TTL cache for CheckPermission to avoid per-request DB queries.
 type SQLiteConfigPermissionStore struct {
-	db      *sql.DB
-	mu      sync.RWMutex
-	cache   map[string]permCacheEntry // key: "tenantID:agentID:userID"
-	fwMu    sync.RWMutex
-	fwCache map[string]fwCacheEntry // key: "tenantID:agentID:scope"
+	db        *sql.DB
+	mu        sync.RWMutex
+	cache     map[string]permCacheEntry   // key: "agentID:userID"
+	writerMu  sync.RWMutex
+	writerCac map[string]writerCacheEntry // key: "agentID:scope:configType"
+
+	grantHooksMu sync.RWMutex
+	grantHooks   []func(agentID uuid.UUID) // called after Grant/Revoke with the affected agentID
 }
 
 func NewSQLiteConfigPermissionStore(db *sql.DB) *SQLiteConfigPermissionStore {
 	return &SQLiteConfigPermissionStore{
-		db:      db,
-		cache:   make(map[string]permCacheEntry),
-		fwCache: make(map[string]fwCacheEntry),
+		db:        db,
+		cache:     make(map[string]permCacheEntry),
+		writerCac: make(map[string]writerCacheEntry),
+	}
+}
+
+// RegisterGrantHook registers a callback invoked after each Grant or Revoke with
+// the affected agentID. Used to invalidate derivative caches (e.g. glob cache)
+// without polling the 60s TTL.
+func (s *SQLiteConfigPermissionStore) RegisterGrantHook(fn func(agentID uuid.UUID)) {
+	s.grantHooksMu.Lock()
+	s.grantHooks = append(s.grantHooks, fn)
+	s.grantHooksMu.Unlock()
+}
+
+func (s *SQLiteConfigPermissionStore) runGrantHooks(agentID uuid.UUID) {
+	s.grantHooksMu.RLock()
+	hooks := s.grantHooks
+	s.grantHooksMu.RUnlock()
+	for _, fn := range hooks {
+		fn(agentID)
 	}
 }
 
@@ -58,17 +79,13 @@ func (s *SQLiteConfigPermissionStore) InvalidateCache() {
 	s.cache = make(map[string]permCacheEntry)
 	s.mu.Unlock()
 
-	s.fwMu.Lock()
-	s.fwCache = make(map[string]fwCacheEntry)
-	s.fwMu.Unlock()
+	s.writerMu.Lock()
+	s.writerCac = make(map[string]writerCacheEntry)
+	s.writerMu.Unlock()
 }
 
 func (s *SQLiteConfigPermissionStore) CheckPermission(ctx context.Context, agentID uuid.UUID, scope, configType, userID string) (bool, error) {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
-	cacheKey := tid.String() + ":" + agentID.String() + ":" + userID
+	cacheKey := agentID.String() + ":" + userID
 
 	s.mu.RLock()
 	if entry, ok := s.cache[cacheKey]; ok && time.Since(entry.fetched) < permCacheTTL {
@@ -77,14 +94,10 @@ func (s *SQLiteConfigPermissionStore) CheckPermission(ctx context.Context, agent
 	}
 	s.mu.RUnlock()
 
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return false, err
-	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT scope, config_type, permission, user_id FROM agent_config_permissions
-		 WHERE agent_id = ? AND (user_id = ? OR user_id = '*')`+tClause,
-		append([]any{agentID, userID}, tArgs...)...,
+		 WHERE agent_id = ? AND (user_id = ? OR user_id = '*')`,
+		agentID, userID,
 	)
 	if err != nil {
 		return false, err
@@ -115,40 +128,49 @@ func (s *SQLiteConfigPermissionStore) Grant(ctx context.Context, perm *store.Con
 	if meta == nil {
 		meta = json.RawMessage("{}")
 	}
+	denyGlobs := perm.DenyGlobs
+	if denyGlobs == nil {
+		denyGlobs = store.DefaultDenyGlobs
+	}
+	globsJSON, err := json.Marshal(denyGlobs)
+	if err != nil {
+		globsJSON = []byte(`[".env*","secrets/**",".git/**","*.key","*.pem"]`)
+	}
 	now := time.Now()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_config_permissions (agent_id, scope, config_type, user_id, permission, granted_by, metadata, created_at, updated_at, tenant_id)
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO agent_config_permissions
+		   (agent_id, scope, config_type, user_id, permission, granted_by, metadata, deny_globs, created_at, updated_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT (agent_id, scope, config_type, user_id) DO UPDATE SET
-		        permission = excluded.permission,
-		        granted_by = excluded.granted_by,
-		        metadata = excluded.metadata,
-		        updated_at = excluded.updated_at`,
-		perm.AgentID, perm.Scope, perm.ConfigType, perm.UserID, perm.Permission, perm.GrantedBy, meta, now, now, tenantIDForInsert(ctx),
+		        permission  = excluded.permission,
+		        granted_by  = excluded.granted_by,
+		        metadata    = excluded.metadata,
+		        deny_globs  = excluded.deny_globs,
+		        updated_at  = excluded.updated_at`,
+		perm.AgentID, perm.Scope, perm.ConfigType, perm.UserID, perm.Permission, perm.GrantedBy, meta,
+		string(globsJSON), now, now,
 	)
 	if err == nil {
 		s.InvalidateCache()
+		s.runGrantHooks(perm.AgentID)
 	}
 	return err
 }
 
 func (s *SQLiteConfigPermissionStore) Revoke(ctx context.Context, agentID uuid.UUID, scope, configType, userID string) error {
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx,
-		`DELETE FROM agent_config_permissions WHERE agent_id = ? AND scope = ? AND config_type = ? AND user_id = ?`+tClause,
-		append([]any{agentID, scope, configType, userID}, tArgs...)...,
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM agent_config_permissions WHERE agent_id = ? AND scope = ? AND config_type = ? AND user_id = ?`,
+		agentID, scope, configType, userID,
 	)
 	if err == nil {
 		s.InvalidateCache()
+		s.runGrantHooks(agentID)
 	}
 	return err
 }
 
 func (s *SQLiteConfigPermissionStore) List(ctx context.Context, agentID uuid.UUID, configType, scope string) ([]store.ConfigPermission, error) {
-	query := `SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, created_at, updated_at
+	query := `SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, deny_globs, created_at, updated_at
 	          FROM agent_config_permissions WHERE agent_id = ?`
 	args := []any{agentID}
 
@@ -161,14 +183,6 @@ func (s *SQLiteConfigPermissionStore) List(ctx context.Context, agentID uuid.UUI
 		args = append(args, scope)
 	}
 
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if tClause != "" {
-		query += tClause
-		args = append(args, tArgs...)
-	}
 	query += " ORDER BY created_at"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -180,30 +194,25 @@ func (s *SQLiteConfigPermissionStore) List(ctx context.Context, agentID uuid.UUI
 	return scanConfigPermissions(rows)
 }
 
-func (s *SQLiteConfigPermissionStore) ListFileWriters(ctx context.Context, agentID uuid.UUID, scope string) ([]store.ConfigPermission, error) {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
-	cacheKey := tid.String() + ":" + agentID.String() + ":" + scope
+// ListWriters returns cached allow permissions for a given agentID+scope+configType.
+// Hot-path: called during system prompt injection for every group message.
+// Post-split semantic: callers pass ConfigTypeEditFile for the "writers" surface.
+func (s *SQLiteConfigPermissionStore) ListWriters(ctx context.Context, agentID uuid.UUID, scope string, configType string) ([]store.ConfigPermission, error) {
+	cacheKey := agentID.String() + ":" + scope + ":" + configType
 
-	s.fwMu.RLock()
-	if entry, ok := s.fwCache[cacheKey]; ok && time.Since(entry.fetched) < permCacheTTL {
-		s.fwMu.RUnlock()
+	s.writerMu.RLock()
+	if entry, ok := s.writerCac[cacheKey]; ok && time.Since(entry.fetched) < permCacheTTL {
+		s.writerMu.RUnlock()
 		return entry.rows, nil
 	}
-	s.fwMu.RUnlock()
+	s.writerMu.RUnlock()
 
-	tClause, tArgs, err := scopeClause(ctx)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, created_at, updated_at
+		`SELECT id, agent_id, scope, config_type, user_id, permission, granted_by, metadata, deny_globs, created_at, updated_at
 		 FROM agent_config_permissions
-		 WHERE agent_id = ? AND config_type = 'file_writer' AND scope = ? AND permission = 'allow'`+tClause+`
+		 WHERE agent_id = ? AND config_type = ? AND scope = ? AND permission = 'allow'
 		 ORDER BY created_at`,
-		append([]any{agentID, scope}, tArgs...)...,
+		agentID, configType, scope,
 	)
 	if err != nil {
 		return nil, err
@@ -215,11 +224,50 @@ func (s *SQLiteConfigPermissionStore) ListFileWriters(ctx context.Context, agent
 		return nil, err
 	}
 
-	s.fwMu.Lock()
-	s.fwCache[cacheKey] = fwCacheEntry{rows: perms, fetched: time.Now()}
-	s.fwMu.Unlock()
+	s.writerMu.Lock()
+	s.writerCac[cacheKey] = writerCacheEntry{rows: perms, fetched: time.Now()}
+	s.writerMu.Unlock()
 
 	return perms, nil
+}
+
+// GetDenyGlobs returns the deduplicated union of deny_globs across all matching grant rows.
+// Returns the baseline default list when no row matches.
+func (s *SQLiteConfigPermissionStore) GetDenyGlobs(ctx context.Context, agentID uuid.UUID, scope, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT deny_globs FROM agent_config_permissions
+		 WHERE agent_id = ? AND (user_id = ? OR user_id = '*') AND scope = ? AND permission = 'allow'`,
+		agentID, userID, scope,
+	)
+	if err != nil {
+		return store.DefaultDenyGlobs, nil // fail-open: return baseline
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	for _, g := range store.DefaultDenyGlobs {
+		seen[g] = struct{}{}
+	}
+	result := make([]string, len(store.DefaultDenyGlobs))
+	copy(result, store.DefaultDenyGlobs)
+
+	for rows.Next() {
+		var globsJSON string
+		if err := rows.Scan(&globsJSON); err != nil {
+			continue
+		}
+		var globs []string
+		if err := json.Unmarshal([]byte(globsJSON), &globs); err != nil {
+			continue
+		}
+		for _, g := range globs {
+			if _, dup := seen[g]; !dup {
+				seen[g] = struct{}{}
+				result = append(result, g)
+			}
+		}
+	}
+	return result, nil
 }
 
 func scanConfigPermissions(rows *sql.Rows) ([]store.ConfigPermission, error) {
@@ -227,15 +275,19 @@ func scanConfigPermissions(rows *sql.Rows) ([]store.ConfigPermission, error) {
 	for rows.Next() {
 		var p store.ConfigPermission
 		var metadata []byte
+		var globsJSON string
 		createdAt, updatedAt := scanTimePair()
 		if err := rows.Scan(
-			&p.ID, &p.AgentID, &p.Scope, &p.ConfigType, &p.UserID, &p.Permission, &p.GrantedBy, &metadata, createdAt, updatedAt,
+			&p.ID, &p.AgentID, &p.Scope, &p.ConfigType, &p.UserID, &p.Permission, &p.GrantedBy, &metadata, &globsJSON, createdAt, updatedAt,
 		); err != nil {
 			return nil, err
 		}
 		p.CreatedAt = createdAt.Time
 		p.UpdatedAt = updatedAt.Time
 		p.Metadata = metadata
+		if globsJSON != "" {
+			_ = json.Unmarshal([]byte(globsJSON), &p.DenyGlobs)
+		}
 		perms = append(perms, p)
 	}
 	if err := rows.Err(); err != nil {

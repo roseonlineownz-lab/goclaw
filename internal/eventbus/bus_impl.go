@@ -63,6 +63,9 @@ func (b *busImpl) Publish(event DomainEvent) {
 	if b.draining.Load() {
 		return
 	}
+	// Publish-time observers: warn on non-UUID AgentID/UserID drift without blocking.
+	validateAgentID(event)
+	validateUserID(event)
 	select {
 	case b.queue <- event:
 	default:

@@ -26,16 +26,22 @@ func (s *PGSkillStore) SearchByEmbedding(ctx context.Context, embedding []float3
 	if err != nil {
 		return nil, err
 	}
-	tenantCond := buildSkillEmbeddingTenantCond(tc)
+	// Builtins are visible regardless of project scope; non-builtins must match scope.
+	// When no scope is active (single-tenant, no project filter), condition is empty.
+	scopeCond := ""
+	if tc != "" {
+		expr := strings.TrimPrefix(tc, " AND ")
+		scopeCond = fmt.Sprintf(" AND (source = 'builtin' OR (%s))", expr)
+	}
 	orderN := nextParam
 	limitN := orderN + 1
-	q := fmt.Sprintf(`SELECT name, slug, COALESCE(description, ''), version, file_path,
-			1 - (embedding <=> $1::vector) AS score
+	q := fmt.Sprintf(`SELECT name, slug, COALESCE(description, '') AS description, version, file_path,
+			1 - (embedding <=> $1::halfvec) AS score
 		FROM skills
 		WHERE status = 'active' AND enabled = true AND embedding IS NOT NULL
 		  AND visibility != 'private'%s
-		ORDER BY embedding <=> $%d::vector
-		LIMIT $%d`, tenantCond, orderN, limitN)
+		ORDER BY embedding <=> $%d::halfvec
+		LIMIT $%d`, scopeCond, orderN, limitN)
 
 	args := append([]any{vecStr}, tcArgs...)
 	args = append(args, vecStr, limit)
@@ -62,15 +68,6 @@ func (s *PGSkillStore) SearchByEmbedding(ctx context.Context, embedding []float3
 		results = append(results, r)
 	}
 	return results, nil
-}
-
-
-func buildSkillEmbeddingTenantCond(scope string) string {
-	if scope == "" {
-		return ""
-	}
-	tenantExpr := strings.TrimPrefix(scope, " AND ")
-	return fmt.Sprintf(" AND (is_system = true OR (%s))", tenantExpr)
 }
 
 // BackfillSkillEmbeddings generates embeddings for all active skills that don't have one yet.
@@ -107,7 +104,7 @@ func (s *PGSkillStore) BackfillSkillEmbeddings(ctx context.Context) (int, error)
 		}
 		vecStr := vectorToString(embeddings[0])
 		_, err = s.db.ExecContext(ctx,
-			`UPDATE skills SET embedding = $1::vector WHERE id = $2`, vecStr, sk.ID)
+			`UPDATE skills SET embedding = $1::halfvec WHERE id = $2`, vecStr, sk.ID)
 		if err != nil {
 			slog.Warn("skill embedding update failed", "skill", sk.Name, "error", err)
 			continue
@@ -138,7 +135,7 @@ func (s *PGSkillStore) generateEmbedding(ctx context.Context, slug, name, descri
 	}
 	vecStr := vectorToString(embeddings[0])
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE skills SET embedding = $1::vector WHERE slug = $2 AND status = 'active'`, vecStr, slug)
+		`UPDATE skills SET embedding = $1::halfvec WHERE slug = $2 AND status = 'active'`, vecStr, slug)
 	if err != nil {
 		slog.Warn("skill embedding store failed", "skill", name, "error", err)
 	}

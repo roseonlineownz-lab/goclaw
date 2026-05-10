@@ -6,10 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
-	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
@@ -31,9 +28,6 @@ func (m *Manager) HandleAgentEvent(eventType, runID string, payload any) {
 	}
 
 	ctx := context.Background()
-	if ta, ok := ch.(interface{ TenantID() uuid.UUID }); ok {
-		ctx = store.WithTenantID(ctx, ta.TenantID())
-	}
 
 	// Forward to StreamingChannel (only when streaming is enabled for this run).
 	// Without this gate, channels that implement StreamingChannel but have streaming
@@ -230,8 +224,26 @@ func (m *Manager) HandleAgentEvent(eventType, runID string, payload any) {
 				}
 				sc.FinalizeStream(ctx, rc.ChatID, currentStream)
 			}
-		case protocol.AgentEventRunFailed, protocol.AgentEventRunCancelled:
-			// Clean up streaming state on failure or cancellation
+		case protocol.AgentEventRunFailed:
+			// Clean up streaming state on failure
+			rc.mu.Lock()
+			currentStream := rc.stream
+			rc.stream = nil
+			rc.mu.Unlock()
+			if currentStream != nil {
+				_ = currentStream.Stop(ctx)
+			}
+			// Issue 958: Send user-friendly error message instead of silent "..."
+			errStr := extractPayloadString(payload, "error")
+			if friendlyMsg := FormatAgentError(errStr); friendlyMsg != "" {
+				m.bus.PublishOutbound(bus.OutboundMessage{
+					Channel: rc.ChannelName,
+					ChatID:  rc.ChatID,
+					Content: friendlyMsg,
+				})
+			}
+		case protocol.AgentEventRunCancelled:
+			// Clean up streaming state on cancellation
 			rc.mu.Lock()
 			currentStream := rc.stream
 			rc.stream = nil
@@ -263,10 +275,12 @@ func (m *Manager) HandleAgentEvent(eventType, runID string, payload any) {
 
 		// Build outbound metadata: copy routing fields but strip reply_to_message_id
 		// (block replies are standalone) and placeholder_key (reserve for final message).
+		// feishu_reply_target_id MUST be preserved so intermediate block replies for
+		// threaded Lark messages also land inside the same thread.
 		var outMeta map[string]string
 		if rc.Metadata != nil {
 			outMeta = make(map[string]string)
-			for _, k := range []string{"message_thread_id", "local_key", "group_id"} {
+			for _, k := range routingMetaKeys {
 				if v := rc.Metadata[k]; v != "" {
 					outMeta[k] = v
 				}
@@ -344,17 +358,6 @@ func extractPayloadString(payload any, key string) string {
 	return ""
 }
 
-// copyRoutingMeta copies channel routing metadata (thread_id, local_key, group_id)
-// from RunContext.Metadata into a new map suitable for outbound messages.
-func copyRoutingMeta(src map[string]string) map[string]string {
-	out := make(map[string]string)
-	for _, k := range []string{"message_thread_id", "local_key", "group_id"} {
-		if v := src[k]; v != "" {
-			out[k] = v
-		}
-	}
-	return out
-}
 
 // toolStatusMap maps builtin tool names to user-friendly status messages.
 var toolStatusMap = map[string]string{

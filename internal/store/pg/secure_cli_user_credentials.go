@@ -14,17 +14,13 @@ import (
 )
 
 func (s *PGSecureCLIStore) GetUserCredentials(ctx context.Context, binaryID uuid.UUID, userID string) (*store.SecureCLIUserCredential, error) {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
 	var uc store.SecureCLIUserCredential
 	var env []byte
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, binary_id, user_id, encrypted_env, metadata, created_at, updated_at
 		 FROM secure_cli_user_credentials
-		 WHERE binary_id = $1 AND user_id = $2 AND tenant_id = $3`,
-		binaryID, userID, tid,
+		 WHERE binary_id = $1 AND user_id = $2`,
+		binaryID, userID,
 	).Scan(&uc.ID, &uc.BinaryID, &uc.UserID, &env, &uc.Metadata, &uc.CreatedAt, &uc.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -32,7 +28,7 @@ func (s *PGSecureCLIStore) GetUserCredentials(ctx context.Context, binaryID uuid
 	if err != nil {
 		return nil, err
 	}
-	// Decrypt env
+	// Decrypt env.
 	if len(env) > 0 && s.encKey != "" {
 		if decrypted, err := crypto.Decrypt(string(env), s.encKey); err == nil {
 			uc.EncryptedEnv = []byte(decrypted)
@@ -44,11 +40,7 @@ func (s *PGSecureCLIStore) GetUserCredentials(ctx context.Context, binaryID uuid
 }
 
 func (s *PGSecureCLIStore) SetUserCredentials(ctx context.Context, binaryID uuid.UUID, userID string, encryptedEnv []byte) error {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
-	// Encrypt env
+	// Encrypt env.
 	var envBytes []byte
 	if len(encryptedEnv) > 0 && s.encKey != "" {
 		encrypted, err := crypto.Encrypt(string(encryptedEnv), s.encKey)
@@ -62,38 +54,30 @@ func (s *PGSecureCLIStore) SetUserCredentials(ctx context.Context, binaryID uuid
 
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO secure_cli_user_credentials (binary_id, user_id, encrypted_env, metadata, tenant_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, '{}', $4, $5, $5)
-		 ON CONFLICT (binary_id, user_id, tenant_id) DO UPDATE SET
+		`INSERT INTO secure_cli_user_credentials (binary_id, user_id, encrypted_env, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, '{}', $4, $4)
+		 ON CONFLICT (binary_id, user_id) DO UPDATE SET
 		   encrypted_env = EXCLUDED.encrypted_env,
 		   updated_at = EXCLUDED.updated_at`,
-		binaryID, userID, envBytes, tid, now,
+		binaryID, userID, envBytes, now,
 	)
 	return err
 }
 
 func (s *PGSecureCLIStore) DeleteUserCredentials(ctx context.Context, binaryID uuid.UUID, userID string) error {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM secure_cli_user_credentials WHERE binary_id = $1 AND user_id = $2 AND tenant_id = $3`,
-		binaryID, userID, tid,
+		`DELETE FROM secure_cli_user_credentials WHERE binary_id = $1 AND user_id = $2`,
+		binaryID, userID,
 	)
 	return err
 }
 
 func (s *PGSecureCLIStore) ListUserCredentials(ctx context.Context, binaryID uuid.UUID) ([]store.SecureCLIUserCredential, error) {
-	tid := store.TenantIDFromContext(ctx)
-	if tid == uuid.Nil {
-		tid = store.MasterTenantID
-	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, binary_id, user_id, encrypted_env, metadata, created_at, updated_at
 		 FROM secure_cli_user_credentials
-		 WHERE binary_id = $1 AND tenant_id = $2
-		 ORDER BY created_at`, binaryID, tid)
+		 WHERE binary_id = $1
+		 ORDER BY created_at`, binaryID)
 	if err != nil {
 		return nil, err
 	}

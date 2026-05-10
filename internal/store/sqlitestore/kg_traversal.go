@@ -20,8 +20,6 @@ func (s *SQLiteKnowledgeGraphStore) Traverse(ctx context.Context, agentID, userI
 		maxDepth = 5
 	}
 
-	sc, scArgs, _ := scopeClause(ctx)
-
 	var q string
 	var args []any
 
@@ -38,7 +36,7 @@ func (s *SQLiteKnowledgeGraphStore) Traverse(ctx context.Context, agentID, userI
 				',' || e.id || ',' AS path,
 				'' AS via
 			FROM kg_entities e
-			WHERE e.id = ? AND e.agent_id = ? AND e.valid_until IS NULL` + sc + `
+			WHERE e.id = ? AND e.agent_id = ? AND e.valid_until IS NULL
 
 			UNION ALL
 
@@ -68,8 +66,7 @@ func (s *SQLiteKnowledgeGraphStore) Traverse(ctx context.Context, agentID, userI
 		FROM paths WHERE depth > 1
 		LIMIT 500`
 
-		args = append([]any{startEntityID, agentID}, scArgs...)
-		args = append(args, agentID, agentID, maxDepth)
+		args = []any{startEntityID, agentID, agentID, agentID, maxDepth}
 	} else {
 		// User-scoped: filter by agent_id + user_id
 		q = `
@@ -83,7 +80,7 @@ func (s *SQLiteKnowledgeGraphStore) Traverse(ctx context.Context, agentID, userI
 				',' || e.id || ',' AS path,
 				'' AS via
 			FROM kg_entities e
-			WHERE e.id = ? AND e.agent_id = ? AND e.user_id = ? AND e.valid_until IS NULL` + sc + `
+			WHERE e.id = ? AND e.agent_id = ? AND e.user_id = ? AND e.valid_until IS NULL
 
 			UNION ALL
 
@@ -113,8 +110,7 @@ func (s *SQLiteKnowledgeGraphStore) Traverse(ctx context.Context, agentID, userI
 		FROM paths WHERE depth > 1
 		LIMIT 500`
 
-		args = append([]any{startEntityID, agentID, userID}, scArgs...)
-		args = append(args, userID, userID, maxDepth)
+		args = []any{startEntityID, agentID, userID, userID, userID, maxDepth}
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)

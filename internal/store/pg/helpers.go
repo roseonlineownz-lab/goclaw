@@ -122,38 +122,8 @@ func execMapUpdate(ctx context.Context, db *sql.DB, table string, id uuid.UUID, 
 	return err
 }
 
-// execMapUpdateWhereTenant is like execMapUpdate but appends AND tenant_id = $N filter.
-func execMapUpdateWhereTenant(ctx context.Context, db *sql.DB, table string, updates map[string]any, id, tenantID uuid.UUID) error {
-	query, args, err := base.BuildMapUpdateWhereTenant(pgDialect, table, updates, id, tenantID)
-	if err != nil {
-		slog.Warn("security.invalid_column_name", "table", table, "error", err)
-		return err
-	}
-	if query == "" {
-		return nil
-	}
-	_, err = db.ExecContext(ctx, query, args...)
-	return err
-}
-
 // tableHasUpdatedAt returns true if the table has an updated_at column.
 var tableHasUpdatedAt = base.TableHasUpdatedAt
-
-// --- Tenant filter helpers (delegated to base/) ---
-
-// tenantIDForInsert returns the tenant UUID for INSERT operations.
-func tenantIDForInsert(ctx context.Context) uuid.UUID {
-	return base.TenantIDForInsert(store.TenantIDFromContext(ctx), store.MasterTenantID)
-}
-
-// requireTenantID returns the tenant UUID or an error if missing (fail-closed).
-func requireTenantID(ctx context.Context) (uuid.UUID, error) {
-	tid := store.TenantIDFromContext(ctx)
-	if err := base.RequireTenantID(tid); err != nil {
-		return uuid.Nil, err
-	}
-	return tid, nil
-}
 
 // --- Scope-based query helpers (thin wrappers around base/) ---
 
@@ -163,7 +133,7 @@ func scopeClause(ctx context.Context, startParam int) (clause string, args []any
 	if err != nil {
 		return "", nil, startParam, err
 	}
-	bScope := base.QueryScope{TenantID: scope.TenantID, ProjectID: scope.ProjectID}
+	bScope := base.QueryScope{ProjectID: scope.ProjectID}
 	clause, args, nextParam = base.BuildScopeClause(pgDialect, bScope, startParam)
 	return clause, args, nextParam, nil
 }
@@ -175,7 +145,7 @@ func scopeClauseAlias(ctx context.Context, startParam int, alias string) (clause
 	if err != nil {
 		return "", nil, startParam, err
 	}
-	bScope := base.QueryScope{TenantID: scope.TenantID, ProjectID: scope.ProjectID}
+	bScope := base.QueryScope{ProjectID: scope.ProjectID}
 	clause, args, nextParam = base.BuildScopeClauseAlias(pgDialect, bScope, startParam, alias)
 	return clause, args, nextParam, nil
 }

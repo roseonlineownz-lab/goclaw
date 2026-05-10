@@ -33,9 +33,9 @@ func (s *SQLiteKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentI
 	defer tx.Rollback() //nolint:errcheck
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tid := tenantIDForInsert(ctx).String()
 
 	// Upsert entities; build external_id → DB ID lookup for resolving relation endpoints.
+	// Team/contact/project scope is inherited from the caller (semantic worker threads from episodic row).
 	extIDtoDBID := make(map[string]string, len(entities))
 	for i := range entities {
 		e := &entities[i]
@@ -51,21 +51,23 @@ func (s *SQLiteKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentI
 		var actualID string
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO kg_entities
-				(id, agent_id, user_id, external_id, name, entity_type, description,
-				 properties, source_id, confidence, tenant_id, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(agent_id, user_id, external_id) DO UPDATE SET
+				(id, agent_id, user_id, team_id, contact_id, project_id,
+				 external_id, name, entity_type, description,
+				 properties, source_id, confidence, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(agent_id, COALESCE(user_id,''), external_id) DO UPDATE SET
 				name        = excluded.name,
 				entity_type = excluded.entity_type,
 				description = excluded.description,
 				properties  = excluded.properties,
 				source_id   = excluded.source_id,
 				confidence  = excluded.confidence,
-				tenant_id   = excluded.tenant_id,
 				updated_at  = excluded.updated_at
 			RETURNING id`,
-			newID, agentID, userID, e.ExternalID, e.Name, e.EntityType,
-			e.Description, string(props), e.SourceID, e.Confidence, tid, now, now,
+			newID, agentID, nilStr(userID),
+			nilStr(e.TeamID), nilStr(e.ContactID), nilStr(e.ProjectID),
+			e.ExternalID, e.Name, e.EntityType,
+			e.Description, string(props), e.SourceID, e.Confidence, now, now,
 		).Scan(&actualID); err != nil {
 			return nil, fmt.Errorf("ingest entity %q: %w", e.ExternalID, err)
 		}
@@ -85,7 +87,7 @@ func (s *SQLiteKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentI
 		origSrc, origTgt := r.SourceEntityID, r.TargetEntityID
 		r.SourceEntityID = srcID
 		r.TargetEntityID = tgtID
-		if err := upsertRelationTx(ctx, tx, agentID, userID, r, tid, now); err != nil {
+		if err := upsertRelationTx(ctx, tx, agentID, userID, r, now); err != nil {
 			return nil, fmt.Errorf("ingest relation %s->%s: %w", origSrc, origTgt, err)
 		}
 	}
@@ -104,12 +106,10 @@ func (s *SQLiteKnowledgeGraphStore) IngestExtraction(ctx context.Context, agentI
 // PruneByConfidence deletes entities with confidence below minConfidence.
 func (s *SQLiteKnowledgeGraphStore) PruneByConfidence(ctx context.Context, agentID, userID string, minConfidence float64) (int, error) {
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
-	sc, scArgs, _ := scopeClause(ctx)
 	args := append([]any{agentID, minConfidence}, userArgs...)
-	args = append(args, scArgs...)
 
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM kg_entities WHERE agent_id = ? AND confidence < ?`+userClause+sc,
+		`DELETE FROM kg_entities WHERE agent_id = ? AND confidence < ?`+userClause,
 		args...,
 	)
 	if err != nil {
@@ -133,16 +133,14 @@ func (s *SQLiteKnowledgeGraphStore) DedupAfterExtraction(ctx context.Context, ag
 	}
 
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
-	sc, scArgs, _ := scopeClause(ctx)
 	poolArgs := append([]any{agentID}, userArgs...)
-	poolArgs = append(poolArgs, scArgs...)
 	poolArgs = append(poolArgs, kgDedupEntityCap+1)
 
 	poolRows, err := s.db.QueryContext(ctx,
 		`SELECT id, agent_id, user_id, external_id, name, entity_type, description,
 		        properties, source_id, confidence, created_at, updated_at
 		 FROM kg_entities
-		 WHERE agent_id = ? AND valid_until IS NULL`+userClause+sc+`
+		 WHERE agent_id = ? AND valid_until IS NULL`+userClause+`
 		 ORDER BY updated_at DESC LIMIT ?`,
 		poolArgs...,
 	)
@@ -220,13 +218,11 @@ func (s *SQLiteKnowledgeGraphStore) ScanDuplicates(ctx context.Context, agentID,
 	}
 
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
-	sc, scArgs, _ := scopeClause(ctx)
 	typeArgs := append([]any{agentID}, userArgs...)
-	typeArgs = append(typeArgs, scArgs...)
 
 	typeRows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT entity_type FROM kg_entities
-		 WHERE agent_id = ? AND valid_until IS NULL`+userClause+sc,
+		 WHERE agent_id = ? AND valid_until IS NULL`+userClause,
 		typeArgs...,
 	)
 	if err != nil {
@@ -244,14 +240,13 @@ func (s *SQLiteKnowledgeGraphStore) ScanDuplicates(ctx context.Context, agentID,
 	found := 0
 	for _, entityType := range entityTypes {
 		typeEntityArgs := append([]any{agentID, entityType}, userArgs...)
-		typeEntityArgs = append(typeEntityArgs, scArgs...)
 		typeEntityArgs = append(typeEntityArgs, kgDedupEntityCap+1)
 
 		eRows, err := s.db.QueryContext(ctx,
 			`SELECT id, agent_id, user_id, external_id, name, entity_type, description,
 			        properties, source_id, confidence, created_at, updated_at
 			 FROM kg_entities
-			 WHERE agent_id = ? AND entity_type = ? AND valid_until IS NULL`+userClause+sc+`
+			 WHERE agent_id = ? AND entity_type = ? AND valid_until IS NULL`+userClause+`
 			 ORDER BY updated_at DESC LIMIT ?`,
 			typeEntityArgs...,
 		)
@@ -297,17 +292,12 @@ func (s *SQLiteKnowledgeGraphStore) ListDedupCandidates(ctx context.Context, age
 	}
 
 	userClause, userArgs := kgUserClauseFor(ctx, userID)
-	sc, scArgs, _ := scopeClause(ctx)
 
 	where := "c.agent_id = ? AND c.status = 'pending'"
 	args := []any{agentID}
 	if userClause != "" {
 		where += strings.ReplaceAll(userClause, " user_id", " c.user_id")
 		args = append(args, userArgs...)
-	}
-	if sc != "" {
-		where += strings.ReplaceAll(sc, " tenant_id", " c.tenant_id")
-		args = append(args, scArgs...)
 	}
 	args = append(args, limit)
 
@@ -491,14 +481,13 @@ func (s *SQLiteKnowledgeGraphStore) insertDedupCandidate(ctx context.Context, ag
 		entityAID, entityBID = entityBID, entityAID
 	}
 	id := uuid.Must(uuid.NewV7()).String()
-	tid := tenantIDForInsert(ctx).String()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO kg_dedup_candidates
-			(id, tenant_id, agent_id, user_id, entity_a_id, entity_b_id, similarity, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			(id, agent_id, user_id, entity_a_id, entity_b_id, similarity, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(entity_a_id, entity_b_id) DO NOTHING`,
-		id, tid, agentID, userID, entityAID, entityBID, similarity, now,
+		id, agentID, userID, entityAID, entityBID, similarity, now,
 	)
 	return err
 }

@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
+	"github.com/nextlevelbuilder/goclaw/internal/bgalert"
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
-	"github.com/nextlevelbuilder/goclaw/internal/cache"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/consolidation"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
@@ -32,6 +32,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/edition"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway/methods"
+	"github.com/nextlevelbuilder/goclaw/internal/hooks"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/media"
@@ -116,7 +117,7 @@ func runGateway() {
 	modelReg.RegisterResolver("openai", &providers.OpenAIForwardCompat{})
 
 	// Create provider registry
-	providerRegistry := providers.NewRegistry(store.TenantIDFromContext)
+	providerRegistry := providers.NewRegistry()
 	registerProviders(providerRegistry, cfg, modelReg)
 
 	// Resolve workspace (must be absolute for system prompt + file tool path resolution)
@@ -132,7 +133,7 @@ func runGateway() {
 		tools.DetectServerIPs(context.Background())
 	}
 
-	toolsReg, execApprovalMgr, mcpMgr, sandboxMgr, browserMgr, webFetchTool, ttsTool, permPE, toolPE, dataDir, agentCfg := setupToolRegistry(cfg, workspace, providerRegistry)
+	toolsReg, execApprovalMgr, mcpMgr, sandboxMgr, browserMgr, webFetchTool, ttsTool, audioMgr, permPE, toolPE, dataDir, agentCfg := setupToolRegistry(cfg, workspace, providerRegistry)
 	if browserMgr != nil {
 		defer browserMgr.Close()
 	}
@@ -141,6 +142,17 @@ func runGateway() {
 	}
 
 	pgStores, traceCollector, snapshotWorker := setupStoresAndTracing(cfg, dataDir, msgBus)
+
+	// Recover from crashes: flip ghost 'summoning' rows to 'summon_failed'.
+	// Summon goroutines don't survive process restart; stale DB rows would trap the UI.
+	if pgStores.Agents != nil {
+		if n, err := pgStores.Agents.ResetStuckSummoning(context.Background()); err != nil {
+			slog.Warn("agents.reset_stuck_summoning_failed", "err", err)
+		} else if n > 0 {
+			slog.Info("agents.reset_stuck_summoning", "count", n)
+		}
+	}
+
 	if traceCollector != nil {
 		defer traceCollector.Stop()
 		// OTel OTLP export: compiled via build tags. Build with 'go build -tags otel' to enable.
@@ -169,11 +181,11 @@ func runGateway() {
 		slog.Warn("sessions.dm_scope config is deprecated and ignored — fixed to per-channel-peer", "configured", cfg.Sessions.DmScope)
 	}
 
-	seedSystemConfigs(pgStores.SystemConfigs, pgStores.Tenants, cfg)
+	seedSystemConfigs(pgStores.SystemConfigs, cfg)
 	// Read back system_configs from DB and overlay onto in-memory config.
 	if pgStores.SystemConfigs != nil {
 		if sysConfigs, err := pgStores.SystemConfigs.List(
-			store.WithTenantID(context.Background(), store.MasterTenantID),
+			context.Background(),
 		); err == nil && len(sysConfigs) > 0 {
 			cfg.ApplySystemConfigs(sysConfigs)
 			slog.Info("system_configs applied to in-memory config", "keys", len(sysConfigs))
@@ -198,9 +210,10 @@ func runGateway() {
 				KGStore:       pgStores.KnowledgeGraph,
 				SessionStore:  pgStores.Sessions,
 				EventBus:      domainBus,
-				Provider:      bgProvider,
-				Model:         bgModel,
+				SystemConfigs: pgStores.SystemConfigs,
+				Registry:      providerRegistry,
 				Extractor:     kgExtractor,
+				AlertDeps:     bgalert.AlertDeps{SystemConfigs: pgStores.SystemConfigs, MsgBus: msgBus},
 				AgentStore:    pgStores.Agents,
 			})
 			defer cleanupConsolidation()
@@ -211,18 +224,23 @@ func runGateway() {
 	}
 
 	// V3: Wire vault enrichment worker (async summary + embedding + auto-linking).
+	// Provider is resolved per-tenant at runtime — no static provider needed.
 	var enrichProgress *vault.EnrichProgress
-	if pgStores.Vault != nil && bgProvider != nil {
-		cleanupVaultEnrich, ep := vault.RegisterEnrichWorker(vault.EnrichWorkerDeps{
-			VaultStore: pgStores.Vault,
-			Provider:   bgProvider,
-			Model:      bgModel,
-			EventBus:   domainBus,
-			MsgBus:     msgBus,
+	var enrichWorker *vault.EnrichWorker
+	if pgStores.Vault != nil && providerRegistry != nil {
+		cleanupVaultEnrich, ep, ew := vault.RegisterEnrichWorker(vault.EnrichWorkerDeps{
+			VaultStore:    pgStores.Vault,
+			SystemConfigs: pgStores.SystemConfigs,
+			Registry:      providerRegistry,
+			EventBus:      domainBus,
+			MsgBus:        msgBus,
+			TeamStore:     pgStores.Teams,
+			AlertDeps:     bgalert.AlertDeps{SystemConfigs: pgStores.SystemConfigs, MsgBus: msgBus},
 		})
 		enrichProgress = ep
+		enrichWorker = ew
 		defer cleanupVaultEnrich()
-		slog.Info("vault enrichment worker registered", "provider", bgProvider.Name(), "model", bgModel)
+		slog.Info("vault enrichment worker registered (per-tenant provider resolution)")
 	}
 
 	loadBootstrapFiles(pgStores, workspace, agentCfg)
@@ -234,8 +252,8 @@ func runGateway() {
 		slog.Info("bootstrap: capabilities backfill complete", "agents", count)
 	}
 
-	// Subagent system
-	subagentMgr := setupSubagents(providerRegistry, cfg, msgBus, toolsReg, workspace, sandboxMgr)
+	// Subagent system (secureCLI store wired so subagent ExecTools enforce the gate)
+	subagentMgr := setupSubagents(providerRegistry, cfg, msgBus, toolsReg, workspace, sandboxMgr, pgStores.SecureCLI)
 	if subagentMgr != nil {
 		// Wire announce queue for batched subagent result delivery (matching TS debounce pattern).
 		announceQueue := tools.NewAnnounceQueue(1000, 20, makeDelegateAnnounceCallback(subagentMgr, msgBus))
@@ -256,6 +274,9 @@ func runGateway() {
 
 	// Create all agents — resolved lazily from database by the managed resolver.
 	agentRouter := agent.NewRouter()
+	if traceCollector != nil {
+		agentRouter.SetTraceCollector(traceCollector)
+	}
 	slog.Info("agents will be resolved lazily from database")
 
 	// Create gateway server and wire enforcement
@@ -295,10 +316,12 @@ func runGateway() {
 		agentRouter:      agentRouter,
 		toolsReg:         toolsReg,
 		skillsLoader:     skillsLoader,
-		enrichProgress:   enrichProgress,
+		enrichProgress: enrichProgress,
+		enrichWorker:   enrichWorker,
 		workspace:        workspace,
 		dataDir:          dataDir,
 		domainBus:        domainBus,
+		audioMgr:         audioMgr,
 	}
 
 	gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
@@ -309,7 +332,7 @@ func runGateway() {
 	httpapi.InitGatewayToken(cfg.Gateway.Token)
 	exportTokenStore := httpapi.InitExportTokenStore()
 	defer exportTokenStore.Stop()
-	agentsH, skillsH, tracesH, mcpH, channelInstancesH, providersH, builtinToolsH, pendingMessagesH, teamEventsH, secureCLIH, secureCLIGrantH, mcpUserCredsH := wireHTTP(pgStores, cfg.Agents.Defaults.Workspace, dataDir, bundledSkillsDir, msgBus, toolsReg, providerRegistry, permPE.IsOwner, gatewayAddr, mcpToolLister)
+	agentsH, skillsH, tracesH, mcpH, channelInstancesH, providersH, builtinToolsH, pendingMessagesH, teamEventsH, secureCLIH, secureCLIGrantH, mcpUserCredsH, curatorRunsH := wireHTTP(pgStores, cfg.Agents.Defaults.Workspace, dataDir, bundledSkillsDir, msgBus, toolsReg, providerRegistry, modelReg, permPE.IsOwner, gatewayAddr, mcpToolLister)
 
 	// Wire dependencies for system prompt preview parity.
 	if agentsH != nil {
@@ -342,6 +365,7 @@ func runGateway() {
 			secureCLI:        secureCLIH,
 			secureCLIGrant:   secureCLIGrantH,
 			mcpUserCreds:     mcpUserCredsH,
+			curatorRuns:      curatorRunsH,
 		},
 		wakeH,
 		mcpPool,
@@ -357,11 +381,6 @@ func runGateway() {
 
 	// S3 backup integration — admin + owner only.
 	server.SetBackupS3Handler(httpapi.NewBackupS3Handler(cfg, cfg.Database.PostgresDSN, Version, pgStores.ConfigSecrets, permPE.IsOwner))
-
-	// Tenant-scoped backup/restore — owner or tenant admin.
-	if pgStores.Tenants != nil {
-		server.SetTenantBackupHandler(httpapi.NewTenantBackupHandler(pgStores.DB, cfg, pgStores.Tenants, Version, permPE.IsOwner))
-	}
 
 	// Register all RPC methods
 	server.SetLogTee(logTee)
@@ -404,13 +423,17 @@ func runGateway() {
 	channelMgr := channels.NewManager(msgBus)
 	deps.channelMgr = channelMgr
 
-	// Wire channel sender + tenant checker on message tool (now that channelMgr exists)
+	// Wire channel member resolver into permission grant paths (WS + HTTP) so
+	// file_writer grants coming from the Web UI auto-enrich their metadata.
+	cfgPermsMethods.SetMemberResolver(channelMgr)
+	if channelInstancesH != nil {
+		channelInstancesH.SetMemberResolver(channelMgr)
+	}
+
+	// Wire channel sender on message tool (now that channelMgr exists)
 	if t, ok := toolsReg.Get("message"); ok {
 		if cs, ok := t.(tools.ChannelSenderAware); ok {
 			cs.SetChannelSender(channelMgr.SendToChannel)
-		}
-		if tc, ok := t.(tools.ChannelTenantCheckerAware); ok {
-			tc.SetChannelTenantChecker(channelMgr.ChannelTenantID)
 		}
 	}
 	// Wire group member lister on list_group_members tool
@@ -426,12 +449,12 @@ func runGateway() {
 		instanceLoader = channels.NewInstanceLoader(pgStores.ChannelInstances, pgStores.Agents, channelMgr, msgBus, pgStores.Pairing)
 		instanceLoader.SetProviderRegistry(providerRegistry)
 		instanceLoader.SetPendingCompactionConfig(cfg.Channels.PendingCompaction)
-		instanceLoader.RegisterFactory(channels.TypeTelegram, telegram.FactoryWithStores(pgStores.Agents, pgStores.ConfigPermissions, pgStores.Teams, pgStores.SubagentTasks, pgStores.PendingMessages))
-		instanceLoader.RegisterFactory(channels.TypeDiscord, discord.FactoryWithStores(pgStores.Agents, pgStores.ConfigPermissions, pgStores.PendingMessages))
-		instanceLoader.RegisterFactory(channels.TypeFeishu, feishu.FactoryWithPendingStore(pgStores.PendingMessages))
+		instanceLoader.RegisterFactory(channels.TypeTelegram, telegram.FactoryWithStoresAndAudio(pgStores.Agents, pgStores.ConfigPermissions, pgStores.Teams, pgStores.SubagentTasks, pgStores.PendingMessages, audioMgr))
+		instanceLoader.RegisterFactory(channels.TypeDiscord, discord.FactoryWithStoresAndAudio(pgStores.Agents, pgStores.ConfigPermissions, pgStores.PendingMessages, audioMgr))
+		instanceLoader.RegisterFactory(channels.TypeFeishu, feishu.FactoryWithPendingStoreAndAudio(pgStores.PendingMessages, audioMgr))
 		instanceLoader.RegisterFactory(channels.TypeZaloOA, zalo.Factory)
 		instanceLoader.RegisterFactory(channels.TypeZaloPersonal, zalopersonal.FactoryWithPendingStore(pgStores.PendingMessages))
-		instanceLoader.RegisterFactory(channels.TypeWhatsApp, whatsapp.FactoryWithDB(pgStores.DB, pgStores.PendingMessages, "pgx"))
+		instanceLoader.RegisterFactory(channels.TypeWhatsApp, whatsapp.FactoryWithDBAudio(pgStores.DB, pgStores.PendingMessages, "pgx", audioMgr, pgStores.BuiltinTools))
 		instanceLoader.RegisterFactory(channels.TypeSlack, slackchannel.FactoryWithPendingStore(pgStores.PendingMessages))
 		instanceLoader.RegisterFactory(channels.TypeFacebook, facebook.Factory)
 		instanceLoader.RegisterFactory(channels.TypePancake, pancake.Factory)
@@ -520,24 +543,7 @@ func runGateway() {
 		methods.NewAPIKeysMethods(pgStores.APIKeys).Register(server.Router())
 	}
 
-	// Tenant management RPC + HTTP
-	if pgStores.Tenants != nil {
-		methods.NewTenantsMethods(pgStores.Tenants, msgBus, workspace).Register(server.Router())
-		server.SetTenantsHandler(httpapi.NewTenantsHandler(pgStores.Tenants, msgBus, workspace))
-		server.Router().SetTenantStore(pgStores.Tenants)
-		// Permission cache for tenant membership checks. Store on deps so
-		// lifecycle shutdown can call Close() to stop the sweep goroutines.
-		permCache := cache.NewPermissionCache()
-		deps.permCache = permCache
-		msgBus.Subscribe("permission-cache", func(e bus.Event) {
-			if p, ok := e.Payload.(bus.CacheInvalidatePayload); ok {
-				permCache.HandleInvalidation(p)
-			}
-		})
-		server.Router().SetPermissionCache(permCache)
-		httpapi.InitTenantStore(pgStores.Tenants, msgBus)
-		httpapi.InitOwnerIDs(cfg.Gateway.OwnerIDs)
-	}
+	httpapi.InitOwnerIDs(cfg.Gateway.OwnerIDs)
 
 	// Wire lifecycle: config-reload subscribers, consumer, task recovery, shutdown, server start.
 	deps.runLifecycle(ctx, cancel, lifecycleDeps{
@@ -564,7 +570,7 @@ func resolveBackgroundProvider(cfg *config.Config, reg *providers.Registry) (pro
 		if name == "" {
 			return nil, "", false
 		}
-		p, err := reg.GetForTenant(providers.MasterTenantID, name)
+		p, err := reg.GetByName(name)
 		if err != nil || p == nil {
 			return nil, "", false
 		}
@@ -583,7 +589,7 @@ func resolveBackgroundProvider(cfg *config.Config, reg *providers.Registry) (pro
 		return p, m
 	}
 	// 3. First registered provider (legacy fallback)
-	if names := reg.ListForTenant(providers.MasterTenantID); len(names) > 0 {
+	if names := reg.List(); len(names) > 0 {
 		if p, m, ok := try(names[0], ""); ok {
 			return p, m
 		}

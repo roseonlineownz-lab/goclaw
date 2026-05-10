@@ -36,6 +36,21 @@ func inferScopeFromContext(ctx context.Context) (scope string, teamID *string, a
 	return "personal", nil, true
 }
 
+// inferChatIDFromContext returns the chat_id to stamp on a vault doc.
+// Non-nil only when team uses isolated workspace scope AND WorkspaceChatID is set.
+// Shared/personal scope → nil (team-wide, matches any chat in search).
+func inferChatIDFromContext(ctx context.Context) *string {
+	rc := store.RunContextFromCtx(ctx)
+	if rc == nil || rc.TeamID == "" || !rc.TeamIsolated {
+		return nil
+	}
+	chatID := WorkspaceChatIDFromCtx(ctx)
+	if chatID == "" {
+		return nil
+	}
+	return &chatID
+}
+
 // AfterWrite registers or updates a vault document after a file write.
 // Non-blocking: errors logged but not propagated.
 func (v *VaultInterceptor) AfterWrite(ctx context.Context, resolvedPath, content string) {
@@ -49,10 +64,8 @@ func (v *VaultInterceptor) AfterWrite(ctx context.Context, resolvedPath, content
 	}
 	relPath = filepath.ToSlash(relPath)
 
-	tenantID := store.TenantIDFromContext(ctx).String()
 	agentID := store.AgentIDFromContext(ctx).String()
-	nilUUID := "00000000-0000-0000-0000-000000000000"
-	if tenantID == nilUUID || agentID == nilUUID {
+	if agentID == uuid.Nil.String() {
 		return
 	}
 
@@ -70,14 +83,23 @@ func (v *VaultInterceptor) AfterWrite(ctx context.Context, resolvedPath, content
 	}
 
 	doc := &store.VaultDocument{
-		TenantID:    tenantID,
 		AgentID:     agentIDPtr,
 		TeamID:      teamID,
+		ChatID:      inferChatIDFromContext(ctx),
 		Scope:       scope,
 		Path:        relPath,
 		Title:       title,
 		DocType:     docType,
 		ContentHash: hash,
+	}
+	// Tag with delegation_id when the write happens inside a delegated
+	// task so the auto-linking enrichment pass can sibling-link the docs later.
+	if delegID := DelegationIDFromCtx(ctx); delegID != "" {
+		if doc.Metadata == nil {
+			doc.Metadata = make(map[string]any)
+		}
+		doc.Metadata["delegation_id"] = delegID
+		doc.Metadata["created_in"] = "delegation"
 	}
 	if err := v.vaultStore.UpsertDocument(ctx, doc); err != nil {
 		slog.Warn("vault.after_write", "path", relPath, "err", err)
@@ -90,12 +112,10 @@ func (v *VaultInterceptor) AfterWrite(ctx context.Context, resolvedPath, content
 			ID:        uuid.Must(uuid.NewV7()).String(),
 			Type:      eventbus.EventVaultDocUpserted,
 			SourceID:  doc.ID + ":" + hash,
-			TenantID:  tenantID,
 			AgentID:   eventAgentID,
 			Timestamp: time.Now(),
 			Payload: eventbus.VaultDocUpsertedPayload{
 				DocID:       doc.ID,
-				TenantID:    tenantID,
 				AgentID:     eventAgentID,
 				Path:        relPath,
 				ContentHash: hash,
@@ -119,10 +139,8 @@ func (v *VaultInterceptor) AfterWriteMedia(ctx context.Context, resolvedPath, su
 	}
 	relPath = filepath.ToSlash(relPath)
 
-	tenantID := store.TenantIDFromContext(ctx).String()
 	agentID := store.AgentIDFromContext(ctx).String()
-	nilUUID := "00000000-0000-0000-0000-000000000000"
-	if tenantID == nilUUID || agentID == nilUUID {
+	if agentID == uuid.Nil.String() {
 		return
 	}
 
@@ -142,17 +160,26 @@ func (v *VaultInterceptor) AfterWriteMedia(ctx context.Context, resolvedPath, su
 		eventAgentID = agentID
 	}
 
+	// Build metadata carefully: mime_type always set, plus optional
+	// delegation_id / created_in when running inside a delegation.
+	// Using explicit assignment preserves any future caller-supplied keys
+	// added via a metadata-capable variant — red-team concern #18.
+	meta := map[string]any{"mime_type": mimeType}
+	if delegID := DelegationIDFromCtx(ctx); delegID != "" {
+		meta["delegation_id"] = delegID
+		meta["created_in"] = "delegation"
+	}
 	doc := &store.VaultDocument{
-		TenantID:    tenantID,
 		AgentID:     agentIDPtr,
 		TeamID:      teamID,
+		ChatID:      inferChatIDFromContext(ctx),
 		Scope:       scope,
 		Path:        relPath,
 		Title:       title,
 		DocType:     "media",
 		ContentHash: hash,
 		Summary:     summary,
-		Metadata:    map[string]any{"mime_type": mimeType},
+		Metadata:    meta,
 	}
 	if err := v.vaultStore.UpsertDocument(ctx, doc); err != nil {
 		slog.Warn("vault.after_write_media", "path", relPath, "err", err)
@@ -165,12 +192,10 @@ func (v *VaultInterceptor) AfterWriteMedia(ctx context.Context, resolvedPath, su
 			ID:        uuid.Must(uuid.NewV7()).String(),
 			Type:      eventbus.EventVaultDocUpserted,
 			SourceID:  doc.ID + ":" + hash,
-			TenantID:  tenantID,
 			AgentID:   eventAgentID,
 			Timestamp: time.Now(),
 			Payload: eventbus.VaultDocUpsertedPayload{
 				DocID:       doc.ID,
-				TenantID:    tenantID,
 				AgentID:     eventAgentID,
 				Path:        relPath,
 				ContentHash: hash,
@@ -192,17 +217,15 @@ func (v *VaultInterceptor) BeforeRead(ctx context.Context, resolvedPath string) 
 	}
 	relPath = filepath.ToSlash(relPath)
 
-	tenantID := store.TenantIDFromContext(ctx).String()
 	agentID := store.AgentIDFromContext(ctx).String()
-	nilUUID := "00000000-0000-0000-0000-000000000000"
-	if tenantID == nilUUID || agentID == nilUUID {
+	if agentID == uuid.Nil.String() {
 		return
 	}
 
 	// Try agent-scoped first, then tenant-wide (team/shared docs have no agent_id).
-	doc, err := v.vaultStore.GetDocument(ctx, tenantID, agentID, relPath)
+	doc, err := v.vaultStore.GetDocument(ctx, agentID, relPath)
 	if err != nil {
-		doc, err = v.vaultStore.GetDocument(ctx, tenantID, "", relPath)
+		doc, err = v.vaultStore.GetDocument(ctx, "", relPath)
 	}
 	if err != nil {
 		return // not registered yet — skip
@@ -213,7 +236,7 @@ func (v *VaultInterceptor) BeforeRead(ctx context.Context, resolvedPath string) 
 		return
 	}
 	if fsHash != doc.ContentHash {
-		if err := v.vaultStore.UpdateHash(ctx, tenantID, doc.ID, fsHash); err != nil {
+		if err := v.vaultStore.UpdateHash(ctx, doc.ID, fsHash); err != nil {
 			slog.Warn("vault.lazy_sync", "path", relPath, "err", err)
 		}
 	}

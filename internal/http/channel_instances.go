@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
@@ -22,13 +23,19 @@ type ChannelInstancesHandler struct {
 	agentStore      store.AgentStore
 	configPermStore store.ConfigPermissionStore
 	contactStore    store.ContactStore
-	tenantStore     store.TenantStore
 	msgBus          *bus.MessageBus
+	memberResolver  channels.MemberResolver // optional — enriches edit_file metadata on addwriter
 }
 
 // NewChannelInstancesHandler creates a handler for channel instance management endpoints.
-func NewChannelInstancesHandler(s store.ChannelInstanceStore, agentStore store.AgentStore, configPermStore store.ConfigPermissionStore, contactStore store.ContactStore, tenantStore store.TenantStore, msgBus *bus.MessageBus) *ChannelInstancesHandler {
-	return &ChannelInstancesHandler{store: s, agentStore: agentStore, configPermStore: configPermStore, contactStore: contactStore, tenantStore: tenantStore, msgBus: msgBus}
+func NewChannelInstancesHandler(s store.ChannelInstanceStore, agentStore store.AgentStore, configPermStore store.ConfigPermissionStore, contactStore store.ContactStore, msgBus *bus.MessageBus) *ChannelInstancesHandler {
+	return &ChannelInstancesHandler{store: s, agentStore: agentStore, configPermStore: configPermStore, contactStore: contactStore, msgBus: msgBus}
+}
+
+// SetMemberResolver wires a channel member resolver so addwriter can auto-fill
+// metadata when the caller supplies neither DisplayName nor Username.
+func (h *ChannelInstancesHandler) SetMemberResolver(r channels.MemberResolver) {
+	h.memberResolver = r
 }
 
 // RegisterRoutes registers all channel instance routes on the given mux.
@@ -44,15 +51,9 @@ func (h *ChannelInstancesHandler) RegisterRoutes(mux *http.ServeMux) {
 	if h.contactStore != nil {
 		mux.HandleFunc("GET /v1/contacts", h.auth(h.handleListContacts))
 		mux.HandleFunc("GET /v1/contacts/resolve", h.auth(h.handleResolveContacts))
-		mux.HandleFunc("POST /v1/contacts/merge", h.adminAuth(h.handleMergeContacts))
-		mux.HandleFunc("POST /v1/contacts/unmerge", h.adminAuth(h.handleUnmergeContacts))
-		mux.HandleFunc("GET /v1/contacts/merged/{tenantUserId}", h.auth(h.handleListMergedContacts))
-	}
-	if h.tenantStore != nil {
-		mux.HandleFunc("GET /v1/tenant-users", h.auth(h.handleListTenantUsers))
 	}
 
-	// Unified user search (contacts + tenant_users)
+	// Unified user search (contacts only in v4)
 	if h.contactStore != nil {
 		mux.HandleFunc("GET /v1/users/search", h.auth(h.handleSearchUsers))
 	}
@@ -321,7 +322,7 @@ func (h *ChannelInstancesHandler) handleWriterGroups(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
-	perms, err := h.configPermStore.List(r.Context(), agentID, store.ConfigTypeFileWriter, "")
+	perms, err := h.configPermStore.List(r.Context(), agentID, store.ConfigTypeEditFile, "")
 	if err != nil {
 		slog.Error("channel_instances.writer_groups", "error", err)
 		locale := store.LocaleFromContext(r.Context())
@@ -357,7 +358,7 @@ func (h *ChannelInstancesHandler) handleListWriters(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgRequired, "group_id"))
 		return
 	}
-	perms, err := h.configPermStore.List(r.Context(), agentID, store.ConfigTypeFileWriter, groupID)
+	perms, err := h.configPermStore.List(r.Context(), agentID, store.ConfigTypeEditFile, groupID)
 	if err != nil {
 		slog.Error("channel_instances.list_writers", "error", err)
 		writeError(w, http.StatusInternalServerError, protocol.ErrInternal, i18n.T(locale, i18n.MsgFailedToList, "writers"))
@@ -412,10 +413,18 @@ func (h *ChannelInstancesHandler) handleAddWriter(w http.ResponseWriter, r *http
 		return
 	}
 	meta, _ := json.Marshal(map[string]string{"displayName": body.DisplayName, "username": body.Username})
+	// Auto-enrich when caller supplied neither display name nor username.
+	// Best-effort — any resolver error leaves the metadata as-is so the
+	// store's fallback ({}) applies and the grant still succeeds.
+	if body.DisplayName == "" && body.Username == "" {
+		if enriched, ok := channels.EnrichFileWriterMetadata(r.Context(), h.memberResolver, body.GroupID, body.UserID); ok {
+			meta = enriched
+		}
+	}
 	if err := h.configPermStore.Grant(r.Context(), &store.ConfigPermission{
 		AgentID:    agentID,
 		Scope:      body.GroupID,
-		ConfigType: store.ConfigTypeFileWriter,
+		ConfigType: store.ConfigTypeEditFile,
 		UserID:     body.UserID,
 		Permission: "allow",
 		Metadata:   meta,
@@ -440,7 +449,7 @@ func (h *ChannelInstancesHandler) handleRemoveWriter(w http.ResponseWriter, r *h
 		return
 	}
 	// Prevent removing the last writer (same guard as Telegram /removewriter)
-	writers, _ := h.configPermStore.List(r.Context(), agentID, store.ConfigTypeFileWriter, groupID)
+	writers, _ := h.configPermStore.List(r.Context(), agentID, store.ConfigTypeEditFile, groupID)
 	allowCount := 0
 	for _, p := range writers {
 		if p.Permission == "allow" {
@@ -451,7 +460,10 @@ func (h *ChannelInstancesHandler) handleRemoveWriter(w http.ResponseWriter, r *h
 		writeError(w, http.StatusConflict, protocol.ErrFailedPrecondition, i18n.T(locale, i18n.MsgCannotRemoveLastWriter))
 		return
 	}
-	if err := h.configPermStore.Revoke(r.Context(), agentID, groupID, store.ConfigTypeFileWriter, userID); err != nil {
+	// Revoke all three split file gates for the target (idempotent — missing rows ignored).
+	_ = h.configPermStore.Revoke(r.Context(), agentID, groupID, store.ConfigTypeWriteFile, userID)
+	_ = h.configPermStore.Revoke(r.Context(), agentID, groupID, store.ConfigTypeDeleteFile, userID)
+	if err := h.configPermStore.Revoke(r.Context(), agentID, groupID, store.ConfigTypeEditFile, userID); err != nil {
 		slog.Error("channel_instances.remove_writer", "error", err)
 		writeError(w, http.StatusInternalServerError, protocol.ErrInternal, i18n.T(locale, i18n.MsgFailedToDelete, "writer", "internal error"))
 		return

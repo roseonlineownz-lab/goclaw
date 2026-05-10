@@ -22,12 +22,11 @@ func (s *PGTeamStore) UpdateTaskProgress(ctx context.Context, taskID, teamID uui
 	// Also renews lock_expires_at as a heartbeat.
 	now := time.Now()
 	lockExpires := now.Add(taskLockDuration)
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET progress_percent = $1, progress_step = $2, lock_expires_at = $3, updated_at = $4
-		 WHERE id = $5 AND status = $6 AND team_id = $7 AND tenant_id = $8`,
+		 WHERE id = $5 AND status = $6 AND team_id = $7`,
 		percent, step, lockExpires, now,
-		taskID, store.TeamTaskStatusInProgress, teamID, tid,
+		taskID, store.TeamTaskStatusInProgress, teamID,
 	)
 	if err != nil {
 		return err
@@ -53,12 +52,11 @@ func (s *PGTeamStore) UpdateTaskProgress(ctx context.Context, taskID, teamID uui
 func (s *PGTeamStore) RenewTaskLock(ctx context.Context, taskID, teamID uuid.UUID) error {
 	now := time.Now()
 	lockExpires := now.Add(taskLockDuration)
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET lock_expires_at = $1, updated_at = $2
-		 WHERE id = $3 AND team_id = $4 AND status = $5 AND tenant_id = $6`,
+		 WHERE id = $3 AND team_id = $4 AND status = $5`,
 		lockExpires, now,
-		taskID, teamID, store.TeamTaskStatusInProgress, tid,
+		taskID, teamID, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
 		return err
@@ -92,7 +90,7 @@ func (s *PGTeamStore) RecoverAllStaleTasks(ctx context.Context) ([]store.Recover
 		   AND COALESCE((tm.settings->>'version')::int, 0) >= 2
 		   AND t.status = $3
 		   AND t.lock_expires_at IS NOT NULL AND t.lock_expires_at < $2
-		 RETURNING t.id, t.team_id, t.tenant_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
+		 RETURNING t.id, t.team_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
 		store.TeamTaskStatusPending, now, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
@@ -114,7 +112,7 @@ func (s *PGTeamStore) ForceRecoverAllTasks(ctx context.Context) ([]store.Recover
 		 WHERE t.team_id = tm.id AND tm.status = 'active'
 		   AND COALESCE((tm.settings->>'version')::int, 0) >= 2
 		   AND t.status = $3
-		 RETURNING t.id, t.team_id, t.tenant_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
+		 RETURNING t.id, t.team_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
 		store.TeamTaskStatusPending, now, store.TeamTaskStatusInProgress,
 	)
 	if err != nil {
@@ -128,19 +126,17 @@ func (s *PGTeamStore) ForceRecoverAllTasks(ctx context.Context) ([]store.Recover
 // Used by DispatchUnblockedTasks after task completion.
 func (s *PGTeamStore) ListRecoverableTasks(ctx context.Context, teamID uuid.UUID) ([]store.TeamTaskData, error) {
 	now := time.Now()
-	tid := tenantIDForInsert(ctx)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+taskSelectCols+`
 		 `+taskJoinClause+`
 		 WHERE t.team_id = $1
-		   AND t.tenant_id = $6
 		   AND (
 		     t.status = $2
 		     OR (t.status = $3 AND t.lock_expires_at IS NOT NULL AND t.lock_expires_at < $4)
 		   )
 		 ORDER BY t.priority DESC, t.created_at
 		 LIMIT $5`,
-		teamID, store.TeamTaskStatusPending, store.TeamTaskStatusInProgress, now, maxListTasksRows, tid)
+		teamID, store.TeamTaskStatusPending, store.TeamTaskStatusInProgress, now, maxListTasksRows)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +154,7 @@ func (s *PGTeamStore) MarkAllStaleTasks(ctx context.Context, olderThan time.Time
 		 WHERE t.team_id = tm.id AND tm.status = 'active'
 		   AND COALESCE((tm.settings->>'version')::int, 0) >= 2
 		   AND t.status = $3 AND t.updated_at < $4
-		 RETURNING t.id, t.team_id, t.tenant_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
+		 RETURNING t.id, t.team_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
 		store.TeamTaskStatusStale, now, store.TeamTaskStatusPending, olderThan,
 	)
 	if err != nil {
@@ -178,7 +174,7 @@ func (s *PGTeamStore) MarkInReviewStaleTasks(ctx context.Context, olderThan time
 		 WHERE t.team_id = tm.id AND tm.status = 'active'
 		   AND COALESCE((tm.settings->>'version')::int, 0) >= 2
 		   AND t.status = $3 AND t.updated_at < $4
-		 RETURNING t.id, t.team_id, t.tenant_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
+		 RETURNING t.id, t.team_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
 		store.TeamTaskStatusStale, now, store.TeamTaskStatusInReview, olderThan,
 	)
 	if err != nil {
@@ -202,10 +198,10 @@ func (s *PGTeamStore) FixOrphanedBlockedTasks(ctx context.Context) ([]store.Reco
 		   AND array_length(t.blocked_by, 1) > 0
 		   AND NOT EXISTS (
 		     SELECT 1 FROM unnest(t.blocked_by) AS bid(id)
-		     JOIN team_tasks bt ON bt.id = bid.id AND bt.tenant_id = t.tenant_id
+		     JOIN team_tasks bt ON bt.id = bid.id
 		     WHERE bt.status NOT IN ($3, $4, $5)
 		   )
-		 RETURNING t.id, t.team_id, t.tenant_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
+		 RETURNING t.id, t.team_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,
 		store.TeamTaskStatusPending, now,
 		store.TeamTaskStatusCompleted, store.TeamTaskStatusFailed, store.TeamTaskStatusCancelled,
 	)
@@ -224,7 +220,7 @@ func scanRecoveredTaskInfoRows(rows interface {
 	var out []store.RecoveredTaskInfo
 	for rows.Next() {
 		var info store.RecoveredTaskInfo
-		if err := rows.Scan(&info.ID, &info.TeamID, &info.TenantID, &info.TaskNumber, &info.Subject, &info.Channel, &info.ChatID); err != nil {
+		if err := rows.Scan(&info.ID, &info.TeamID, &info.TaskNumber, &info.Subject, &info.Channel, &info.ChatID); err != nil {
 			return nil, err
 		}
 		out = append(out, info)
@@ -237,14 +233,13 @@ func scanRecoveredTaskInfoRows(rows interface {
 
 func (s *PGTeamStore) ResetTaskStatus(ctx context.Context, taskID, teamID uuid.UUID) error {
 	now := time.Now()
-	tid := tenantIDForInsert(ctx)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE team_tasks SET status = $1, locked_at = NULL, lock_expires_at = NULL, result = NULL,
 		 progress_percent = NULL, progress_step = NULL, updated_at = $2
-		 WHERE id = $3 AND team_id = $4 AND status IN ($5, $6, $7, $8) AND tenant_id = $9`,
+		 WHERE id = $3 AND team_id = $4 AND status IN ($5, $6, $7, $8)`,
 		store.TeamTaskStatusPending, now,
 		taskID, teamID, store.TeamTaskStatusStale, store.TeamTaskStatusFailed,
-		store.TeamTaskStatusCancelled, store.TeamTaskStatusInReview, tid,
+		store.TeamTaskStatusCancelled, store.TeamTaskStatusInReview,
 	)
 	if err != nil {
 		return err
