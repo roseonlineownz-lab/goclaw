@@ -105,9 +105,12 @@ type ResolverDeps struct {
 	// Tenant store for workspace path resolution
 	TenantStore store.TenantStore
 
-	// Per-tenant tool/skill config overrides
-	BuiltinToolTenantCfgs store.BuiltinToolTenantConfigStore
-	SkillTenantCfgs       store.SkillTenantConfigStore
+	// Users store for users.user_key lookups during channel workspace
+	// resolution (12-scenario matrix: web + merged-contact paths).
+	UsersStore store.UsersStore
+
+	// System config store for global settings (allowed_paths, etc.)
+	SystemConfigs store.SystemConfigStore
 
 	// Global workspace root (GOCLAW_WORKSPACE)
 	Workspace string
@@ -477,6 +480,9 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			DelegateTargets:        delegateTargets,
 			EvolutionMetricsStore:  evoMetricsStore,
 			UserResolver:           newContactResolver(deps.ContactStore),
+			ContactStore:           deps.ContactStore,
+			ProjectStore:           deps.ProjectStore,
+			UsersStore:             deps.UsersStore,
 		})
 
 		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider)

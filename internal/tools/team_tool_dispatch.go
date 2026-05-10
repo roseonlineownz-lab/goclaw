@@ -12,6 +12,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tracing"
+	"github.com/nextlevelbuilder/goclaw/internal/workspace"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
@@ -135,11 +136,34 @@ func (m *TeamToolManager) dispatchTaskToAgent(ctx context.Context, task *store.T
 		fromAgent = leadAg.AgentKey
 	}
 
-	// Resolve user ID: prefer context (available during leader's turn),
-	// fall back to task's chat ID (stable for dispatches from consumer/ticker context).
+	// originUserID is kept only for audit trail metadata (MetaOriginUserID).
+	// It is NOT forwarded as the sub-agent's runtime UserID — team sub-agents run
+	// in pure team scope without any individual user identity, preventing group chat
+	// ID leakage into sub-agent memory and permission checks.
 	originUserID := store.UserIDFromContext(ctx)
 	if originUserID == "" {
 		originUserID = originChatID
+	}
+
+	// Capture parent's resolved project at dispatch time.
+	// ProjectID inherited as snapshot from parent AgentRequest. Mid-conversation
+	// default_project_id changes do NOT affect already-dispatched sub-agents
+	// (parent gets new value on next turn).
+	var originProjectID string
+	if wc := workspace.FromContext(ctx); wc != nil && wc.ProjectID != nil {
+		originProjectID = wc.ProjectID.String()
+	}
+
+	// Preserve real acting sender so permission checks on the teammate's
+	// turn (e.g. write_file in group chat) attribute to the original user
+	// rather than the synthetic "teammate:dashboard" sender (#915).
+	// For deferred dispatches (ticker/unblock), context has no sender — fall back
+	// to origin_sender_id stored in task metadata at creation time.
+	originSenderID := store.SenderIDFromContext(ctx)
+	if originSenderID == "" || bus.IsInternalSender(originSenderID) {
+		if s, ok := task.Metadata["origin_sender_id"].(string); ok && s != "" && !bus.IsInternalSender(s) {
+			originSenderID = s
+		}
 	}
 
 	// Resolve peer kind from context; fallback to task metadata, then "direct".
@@ -156,12 +180,28 @@ func (m *TeamToolManager) dispatchTaskToAgent(ctx context.Context, task *store.T
 		MetaOriginChannel:   originChannel,
 		MetaOriginPeerKind:  originPeerKind,
 		MetaOriginChatID:    originChatID,
-		MetaOriginUserID:    originUserID,
+		MetaOriginUserID:    originUserID, // audit trail only — not propagated as runtime UserID
 		MetaFromAgent:       fromAgent,
 		MetaToAgent:         ag.AgentKey,
 		MetaToAgentDisplay:  ag.DisplayName,
 		MetaTeamTaskID:      task.ID.String(),
 		MetaTeamID:          teamID.String(),
+	}
+	if originProjectID != "" {
+		meta[MetaOriginProjectID] = originProjectID
+	}
+	if originSenderID != "" {
+		meta[MetaOriginSenderID] = originSenderID
+	}
+	// Role propagation: prefer context, fall back to task metadata for deferred dispatches.
+	originRole := store.RoleFromContext(ctx)
+	if originRole == "" {
+		if r, ok := task.Metadata["origin_role"].(string); ok && r != "" {
+			originRole = r
+		}
+	}
+	if originRole != "" {
+		meta[MetaOriginRole] = originRole
 	}
 	// Resolve local key from context; fallback to task metadata for deferred dispatches.
 	localKey := ToolLocalKeyFromCtx(ctx)
@@ -204,8 +244,7 @@ func (m *TeamToolManager) dispatchTaskToAgent(ctx context.Context, task *store.T
 		SenderID: "teammate:dashboard",
 		ChatID:   teamID.String(),
 		Content:  content.String(),
-		UserID:   originUserID,
-		TenantID: store.TenantIDFromContext(ctx),
+		UserID:   "", // sub-agents run in team scope only — no individual user identity
 		AgentID:  ag.AgentKey,
 		Metadata: meta,
 	}) {

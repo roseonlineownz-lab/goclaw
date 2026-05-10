@@ -164,9 +164,21 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	// Team workspace: auto-resolve for agents with team membership (not dispatched).
 	// Lead agents default to team workspace; non-lead members keep own workspace.
 	var resolvedTeamSettings json.RawMessage
+	var resolvedTeamKey string // team.TeamKey for the 12-scenario resolver path segment
+	// Dispatched tasks already have TeamWorkspace set but still need team settings
+	// for TeamIsolated flag. Fetch by explicit TeamID in that branch.
+	if req.TeamWorkspace != "" && req.TeamID != "" && l.teamStore != nil {
+		if teamUUID, err := uuid.Parse(req.TeamID); err == nil {
+			if team, _ := l.teamStore.GetTeam(ctx, teamUUID); team != nil {
+				resolvedTeamSettings = team.Settings
+				resolvedTeamKey = team.TeamKey
+			}
+		}
+	}
 	if req.TeamWorkspace == "" && l.teamStore != nil && l.agentUUID != uuid.Nil {
 		if team, _ := l.teamStore.GetTeamForAgent(ctx, l.agentUUID); team != nil {
 			resolvedTeamSettings = team.Settings
+			resolvedTeamKey = team.TeamKey
 			wsChat := req.ChatID
 			if wsChat == "" {
 				wsChat = req.UserID
@@ -190,32 +202,39 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		}
 	}
 
-	// V3 workspace: resolve once, set immutable context.
+	// V4 workspace: resolve once, set immutable context.
+	// Priority: project binding > 12-scenario channel/web matrix.
+	// Project binding (agent_sessions.project_id, channel_contacts.default_project_id,
+	// req.ProjectOverride) wins so the session always operates in its assigned
+	// project folder regardless of which team or channel serves it.
 	{
-		var teamIDPtr *string
-		if req.TeamID != "" {
-			teamIDPtr = &req.TeamID
-		}
-		var teamWSConfig *workspace.TeamWorkspaceConfig
-		if resolvedTeamSettings != nil {
-			var cfg workspace.TeamWorkspaceConfig
-			if json.Unmarshal(resolvedTeamSettings, &cfg) == nil {
-				teamWSConfig = &cfg
+		resolver := workspace.NewResolver()
+		projectID, projectSlug := l.resolveProjectParams(ctx, req.SessionKey, req.ChannelType, req.ChatID, req.ProjectOverride)
+		var wc *workspace.WorkspaceContext
+		var wsErr error
+		if projectID != nil && projectSlug != "" {
+			wc, wsErr = resolver.Resolve(ctx, workspace.ResolveParams{
+				AgentID:     l.id,
+				UserID:      req.UserID,
+				ChatID:      req.ChatID,
+				BaseDir:     l.dataDir,
+				ProjectID:   projectID,
+				ProjectSlug: projectSlug,
+			})
+		} else {
+			// 12-scenario channel/web matrix. Covers HTTP web (S01–S03),
+			// channel DM (S04, S06, S12), channel group (S08, S09), and the
+			// merged-contact privacy hard rule that routes to canonical user
+			// zone (S05, S07, S10, S11).
+			ccx := l.buildChannelResolveCtx(ctx, req, resolvedTeamKey)
+			path, scope, err := resolver.ResolveChannel(ctx, ccx)
+			if err != nil {
+				wsErr = err
+			} else {
+				shared := tools.IsSharedWorkspace(resolvedTeamSettings)
+				wc = channelToWorkspace(path, scope, ccx, shared)
 			}
 		}
-		resolver := workspace.NewResolver()
-		wc, wsErr := resolver.Resolve(ctx, workspace.ResolveParams{
-			AgentID:    l.agentUUID.String(),
-			AgentType:  l.agentType,
-			UserID:     req.UserID,
-			ChatID:     req.ChatID,
-			TenantID:   store.TenantIDFromContext(ctx).String(),
-			TenantSlug: store.TenantSlugFromContext(ctx),
-			PeerKind:   req.PeerKind,
-			TeamID:    teamIDPtr,
-			TeamConfig: teamWSConfig,
-			BaseDir:   l.dataDir,
-		})
 		if wsErr != nil {
 			slog.Warn("workspace resolution failed", "err", wsErr)
 		} else {
@@ -322,4 +341,80 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		ctx:                  ctx,
 		resolvedTeamSettings: resolvedTeamSettings,
 	}, nil
+}
+
+// resolveProjectParams resolves the effective project ID and slug for a session.
+// Checks three sources in priority order:
+//  0. req.ProjectOverride — explicit snapshot from parent (team dispatch path)
+//  1. agent_sessions.project_id — explicit per-session binding (set via RPC)
+//  2. channel_contacts.default_project_id — group-chat channel default
+//
+// Returns (nil, "") when no project is bound or when projectStore is not wired.
+// On error (project not found, slug invalid), logs a warning and returns (nil, "").
+func (l *Loop) resolveProjectParams(ctx context.Context, sessionKey, channelType, chatID string, override *uuid.UUID) (*uuid.UUID, string) {
+	if l.projectStore == nil {
+		return nil, ""
+	}
+
+	// Source 0: explicit project snapshot forwarded by parent (team dispatch).
+	// Bypasses session and contact-store lookups so mid-conversation
+	// default_project_id changes do not affect this run.
+	var effectiveProjectID *uuid.UUID
+	if override != nil {
+		effectiveProjectID = override
+	}
+
+	// Source 1: explicit per-session project binding.
+	if effectiveProjectID == nil {
+		if session := l.sessions.Get(ctx, sessionKey); session != nil && session.ProjectID != nil {
+			effectiveProjectID = session.ProjectID
+		}
+	}
+
+	// Source 2: channel contact default (group-chat level).
+	// Only attempted when sources 0 and 1 are absent and contactStore is wired.
+	if effectiveProjectID == nil && l.contactStore != nil && channelType != "" && chatID != "" {
+		contactMap, err := l.contactStore.GetContactsBySenderIDs(ctx, []string{chatID})
+		if err != nil {
+			slog.Warn("workspace: contact lookup failed", "chat_id", chatID, "err", err)
+		} else if c, ok := contactMap[chatID]; ok {
+			effectiveProjectID = resolveSessionProject(nil, &c)
+		}
+	}
+
+	if effectiveProjectID == nil {
+		return nil, ""
+	}
+
+	// Look up project slug for workspace path construction.
+	project, err := l.projectStore.Get(ctx, *effectiveProjectID)
+	if err != nil {
+		slog.Warn("workspace: project not found for session binding",
+			"project_id", effectiveProjectID, "session", sessionKey, "err", err)
+		return nil, ""
+	}
+	return effectiveProjectID, project.Slug
+}
+
+// resolveSessionProject returns the effective project UUID for a session using
+// a two-layer COALESCE chain:
+//
+//  1. session_project_override from session metadata — deferred until the
+//     bot /project switch command is implemented (session-metadata override path).
+//     This branch is intentionally left as a nil placeholder; enabling it
+//     would activate Layer 2 before the command is ready.
+//  2. channel_contacts.default_project_id — the group-chat default (Layer 1).
+//
+// Returns nil when no project is bound.
+// The unused first parameter reserves the signature for Layer 2 expansion.
+func resolveSessionProject(_ any, contact *store.ChannelContact) *uuid.UUID {
+	// Layer 2: session_project_override via bot command — deferred until
+	// session-metadata override is wired (bot /project switch command).
+	// _ = sessionMetadataOverride  // placeholder only — do not read session metadata here.
+
+	// Layer 1: channel default.
+	if contact != nil && contact.DefaultProjectID != nil {
+		return contact.DefaultProjectID
+	}
+	return nil
 }

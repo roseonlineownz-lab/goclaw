@@ -86,13 +86,21 @@ export const useTeamEventStore = create<TeamEventState>()(
       setPaused: (paused) => set({ paused }),
     }),
     {
-      name: "goclaw:recentEvents", // keep existing localStorage key for backward compat
+      name: "goclaw:recentEvents",
+      version: 1,
+      // v0 → v1: discard pre-v4 events (payload shapes changed; tenant fields gone).
+      migrate: (persisted, oldVersion) => {
+        if (!persisted || typeof persisted !== "object") return persisted;
+        if (oldVersion < 1) {
+          // Safe reset — events are display-only and re-populate on next session.
+          return { ...(persisted as Record<string, unknown>), events: [] };
+        }
+        return persisted;
+      },
       partialize: (state) => ({
-        // Only persist the most recent events — not transient paused flag
         events: state.events.slice(-PERSIST_MAX),
       }),
       onRehydrateStorage: () => (state) => {
-        // Seed the counter from the highest persisted event id
         if (state?.events && state.events.length > 0) {
           const lastEvent = state.events[state.events.length - 1];
           if (lastEvent) counter = lastEvent.id;

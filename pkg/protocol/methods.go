@@ -112,6 +112,29 @@ const (
 	MethodChannelInstancesDelete = "channels.instances.delete"
 )
 
+// Channel contacts management
+const (
+	MethodChannelsContactsSetDefaultProject = "channels.contacts.set_default_project"
+)
+
+// Projects management
+const (
+	MethodProjectsList           = "projects.list"
+	MethodProjectsGet            = "projects.get"
+	MethodProjectsCreate         = "projects.create"
+	MethodProjectsUpdateMetadata = "projects.update_metadata"
+	MethodProjectsUpdateStatus   = "projects.update_status"
+	MethodProjectsDelete         = "projects.delete"
+)
+
+// Project grants management
+const (
+	MethodProjectGrantsList          = "project_grants.list"
+	MethodProjectGrantsListInherited = "project_grants.list_inherited"
+	MethodProjectGrantsCreate        = "project_grants.create"
+	MethodProjectGrantsDelete        = "project_grants.delete"
+)
+
 // Agent links (inter-agent delegation)
 const (
 	MethodAgentsLinksList   = "agents.links.list"

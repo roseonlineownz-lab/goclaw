@@ -177,10 +177,72 @@ func init() {
 
 		MsgInvalidRole: "invalid role: allowed values are owner, admin, operator, member, viewer",
 
-		MsgContactIDsRequired:  "contact_ids is required",
-		MsgMergeTargetRequired: "exactly one of tenant_user_id or create_user is required",
-		MsgTenantUserNotFound:  "tenant user not found",
-		MsgTenantMismatch:      "tenant user does not belong to this tenant",
-		MsgTenantScopeRequired: "tenant scope is required for this operation",
+		MsgContactIDsRequired:       "contact_ids is required",
+		MsgMergeTargetRequired:      "target_user_id is required",
+		MsgTenantUserNotFound:       "tenant user not found",
+		MsgTenantMismatch:           "tenant user does not belong to this tenant",
+		MsgTenantScopeRequired:      "tenant scope is required for this operation",
+		MsgMergeSourceAlreadyMerged: "source contact already merged — user→user merge forbidden",
+		MsgMergeTargetAlreadyMerged: "target user already merged into another — chained merges forbidden",
+		MsgMergeUserToUserForbidden: "cannot merge between two authenticated users",
+		MsgMergeAtomicFailed:        "merge transaction failed: %s",
+		MsgMergeTargetUserNotFound:  "target user not found: %s",
+
+		// TTS / Voices
+		MsgTtsUnknownModel:       "unknown tts model: %s",
+		MsgVoicesListFailed:      "failed to list voices: %s",
+		MsgTtsGeminiInvalidVoice: "invalid Gemini voice: %s",
+		MsgTtsGeminiSpeakerLimit: "Gemini TTS supports at most 2 speakers",
+		MsgTtsGeminiInvalidModel:  "invalid Gemini TTS model: %s",
+		MsgTtsGeminiTextOnly:      "Gemini refused to generate audio. Try simpler text without translation or commentary.",
+		MsgTtsParamOutOfRange:     "TTS param %q value %v is out of range [%v, %v]",
+		MsgTtsParamUnknownKey:     "TTS param %q is not supported by this provider",
+		MsgTtsMiniMaxVoicesFailed: "failed to fetch MiniMax voices: %s",
+
+		// STT
+		MsgSTTAllProvidersFailed:     "All STT providers failed",
+		MsgSTTLegacyConfigDeprecated: "Legacy STT config deprecated; migrate to builtin_tools[stt]",
+		MsgSTTWhatsappPrivacyWarning: "Enabling STT for WhatsApp breaks end-to-end encryption for voice messages sent to this agent.",
+		MsgVoiceMessageFallback:      "[Voice message]",
+
+		// Hooks
+		MsgHookInvalidMatcher:          "invalid matcher regex: %s",
+		MsgHookCommandDisabledStandard: "command-type hooks are only available on Lite edition",
+		MsgHookPromptRequiresMatcher:   "prompt hooks require a matcher or if_expr (runaway-cost guard)",
+		MsgHookCircuitBreakerTripped:   "hook auto-disabled after repeated failures",
+		MsgHookBudgetExceeded:          "tenant hook token budget exceeded",
+		MsgHookPerTurnCapReached:       "hook invocation per-turn cap reached",
+		MsgHookBuiltinReadOnly:         "builtin hooks are read-only except for the enabled toggle",
+
+		// Message tool cross-target forward notice
+		MessageCrossTargetForwarded: "📤 Forwarded to %s as requested: %q",
+
+		// Auth + Bootstrap
+		MsgBootstrapRequired:    "gateway not bootstrapped — POST /v1/bootstrap/init first",
+		MsgBootstrapAlreadyDone: "bootstrap already completed",
+		MsgInvalidEmail:         "invalid email address",
+		MsgWeakPassword:         "password must be at least 12 chars and contain a letter, digit, and symbol",
+		MsgInvalidCredentials:   "invalid email or password",
+		MsgRefreshTokenInvalid:  "refresh token invalid",
+		MsgRefreshTokenExpired:  "refresh token expired",
+		MsgRefreshTokenRevoked:  "refresh token revoked",
+		MsgAccessTokenExpired:   "access token expired",
+		MsgAccessTokenInvalid:   "access token invalid",
+		MsgCurrentPasswordWrong: "current password is incorrect",
+		MsgDisplayNameInvalid:   "display name must be between 2 and 64 characters",
+
+		MsgPasswordResetInvalidToken: "invalid or expired reset token",
+		MsgPasswordResetEmailSubject: "Reset your password",
+		MsgPasswordResetEmailBody:    "Click the link to reset your password: %s\nThis link expires in 1 hour.",
+
+		MsgInvalidShareTarget: "share target must be exactly one of user_id or team_id",
+		MsgInvalidShareRole:   "share role must be one of viewer, member, editor",
+
+		MsgChannelDefaultProjectDenied: "You don't have permission to set this project as default for this channel",
+
+		MsgProjectSlugImmutable:    "project slug cannot be changed after creation",
+		MsgProjectInvalidStatus:    "status must be 'active' or 'archived'",
+		MsgProjectGrantInvalid:     "grant must specify exactly one of userId or teamId",
+		MsgProjectGrantInvalidRole: "role must be one of viewer, member, editor",
 	})
 }

@@ -64,6 +64,13 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 	if h.channelInstances != nil {
 		d.server.SetChannelInstancesHandler(h.channelInstances)
 	}
+	// Atomic merge-contact endpoint — single TX across channel_contacts +
+	// agent_sessions + user_context_files + memory_documents + traces.
+	if d.pgStores != nil && d.pgStores.Contacts != nil && d.pgStores.Users != nil {
+		d.server.SetContactMergeHandler(
+			httpapi.NewContactMergeHandler(d.pgStores.Contacts, d.pgStores.Users, d.msgBus, d.workspace),
+		)
+	}
 	if h.providers != nil {
 		d.server.SetProvidersHandler(h.providers)
 	}

@@ -44,5 +44,12 @@ export const ROUTES = {
   TENANT_DETAIL: "/admin/tenants/:id",
   SETUP: "/setup",
   BACKUP_RESTORE: "/backup-restore",
-  SELECT_TENANT: "/select-tenant",
+  HOOKS: "/hooks",
+  HOOK_DETAIL: "/hooks/:id",
+  PROJECTS: "/projects",
+  PROJECT_DETAIL: "/projects/:id",
+  PROJECT_MEMBERS: "/projects/:id/members",
+  FORGOT_PASSWORD: "/forgot-password",
+  RESET_PASSWORD: "/reset-password",
+  USERS: "/users",
 } as const;

@@ -12,7 +12,7 @@ export interface UserPickerItem {
   source: "contact" | "tenant_user";
   channel_type?: string;
   peer_kind?: string;
-  merged_tenant_user_id?: string;
+  merged_user_id?: string;
   role?: string;
 }
 

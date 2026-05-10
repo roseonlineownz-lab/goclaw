@@ -75,6 +75,10 @@ func (m *mockEpisodicStore) PruneExpired(_ context.Context) (int, error) {
 	return result, nil
 }
 
+func (m *mockEpisodicStore) UpdateSessionProject(_ context.Context, _ string, _, _ *uuid.UUID) error {
+	return nil
+}
+
 func (m *mockEpisodicStore) CountUnpromoted(_ context.Context, _, _ string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

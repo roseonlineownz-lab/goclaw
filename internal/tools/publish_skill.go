@@ -67,16 +67,34 @@ func (t *PublishSkillTool) Execute(ctx context.Context, args map[string]any) *Re
 		return ErrorResult("path is required")
 	}
 
-	// Resolve path: absolute or relative to workspace
+	// Resolve path: absolute or relative to workspace.
+	// Security: absolute paths MUST resolve under the workspace boundary so
+	// agents cannot publish arbitrary directories on the host (e.g. /etc).
+	ws := ToolWorkspaceFromCtx(ctx)
+	if ws == "" {
+		return ErrorResult("no workspace available for skill path resolution")
+	}
 	dir := rawPath
 	if !filepath.IsAbs(dir) {
-		ws := ToolWorkspaceFromCtx(ctx)
-		if ws == "" {
-			return ErrorResult("relative path provided but no workspace available")
-		}
 		dir = filepath.Join(ws, dir)
 	}
 	dir = filepath.Clean(dir)
+
+	wsAbs, _ := filepath.Abs(filepath.Clean(ws))
+	dirAbs, _ := filepath.Abs(dir)
+	// Resolve symlinks for safe boundary comparison.
+	if real, evalErr := filepath.EvalSymlinks(dirAbs); evalErr == nil {
+		dirAbs = real
+	}
+	if realWs, evalErr := filepath.EvalSymlinks(wsAbs); evalErr == nil {
+		wsAbs = realWs
+	}
+	if !isPathInside(dirAbs, wsAbs) {
+		slog.Warn("security.publish_skill_path_denied",
+			"raw_path", rawPath, "resolved", dirAbs, "workspace", wsAbs)
+		return ErrorResult("path must resolve under the agent workspace")
+	}
+	dir = dirAbs
 
 	// Validate SKILL.md exists
 	skillPath := filepath.Join(dir, "SKILL.md")

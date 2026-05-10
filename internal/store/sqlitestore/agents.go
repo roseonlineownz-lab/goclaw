@@ -133,9 +133,31 @@ func (s *SQLiteAgentStore) Update(ctx context.Context, id uuid.UUID, updates map
 		return nil
 	}
 
-	// Coerce NOT NULL int columns: null → default to prevent constraint violations.
-	if v, ok := updates["skill_nudge_interval"]; ok && v == nil {
-		updates["skill_nudge_interval"] = 0
+	// Immutability: agent_key is set at creation and must never change.
+	// Mirrors PGAgentStore.Update + PGTeamStore.UpdateTeam pattern.
+	delete(updates, "agent_key")
+	if len(updates) == 0 {
+		return nil
+	}
+
+	for _, col := range []string{"emoji", "agent_description", "thinking_level"} {
+		if v, ok := updates[col]; ok && v == nil {
+			updates[col] = ""
+		}
+	}
+	for _, col := range []string{"skill_nudge_interval", "max_tokens", "self_evolve", "skill_evolve", "is_default", "share_workspace", "share_memory"} {
+		if v, ok := updates[col]; ok && v == nil {
+			if col == "self_evolve" || col == "skill_evolve" || col == "is_default" || col == "share_workspace" || col == "share_memory" {
+				updates[col] = false
+			} else {
+				updates[col] = 0
+			}
+		}
+	}
+	for _, col := range []string{"other_config", "tools_config", "reasoning_config", "chatgpt_oauth_routing", "shell_deny_groups", "kg_dedup_config"} {
+		if v, ok := updates[col]; ok && v == nil {
+			updates[col] = []byte("{}")
+		}
 	}
 
 	// Unset existing default before setting a new one (scoped to same tenant).

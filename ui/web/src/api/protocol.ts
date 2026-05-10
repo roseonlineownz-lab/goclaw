@@ -170,15 +170,17 @@ export const Methods = {
   CONFIG_PERMISSIONS_GRANT: "config.permissions.grant",
   CONFIG_PERMISSIONS_REVOKE: "config.permissions.revoke",
 
-  // Tenants (multi-tenant)
-  TENANTS_MINE: "tenants.mine",
-  TENANTS_LIST: "tenants.list",
-  TENANTS_GET: "tenants.get",
-  TENANTS_CREATE: "tenants.create",
-  TENANTS_UPDATE: "tenants.update",
-  TENANTS_USERS_LIST: "tenants.users.list",
-  TENANTS_USERS_ADD: "tenants.users.add",
-  TENANTS_USERS_REMOVE: "tenants.users.remove",
+  // Projects (v4)
+  PROJECTS_LIST: "projects.list",
+  PROJECTS_GET: "projects.get",
+  PROJECTS_CREATE: "projects.create",
+  PROJECTS_UPDATE_METADATA: "projects.update_metadata",
+  PROJECTS_UPDATE_STATUS: "projects.update_status",
+  PROJECTS_DELETE: "projects.delete",
+  PROJECT_GRANTS_LIST: "project_grants.list",
+  PROJECT_GRANTS_LIST_INHERITED: "project_grants.list_inherited",
+  PROJECT_GRANTS_CREATE: "project_grants.create",
+  PROJECT_GRANTS_DELETE: "project_grants.delete",
 
   // Phase 3+ - NICE TO HAVE
   LOGS_TAIL: "logs.tail",

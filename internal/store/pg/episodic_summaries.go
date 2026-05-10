@@ -193,6 +193,24 @@ func (s *PGEpisodicStore) PruneExpired(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
+// UpdateSessionProject re-tags rows for a single session_key from
+// oldProjectID to newProjectID. Called by the project-switch orchestrator
+// (Layer 2 /project bot command + Layer 1 admin RPC). NULL ↔ uuid both
+// supported by encoding the pointer through nilUUID.
+func (s *PGEpisodicStore) UpdateSessionProject(ctx context.Context, sessionKey string, oldProjectID, newProjectID *uuid.UUID) error {
+	// Match NULL on the old side using IS NOT DISTINCT FROM so callers can
+	// re-tag previously-unbound rows just by passing oldProjectID=nil.
+	// episodic_summaries has only created_at (no updated_at), so we don't
+	// touch any timestamp here.
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE episodic_summaries
+		SET project_id = $1
+		WHERE session_key = $2 AND project_id IS NOT DISTINCT FROM $3`,
+		nilUUID(newProjectID), sessionKey, nilUUID(oldProjectID),
+	)
+	return err
+}
+
 // ListUnpromoted returns episodic summaries not yet promoted to long-term memory, oldest first.
 // Scoped to agent/user within the caller's tenant.
 func (s *PGEpisodicStore) ListUnpromoted(ctx context.Context, agentID, userID string, limit int) ([]store.EpisodicSummary, error) {

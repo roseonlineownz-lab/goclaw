@@ -146,6 +146,37 @@ func (s *SQLiteEpisodicStore) PruneExpired(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
+// UpdateSessionProject re-tags rows for a single session_key from
+// oldProjectID to newProjectID. SQLite has no IS NOT DISTINCT FROM, so
+// we branch on whether old is nil. episodic_summaries has only created_at
+// (no updated_at) so no timestamp is bumped here.
+func (s *SQLiteEpisodicStore) UpdateSessionProject(ctx context.Context, sessionKey string, oldProjectID, newProjectID *uuid.UUID) error {
+	var newVal any
+	if newProjectID != nil {
+		newVal = newProjectID.String()
+	}
+	var oldVal any
+	if oldProjectID != nil {
+		oldVal = oldProjectID.String()
+	}
+
+	var query string
+	var args []any
+	if oldVal == nil {
+		query = `UPDATE episodic_summaries
+			SET project_id = ?
+			WHERE session_key = ? AND project_id IS NULL`
+		args = []any{newVal, sessionKey}
+	} else {
+		query = `UPDATE episodic_summaries
+			SET project_id = ?
+			WHERE session_key = ? AND project_id = ?`
+		args = []any{newVal, sessionKey, oldVal}
+	}
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 // ListUnpromoted returns summaries not yet promoted, oldest first.
 func (s *SQLiteEpisodicStore) ListUnpromoted(ctx context.Context, agentID, userID string, limit int) ([]store.EpisodicSummary, error) {
 	return s.listUnpromoted(ctx, agentID, userID, limit, "created_at ASC")

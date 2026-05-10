@@ -232,85 +232,63 @@ func (s *PGContactStore) GetSenderIDsByContactIDs(ctx context.Context, contactID
 	return result, rows.Err()
 }
 
-func (s *PGContactStore) MergeContacts(ctx context.Context, contactIDs []uuid.UUID, tenantUserID uuid.UUID) error {
-	if len(contactIDs) == 0 {
-		return nil
-	}
-	tid := store.TenantIDFromContext(ctx)
-
-	placeholders := make([]string, len(contactIDs))
-	args := make([]any, len(contactIDs))
-	for i, id := range contactIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		args[i] = id
-	}
-	inClause := strings.Join(placeholders, ",")
-
-	// $N+1 = tenantUserID, $N+2 = tenant_id
-	args = append(args, tenantUserID, tid)
-	q := fmt.Sprintf(
-		"UPDATE channel_contacts SET merged_id = $%d WHERE id IN (%s) AND tenant_id = $%d",
-		len(args)-1, inClause, len(args),
+// GetContactByChannelAndChatID returns the channel_contacts row for (channel_type, sender_id).
+// Returns store.ErrContactNotFound when no row matches.
+func (s *PGContactStore) GetContactByChannelAndChatID(ctx context.Context, channelType, chatID string) (*store.ChannelContact, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+contactSelectCols+`
+		FROM channel_contacts
+		WHERE channel_type = $1 AND sender_id = $2
+		LIMIT 1`,
+		channelType, chatID,
 	)
-	_, err := s.db.ExecContext(ctx, q, args...)
-	if err == nil {
-		s.InvalidateContactResolveCache()
-	}
-	return err
-}
-
-func (s *PGContactStore) UnmergeContacts(ctx context.Context, contactIDs []uuid.UUID) error {
-	if len(contactIDs) == 0 {
-		return nil
-	}
-	tid := store.TenantIDFromContext(ctx)
-
-	placeholders := make([]string, len(contactIDs))
-	args := make([]any, len(contactIDs))
-	for i, id := range contactIDs {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		args[i] = id
-	}
-	inClause := strings.Join(placeholders, ",")
-
-	args = append(args, tid)
-	q := fmt.Sprintf(
-		"UPDATE channel_contacts SET merged_id = NULL WHERE id IN (%s) AND tenant_id = $%d",
-		inClause, len(args),
-	)
-	_, err := s.db.ExecContext(ctx, q, args...)
-	if err == nil {
-		s.InvalidateContactResolveCache()
-	}
-	return err
-}
-
-func (s *PGContactStore) GetContactsByMergedID(ctx context.Context, mergedID uuid.UUID) ([]store.ChannelContact, error) {
-	tid := store.TenantIDFromContext(ctx)
-
-	q := `SELECT id, channel_type, channel_instance, sender_id, user_id,
-		display_name, username, avatar_url, peer_kind, contact_type, thread_id, thread_type, merged_id,
-		first_seen_at, last_seen_at
-		FROM channel_contacts WHERE merged_id = $1 AND tenant_id = $2
-		ORDER BY last_seen_at DESC`
-
-	rows, err := s.db.QueryContext(ctx, q, mergedID, tid)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var contacts []store.ChannelContact
-	for rows.Next() {
-		var c store.ChannelContact
-		if err := rows.Scan(
-			&c.ID, &c.ChannelType, &c.ChannelInstance, &c.SenderID, &c.UserID,
-			&c.DisplayName, &c.Username, &c.AvatarURL, &c.PeerKind, &c.ContactType, &c.ThreadID, &c.ThreadType, &c.MergedID,
-			&c.FirstSeenAt, &c.LastSeenAt,
-		); err != nil {
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
 			return nil, err
 		}
-		contacts = append(contacts, c)
+		return nil, store.ErrContactNotFound
 	}
-	return contacts, rows.Err()
+	c, err := scanPGContact(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
+
+// GetCanonicalDMContact returns the most-recently-seen unmerged DM contact for the
+// given user on a given channel. Used to re-route outbound replies after contact merge.
+// Returns store.ErrContactIDNotFound when no qualifying row exists.
+func (s *PGContactStore) GetCanonicalDMContact(ctx context.Context, userID uuid.UUID, channelType string) (*store.ChannelContact, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+contactSelectCols+`
+		FROM channel_contacts
+		WHERE user_id = $1 AND channel_type = $2 AND peer_kind = 'direct' AND merged_id IS NULL
+		ORDER BY last_seen_at DESC
+		LIMIT 1`,
+		userID, channelType,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, store.ErrContactIDNotFound
+	}
+	c, err := scanPGContact(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// Note: MergeContacts/UnmergeContacts/GetContactsByMergedID were removed in v4.
+// The single MergeUserAggregate method (see merge_aggregate.go) is the only
+// sanctioned merge entry point — it owns one *sql.Tx covering channel_contacts
+// + agent_sessions + user_context_files + memory_documents for atomic semantics.

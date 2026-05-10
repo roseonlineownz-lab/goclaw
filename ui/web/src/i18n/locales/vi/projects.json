@@ -1,0 +1,130 @@
+{
+  "title": "Projects",
+  "description": "Group sessions, agents and grants under a workspace.",
+  "createButton": "Create Project",
+  "searchPlaceholder": "Search projects...",
+  "emptyTitle": "No projects yet",
+  "emptyDescription": "Create your first project to organize work and grant access.",
+  "noMatchTitle": "No matching projects",
+  "noMatchDescription": "Try a different search term.",
+  "viewCard": "Card view",
+  "viewList": "List view",
+  "columns": {
+    "name": "Name",
+    "slug": "Slug",
+    "owner": "Owner",
+    "members": "Members",
+    "status": "Status",
+    "created": "Created"
+  },
+  "status": {
+    "active": "Active",
+    "archived": "Archived",
+    "all": "All"
+  },
+  "create": {
+    "title": "Create Project",
+    "name": "Name",
+    "namePlaceholder": "Acme Roadmap",
+    "slug": "Slug",
+    "slugHelp": "Lowercase letters, numbers, hyphens (3–64 chars). Cannot be changed later.",
+    "slugInvalid": "Slug must be kebab-case (a-z, 0-9, hyphens).",
+    "slugConflict": "This slug is already taken.",
+    "description": "Description",
+    "descriptionPlaceholder": "What is this project for?",
+    "cancel": "Cancel",
+    "submit": "Create",
+    "creating": "Creating..."
+  },
+  "delete": {
+    "title": "Delete Project",
+    "description": "Are you sure you want to delete \"{{name}}\"? Active grants and links will be removed.",
+    "confirmLabel": "Delete"
+  },
+  "detail": {
+    "back": "Back to projects",
+    "tabs": {
+      "overview": "Overview",
+      "members": "Members",
+      "agents": "Agents",
+      "settings": "Settings"
+    },
+    "owner": "Owner",
+    "createdAt": "Created",
+    "updatedAt": "Updated",
+    "slugLockedTooltip": "Slug is fixed once a project is created."
+  },
+  "overview": {
+    "noDescription": "No description.",
+    "summaryLabel": "Summary"
+  },
+  "members": {
+    "subTabs": {
+      "direct": "Direct Grants",
+      "inherited": "Inherited"
+    },
+    "directEmptyTitle": "No direct grants",
+    "directEmptyDescription": "Add users below to give them access to this project.",
+    "inheritedEmptyTitle": "No inherited grants",
+    "inheritedEmptyDescription": "Grants from teams will appear here.",
+    "addButton": "Add Members",
+    "addTitle": "Grant project access",
+    "addUsersLabel": "Users",
+    "addRoleLabel": "Role",
+    "addSubmit": "Grant access",
+    "adding": "Granting...",
+    "viaTeam": "via team",
+    "removeConfirmTitle": "Revoke access?",
+    "removeConfirmDescription": "Remove {{user}} from this project?",
+    "removeConfirmLabel": "Revoke",
+    "columns": {
+      "user": "User",
+      "role": "Role",
+      "grantedBy": "Granted by",
+      "grantedAt": "Granted",
+      "team": "Team",
+      "actions": "Actions"
+    }
+  },
+  "roles": {
+    "viewer": "Viewer",
+    "member": "Member",
+    "editor": "Editor"
+  },
+  "agents": {
+    "emptyTitle": "No agents in this project",
+    "emptyDescription": "Attach agents to this project from the agent detail page."
+  },
+  "settings": {
+    "renameLabel": "Display name",
+    "renamePlaceholder": "Project display name",
+    "descriptionLabel": "Description",
+    "descriptionPlaceholder": "Project description",
+    "save": "Save changes",
+    "saving": "Saving...",
+    "saved": "Settings saved.",
+    "dangerZone": "Danger Zone",
+    "deleteHint": "Permanently delete this project. This cannot be undone."
+  },
+  "picker": {
+    "placeholder": "Select project...",
+    "empty": "No projects available",
+    "all": "All projects",
+    "none": "(none)"
+  },
+  "errors": {
+    "loadFailed": "Failed to load projects.",
+    "createFailed": "Failed to create project.",
+    "updateFailed": "Failed to update project.",
+    "deleteFailed": "Failed to delete project.",
+    "grantFailed": "Failed to grant access.",
+    "revokeFailed": "Failed to revoke access."
+  },
+  "toast": {
+    "created": "Project created.",
+    "updated": "Project updated.",
+    "deleted": "Project deleted.",
+    "granted": "Access granted.",
+    "revoked": "Access revoked."
+  }
+}

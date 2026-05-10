@@ -46,8 +46,6 @@
     "summonFailed": "Thất bại",
     "resummon": "Triệu hồi lại",
     "delete": "Xóa",
-    "predefinedTooltip": "Tệp ngữ cảnh dùng chung (SOUL.md, IDENTITY.md, AGENTS.md) với USER.md riêng cho mỗi người dùng.",
-    "openTooltip": "Mỗi người dùng có bộ tệp ngữ cảnh riêng đầy đủ.",
     "evolving": "Đang tiến hóa",
     "static": "Tĩnh",
     "evolvingTooltip": "Agent có thể tự tiến hóa phong cách giao tiếp (SOUL.md). Nhận dạng và quy trình làm việc giữ nguyên.",
@@ -270,6 +268,23 @@
       "memoryHint": "Bộ nhớ episodic + tự động chèn L0",
       "retrievalTitle": "Truy Xuất",
       "retrievalHint": "Tải tri thức tiến dần L0/L1/L2"
+    },
+    "v3": {
+      "title": "V3 Features",
+      "pipeline": "V3 Pipeline",
+      "pipelineHint": "Use new 8-stage pipeline instead of legacy loop",
+      "pipelineActiveInfo": "Agent is using the new v3 pipeline. Toggle off to revert to v2 behavior.",
+      "memory": "V3 Memory",
+      "memoryHint": "Enable episodic memory and L0 auto-injection",
+      "retrieval": "V3 Retrieval",
+      "retrievalHint": "Enable new retrieval pipeline"
+    },
+    "orchestration": {
+      "title": "Orchestration",
+      "mode": "Mode",
+      "delegateTargets": "Delegate Targets",
+      "noDelegates": "No delegate targets configured. Agent uses self-clone (spawn) mode.",
+      "team": "Team"
     }
   },
   "general": {

@@ -43,13 +43,20 @@
     "model": "Model",
     "voice": "Giọng nói"
   },
-  "providerSettings": "Cài đặt {{provider}}",
-  "providers": {
-    "edge": "Edge (Miễn phí)",
-    "elevenlabs": "ElevenLabs",
-    "minimax": "MiniMax",
-    "none": "Không có (Tắt)",
-    "openai": "OpenAI"
+  "voice_refresh": "Làm mới",
+  "voice_preview": "Nghe thử",
+  "voice_stop_preview": "Dừng",
+  "voice_no_voices": "Chưa có giọng đọc",
+  "voice_save_config_first": "Lưu API key trước để tải giọng đọc",
+  "voice_loading": "Đang tải giọng đọc…",
+  "voice_preview_error": "Không nghe thử được — đang làm mới",
+  "model_label": "Mô hình",
+  "model_placeholder": "Mặc định (hệ thống)",
+  "empty_state": {
+    "title": "Chưa cấu hình TTS",
+    "description": "Cấu hình provider TTS để bật giọng đọc cho agent.",
+    "cta": "Cấu hình TTS",
+    "non_owner_hint": "Liên hệ chủ workspace để cấu hình TTS."
   },
   "replyModes": {
     "all": "Tất cả",

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/store/pg"
 )
@@ -20,9 +22,14 @@ func TestVaultClassify_DeleteDocLinksByTypes_SingleType(t *testing.T) {
 	tid := tenantID.String()
 	aid := agentID.String()
 
-	// Create 2 documents
-	docA := makeVaultDoc(tid, aid, "classify/source.md", "Source Doc")
-	docB := makeVaultDoc(tid, aid, "classify/target.md", "Target Doc")
+	// Path-unique per run: vault_documents UPSERT keys on
+	// (scope, custom_scope, path, owner_user_id) — agent_id is NOT in the
+	// conflict tuple, so a personal doc at a fixed path will reuse rows
+	// abandoned by earlier failed runs (along with their links). UUID suffix
+	// guarantees a fresh row per test.
+	suffix := uuid.New().String()[:8]
+	docA := makeVaultDoc(tid, aid, "classify/source-"+suffix+".md", "Source Doc")
+	docB := makeVaultDoc(tid, aid, "classify/target-"+suffix+".md", "Target Doc")
 	if err := vs.UpsertDocument(ctx, docA); err != nil {
 		t.Fatalf("UpsertDocument A: %v", err)
 	}
@@ -469,10 +476,16 @@ func TestVaultClassify_DeleteAllClassifyTypesAndSemantic(t *testing.T) {
 	tid := tenantID.String()
 	aid := agentID.String()
 
+	// Per-test path suffix so stale rows from prior runs (or other parallel
+	// tests) don't merge into the same vault_documents row via path-based
+	// upsert. Without this, GetOutLinks returns leftover links from previous
+	// runs of this same fixture.
+	suffix := uuid.New().String()[:8]
+
 	// Create documents
-	docSource := makeVaultDoc(tid, aid, "classify/source.md", "Source Doc")
-	docTarget1 := makeVaultDoc(tid, aid, "classify/target1.md", "Target 1")
-	docTarget2 := makeVaultDoc(tid, aid, "classify/target2.md", "Target 2")
+	docSource := makeVaultDoc(tid, aid, "classify/source-"+suffix+".md", "Source Doc")
+	docTarget1 := makeVaultDoc(tid, aid, "classify/target1-"+suffix+".md", "Target 1")
+	docTarget2 := makeVaultDoc(tid, aid, "classify/target2-"+suffix+".md", "Target 2")
 
 	for _, doc := range []*store.VaultDocument{docSource, docTarget1, docTarget2} {
 		if err := vs.UpsertDocument(ctx, doc); err != nil {

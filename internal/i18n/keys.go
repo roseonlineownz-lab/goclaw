@@ -181,9 +181,55 @@ const (
 	MsgInvalidRole = "error.invalid_role" // "invalid role: allowed values are owner, admin, operator, member, viewer"
 
 	// --- Contact merge ---
-	MsgContactIDsRequired  = "error.contact_ids_required"  // "contact_ids is required"
-	MsgMergeTargetRequired = "error.merge_target_required"  // "exactly one of tenant_user_id or create_user is required"
-	MsgTenantUserNotFound  = "error.tenant_user_not_found"  // "tenant user not found"
-	MsgTenantMismatch      = "error.tenant_mismatch"        // "tenant user does not belong to this tenant"
-	MsgTenantScopeRequired = "error.tenant_scope_required"  // "tenant scope is required for this operation"
+	MsgContactIDsRequired       = "error.contact_ids_required"          // "contact_ids is required"
+	MsgMergeTargetRequired      = "error.merge_target_required"         // "target_user_id is required"
+	MsgTenantUserNotFound       = "error.tenant_user_not_found"         // (v3 legacy — retained for backward refs)
+	MsgTenantMismatch           = "error.tenant_mismatch"               // (v3 legacy)
+	MsgTenantScopeRequired      = "error.tenant_scope_required"         // "tenant scope is required for this operation"
+	MsgMergeSourceAlreadyMerged = "error.merge_source_already_merged"   // "source contact already merged — user→user merge forbidden"
+	MsgMergeTargetAlreadyMerged = "error.merge_target_already_merged"   // "target user already merged into another — chained merges forbidden"
+	MsgMergeUserToUserForbidden = "error.merge_user_to_user_forbidden"  // "cannot merge between two authenticated users"
+	MsgMergeAtomicFailed        = "error.merge_atomic_failed"           // "merge transaction failed: %s"
+	MsgMergeTargetUserNotFound  = "error.merge_target_user_not_found"   // "target user not found: %s"
+
+	// --- Auth + Bootstrap ---
+	MsgBootstrapRequired    = "error.bootstrap_required"     // "gateway not bootstrapped — POST /v1/bootstrap/init first"
+	MsgBootstrapAlreadyDone = "error.bootstrap_already_done" // "bootstrap already completed"
+	MsgInvalidEmail         = "error.invalid_email"          // "invalid email address"
+	MsgWeakPassword         = "error.weak_password"          // "password must be at least 12 chars and contain a letter, digit, and symbol"
+	MsgInvalidCredentials   = "error.invalid_credentials"    // "invalid email or password"
+	MsgRefreshTokenInvalid  = "error.refresh_token_invalid"  // "refresh token invalid"
+	MsgRefreshTokenExpired  = "error.refresh_token_expired"  // "refresh token expired"
+	MsgRefreshTokenRevoked  = "error.refresh_token_revoked"  // "refresh token revoked"
+	MsgAccessTokenExpired   = "error.access_token_expired"   // "access token expired"
+	MsgAccessTokenInvalid   = "error.access_token_invalid"   // "access token invalid"
+	MsgCurrentPasswordWrong = "error.current_password_wrong" // "current password is incorrect"
+	MsgDisplayNameInvalid   = "error.display_name_invalid"   // "display name must be 2-64 characters"
+
+	// --- Password reset ---
+	MsgPasswordResetInvalidToken = "error.password_reset_invalid_token" // "invalid or expired reset token"
+	MsgPasswordResetEmailSubject = "password_reset.email_subject"       // "Reset your password"
+	MsgPasswordResetEmailBody    = "password_reset.email_body"          // "Click the link to reset your password: %s\nLink expires in 1 hour."
+
+	// --- Agent sharing ---
+	MsgInvalidShareTarget = "error.invalid_share_target" // "share target must be exactly one of user_id or team_id"
+	MsgInvalidShareRole   = "error.invalid_share_role"   // "share role must be one of viewer, member, editor"
+
+	// --- Channel default project ---
+	MsgChannelDefaultProjectDenied = "permissions.channel_default_project.denied" // "You don't have permission to set this project as default for this channel"
+
+	// --- Projects ---
+	MsgProjectSlugImmutable   = "error.project_slug_immutable"    // "project slug cannot be changed after creation"
+	MsgProjectInvalidStatus   = "error.project_invalid_status"    // "status must be 'active' or 'archived'"
+	MsgProjectGrantInvalid    = "error.project_grant_invalid"     // "grant must specify exactly one of userId or teamId"
+	MsgProjectGrantInvalidRole = "error.project_grant_invalid_role" // "role must be one of viewer, member, editor"
+
+	// --- Hooks ---
+	MsgHookInvalidMatcher          = "hook.invalid_matcher"           // "invalid matcher regex: %s"
+	MsgHookCommandDisabledStandard = "hook.command_disabled_standard" // "command-type hooks are only available on Lite edition"
+	MsgHookPromptRequiresMatcher   = "hook.prompt_requires_matcher"   // "prompt hooks require a matcher or if_expr (runaway-cost guard)"
+	MsgHookCircuitBreakerTripped   = "hook.circuit_breaker_tripped"   // "hook auto-disabled after repeated failures"
+	MsgHookBudgetExceeded          = "hook.budget_exceeded"           // "tenant hook token budget exceeded"
+	MsgHookPerTurnCapReached       = "hook.per_turn_cap_reached"      // "hook invocation per-turn cap reached"
+	MsgHookBuiltinReadOnly         = "hook.builtin_readonly"          // "builtin hooks are read-only except for the enabled toggle"
 )

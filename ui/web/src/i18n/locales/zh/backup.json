@@ -92,36 +92,5 @@
     "saving": "正在测试连接...",
     "saveSuccess": "S3 配置已保存并验证连接",
     "saveError": "保存 S3 配置失败"
-  },
-  "tenant": {
-    "title": "租户备份与恢复",
-    "description": "备份或恢复单个租户数据",
-    "selectTenant": "选择租户",
-    "selectTenantPlaceholder": "选择一个租户...",
-    "backup": {
-      "start": "备份租户",
-      "running": "正在备份租户...",
-      "complete": "租户备份完成",
-      "download": "下载",
-      "tableCounts": "已备份的表",
-      "newBackup": "新建备份"
-    },
-    "restore": {
-      "mode": "恢复模式",
-      "modeUpsert": "合并（upsert）",
-      "modeReplace": "替换全部",
-      "modeNew": "新租户",
-      "dropzone": "将租户备份文件拖放到此处",
-      "dryRun": "模拟运行（仅预览）",
-      "start": "恢复租户",
-      "confirmTitle": "确认租户恢复",
-      "confirmDesc": "此操作将修改所选租户的数据。确定继续吗？",
-      "running": "正在恢复租户...",
-      "complete": "租户恢复完成",
-      "tablesRestored": "已恢复的表",
-      "filesExtracted": "已提取文件",
-      "dryRunNote": "模拟运行 — 未进行更改",
-      "newRestore": "新建恢复"
-    }
   }
 }

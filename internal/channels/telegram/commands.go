@@ -93,6 +93,7 @@ func (c *Channel) handleBotCommand(ctx context.Context, message *telego.Message,
 			"/writers — List file writers for this group\n" +
 			"/addwriter — Add a file writer (reply to their message)\n" +
 			"/removewriter — Remove a file writer (reply to their message)\n" +
+			"/project — Manage the session's project binding (list/current/switch/clear)\n" +
 			"\nJust send a message to chat with the AI."
 		msg := tu.Message(chatIDObj, helpText)
 		setThread(msg)
@@ -227,6 +228,9 @@ func (c *Channel) handleBotCommand(ctx context.Context, message *telego.Message,
 	case "/writers":
 		c.handleListWriters(ctx, chatID, chatIDStr, isGroup, setThread)
 		return true
+
+	case "/project":
+		return c.handleProjectCommand(ctx, chatID, chatIDStr, text, senderID, isGroup, isForum, messageThreadID, setThread)
 
 	case "/reactions":
 		var lines strings.Builder

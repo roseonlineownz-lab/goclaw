@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -68,7 +69,24 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 				}
 			}
 
-			if err := channel.Send(ctx, msg); err != nil {
+			// Resolve target chat_id: if the inbound contact has been merged into a
+			// canonical user, re-route DM replies to the canonical contact's chat_id.
+			// Group-originated replies always stay in the original group chat (privacy
+			// zone applies to FS/memory only, not channel addressability).
+			// Composite-key lookup at dispatch time — no ContactID on OutboundMessage.
+			msg.ChatID = m.resolveTargetChatID(ctx, msg)
+
+			sendCtx := ctx
+
+			// Add agent audio context for per-agent TTS voice override
+			if msg.AgentID != uuid.Nil && len(msg.AgentOtherConfig) > 0 {
+				sendCtx = store.WithAgentAudio(sendCtx, store.AgentAudioSnapshot{
+					AgentID:     msg.AgentID,
+					OtherConfig: msg.AgentOtherConfig,
+				})
+			}
+
+			if err := channel.Send(sendCtx, msg); err != nil {
 				slog.Error("error sending message to channel",
 					"channel", msg.Channel,
 					"chat_id", msg.ChatID,
@@ -141,6 +159,49 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	}
 
 	return channel.Send(ctx, msg)
+}
+
+// resolveTargetChatID returns the effective chat_id for an outbound message,
+// re-routing to a canonical contact's chat_id when the original sender contact
+// has been merged. Group contacts always keep their original chat_id.
+// Falls back to msg.ChatID on any lookup failure (system messages, no contact row, etc.).
+func (m *Manager) resolveTargetChatID(ctx context.Context, msg bus.OutboundMessage) string {
+	if m.contactStore == nil {
+		return msg.ChatID
+	}
+
+	contact, err := m.contactStore.GetContactByChannelAndChatID(ctx, msg.Channel, msg.ChatID)
+	if err != nil {
+		if !errors.Is(err, store.ErrContactNotFound) {
+			slog.Warn("dispatch: contact lookup failed, using original chat_id",
+				"channel", msg.Channel, "chat_id", msg.ChatID, "error", err)
+		}
+		return msg.ChatID
+	}
+
+	// No merge — route normally.
+	if contact.MergedID == nil {
+		return msg.ChatID
+	}
+
+	// Group contacts: privacy zone applies to FS/memory only.
+	// The bot remains a group member — reply stays in the original group chat.
+	if contact.PeerKind != nil && *contact.PeerKind == "group" {
+		return msg.ChatID
+	}
+
+	// DM contact merged: find the canonical user's DM on the same channel.
+	canonical, err := m.contactStore.GetCanonicalDMContact(ctx, *contact.MergedID, msg.Channel)
+	if err != nil {
+		if !errors.Is(err, store.ErrContactIDNotFound) {
+			slog.Warn("dispatch: canonical DM lookup failed, using original chat_id",
+				"channel", msg.Channel, "merged_id", contact.MergedID, "error", err)
+		}
+		// No canonical DM on this channel — fall back to original.
+		return msg.ChatID
+	}
+
+	return canonical.SenderID
 }
 
 // --- Send error notification helpers ---

@@ -189,6 +189,15 @@ func (s *PGAgentStore) Update(ctx context.Context, id uuid.UUID, updates map[str
 		return nil
 	}
 
+	// Immutability: agent_key is set at creation and must never change.
+	// The slug couples to the FS workspace path and the router cache; renames
+	// would orphan workspace dirs and break cache invalidation. Mirrors the
+	// team_key strip in PGTeamStore.UpdateTeam.
+	delete(updates, "agent_key")
+	if len(updates) == 0 {
+		return nil
+	}
+
 	// Coerce NOT NULL columns: null → default to prevent constraint violations.
 	if v, ok := updates["skill_nudge_interval"]; ok && v == nil {
 		updates["skill_nudge_interval"] = 0

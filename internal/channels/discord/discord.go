@@ -22,22 +22,76 @@ const pairingDebounceTime = 60 * time.Second
 // Channel connects to Discord via the Bot API using gateway events.
 type Channel struct {
 	*channels.BaseChannel
-	session         *discordgo.Session
-	config          config.DiscordConfig
-	botUserID       string   // populated on start
-	placeholders    sync.Map // placeholderKey string → messageID string
-	typingCtrls     sync.Map // channelID string → *typing.Controller
-	agentStore      store.AgentStore            // for agent key lookup (nil = writer commands disabled)
-	configPermStore store.ConfigPermissionStore // for group file writer management (nil = writer commands disabled)
+	session           *discordgo.Session
+	config            config.DiscordConfig
+	botUserID         string   // populated on start
+	placeholders      sync.Map // placeholderKey string → messageID string
+	typingCtrls       sync.Map // channelID string → *typing.Controller
+	agentStore        store.AgentStore            // for agent key lookup (nil = writer commands disabled)
+	configPermStore   store.ConfigPermissionStore // for group file writer management (nil = writer commands disabled)
+	pendingStore      store.PendingMessageStore   // for group history buffering (nil = no pending storage)
+	sessionStore      store.SessionCoreStore      // for /project session binding (nil = /project disabled)
+	projectStore      store.ProjectStore          // for /project slug lookup (nil = /project disabled)
+	projectGrantStore store.ProjectGrantStore     // for /project switch RBAC (nil = /project disabled)
+	episodicStore     store.EpisodicStore         // for /project switch episodic retag (nil → DB-only)
+	baseDir           string                      // workspace root for /project FS relocation
+	audioMgr          *audio.Manager              // unified STT via audio.Manager (nil = no STT)
 	// pairingService, pairingDebounce, approvedGroups, groupHistory, historyLimit, requireMention
 	// are inherited from channels.BaseChannel.
 }
 
-// New creates a new Discord channel from config.
-// agentStore and configPermStore are optional (nil = writer commands disabled).
-func New(cfg config.DiscordConfig, msgBus *bus.MessageBus, pairingSvc store.PairingStore,
-	agentStore store.AgentStore, configPermStore store.ConfigPermissionStore,
-	pendingStore store.PendingMessageStore) (*Channel, error) {
+// Option configures optional dependencies for the Discord channel.
+// Mirrors the Telegram/Feishu pattern so callers can wire stores
+// post-construction without breaking the New() signature when new optional
+// dependencies are added.
+type Option func(*Channel)
+
+// WithAgentStore enables agent key → UUID resolution for writer + project
+// commands.
+func WithAgentStore(s store.AgentStore) Option {
+	return func(c *Channel) { c.agentStore = s }
+}
+
+// WithConfigPermStore enables the group file writer ACL used by /addwriter,
+// /removewriter, /writers.
+func WithConfigPermStore(s store.ConfigPermissionStore) Option {
+	return func(c *Channel) { c.configPermStore = s }
+}
+
+// WithPendingMessageStore wires the group-history buffer.
+func WithPendingMessageStore(s store.PendingMessageStore) Option {
+	return func(c *Channel) { c.pendingStore = s }
+}
+
+// WithSessionStore enables /project session-binding writes.
+func WithSessionStore(s store.SessionCoreStore) Option {
+	return func(c *Channel) { c.sessionStore = s }
+}
+
+// WithProjectStore enables /project slug lookups.
+func WithProjectStore(s store.ProjectStore) Option {
+	return func(c *Channel) { c.projectStore = s }
+}
+
+// WithProjectGrantStore enables /project switch RBAC checks.
+func WithProjectGrantStore(s store.ProjectGrantStore) Option {
+	return func(c *Channel) { c.projectGrantStore = s }
+}
+
+// WithEpisodicStore wires episodic retag for /project switch.
+func WithEpisodicStore(s store.EpisodicStore) Option {
+	return func(c *Channel) { c.episodicStore = s }
+}
+
+// WithBaseDir sets the workspace root used for /project FS relocation.
+func WithBaseDir(dir string) Option {
+	return func(c *Channel) { c.baseDir = dir }
+}
+
+// New creates a new Discord channel. audioMgr is optional (nil = STT disabled).
+// Optional stores (agent, config-perm, pending, session, project, project-grant)
+// flow in via Options.
+func New(cfg config.DiscordConfig, msgBus *bus.MessageBus, pairingSvc store.PairingStore, audioMgr *audio.Manager, opts ...Option) (*Channel, error) {
 	session, err := discordgo.New("Bot " + cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
@@ -62,15 +116,17 @@ func New(cfg config.DiscordConfig, msgBus *bus.MessageBus, pairingSvc store.Pair
 	}
 
 	ch := &Channel{
-		BaseChannel:     base,
-		session:         session,
-		config:          cfg,
-		agentStore:      agentStore,
-		configPermStore: configPermStore,
+		BaseChannel: base,
+		session:     session,
+		config:      cfg,
+		audioMgr:    audioMgr,
+	}
+	for _, opt := range opts {
+		opt(ch)
 	}
 	ch.SetRequireMention(requireMention)
 	ch.SetPairingService(pairingSvc)
-	ch.SetGroupHistory(channels.MakeHistory(channels.TypeDiscord, pendingStore, base.TenantID()))
+	ch.SetGroupHistory(channels.MakeHistory(channels.TypeDiscord, ch.pendingStore))
 	ch.SetHistoryLimit(historyLimit)
 	return ch, nil
 }

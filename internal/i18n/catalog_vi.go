@@ -177,10 +177,72 @@ func init() {
 
 		MsgInvalidRole: "vai trò không hợp lệ: giá trị cho phép là owner, admin, operator, member, viewer",
 
-		MsgContactIDsRequired:  "contact_ids là bắt buộc",
-		MsgMergeTargetRequired: "cần chính xác một trong tenant_user_id hoặc create_user",
-		MsgTenantUserNotFound:  "không tìm thấy tenant user",
-		MsgTenantMismatch:      "tenant user không thuộc tenant này",
-		MsgTenantScopeRequired: "cần xác định tenant để thực hiện thao tác này",
+		MsgContactIDsRequired:       "contact_ids là bắt buộc",
+		MsgMergeTargetRequired:      "target_user_id là bắt buộc",
+		MsgTenantUserNotFound:       "không tìm thấy tenant user",
+		MsgTenantMismatch:           "tenant user không thuộc tenant này",
+		MsgTenantScopeRequired:      "cần xác định tenant để thực hiện thao tác này",
+		MsgMergeSourceAlreadyMerged: "contact nguồn đã được merge — không cho phép merge user→user",
+		MsgMergeTargetAlreadyMerged: "user đích đã được merge vào user khác — không cho phép chained merge",
+		MsgMergeUserToUserForbidden: "không thể merge giữa hai người dùng đã xác thực",
+		MsgMergeAtomicFailed:        "giao dịch merge thất bại: %s",
+		MsgMergeTargetUserNotFound:  "không tìm thấy user đích: %s",
+
+		// TTS / Giọng đọc
+		MsgTtsUnknownModel:       "model tts không hỗ trợ: %s",
+		MsgVoicesListFailed:      "không tải được danh sách giọng đọc: %s",
+		MsgTtsGeminiInvalidVoice: "giọng đọc Gemini không hợp lệ: %s",
+		MsgTtsGeminiSpeakerLimit: "Gemini TTS hỗ trợ tối đa 2 người nói",
+		MsgTtsGeminiInvalidModel:  "mô hình Gemini TTS không hợp lệ: %s",
+		MsgTtsGeminiTextOnly:      "Gemini từ chối tạo âm thanh. Vui lòng thử văn bản đơn giản hơn, không dịch hay bình luận.",
+		MsgTtsParamOutOfRange:     "tham số TTS %q có giá trị %v nằm ngoài phạm vi [%v, %v]",
+		MsgTtsParamUnknownKey:     "tham số TTS %q không được nhà cung cấp này hỗ trợ",
+		MsgTtsMiniMaxVoicesFailed: "không tải được danh sách giọng đọc MiniMax: %s",
+
+		// STT
+		MsgSTTAllProvidersFailed:     "Tất cả nhà cung cấp STT đều thất bại",
+		MsgSTTLegacyConfigDeprecated: "Cấu hình STT cũ đã lỗi thời; hãy chuyển sang builtin_tools[stt]",
+		MsgSTTWhatsappPrivacyWarning: "Bật STT cho WhatsApp sẽ phá vỡ mã hóa đầu cuối cho tin nhắn thoại gửi đến agent này.",
+		MsgVoiceMessageFallback:      "[Tin nhắn thoại]",
+
+		// Hooks
+		MsgHookInvalidMatcher:          "biểu thức regex matcher không hợp lệ: %s",
+		MsgHookCommandDisabledStandard: "hook loại command chỉ khả dụng trên phiên bản Lite",
+		MsgHookPromptRequiresMatcher:   "hook prompt bắt buộc có matcher hoặc if_expr (chống chi phí vượt kiểm soát)",
+		MsgHookCircuitBreakerTripped:   "hook đã tự tắt sau nhiều lần thất bại liên tiếp",
+		MsgHookBudgetExceeded:          "tenant đã vượt ngân sách token cho hook",
+		MsgHookPerTurnCapReached:       "đã đạt giới hạn số lần gọi hook trong một lượt",
+		MsgHookBuiltinReadOnly:         "hook dựng sẵn chỉ cho phép bật/tắt, không thể chỉnh sửa",
+
+		// Message tool cross-target forward notice
+		MessageCrossTargetForwarded: "📤 Đã forward sang %s theo yêu cầu: %q",
+
+		// Auth + Bootstrap
+		MsgBootstrapRequired:    "gateway chưa được khởi tạo — gọi POST /v1/bootstrap/init trước",
+		MsgBootstrapAlreadyDone: "gateway đã được khởi tạo trước đó",
+		MsgInvalidEmail:         "email không hợp lệ",
+		MsgWeakPassword:         "mật khẩu phải có ít nhất 12 ký tự bao gồm chữ cái, số và ký tự đặc biệt",
+		MsgInvalidCredentials:   "email hoặc mật khẩu không đúng",
+		MsgRefreshTokenInvalid:  "refresh token không hợp lệ",
+		MsgRefreshTokenExpired:  "refresh token đã hết hạn",
+		MsgRefreshTokenRevoked:  "refresh token đã bị thu hồi",
+		MsgAccessTokenExpired:   "access token đã hết hạn",
+		MsgAccessTokenInvalid:   "access token không hợp lệ",
+		MsgCurrentPasswordWrong: "mật khẩu hiện tại không đúng",
+		MsgDisplayNameInvalid:   "tên hiển thị phải từ 2 đến 64 ký tự",
+
+		MsgPasswordResetInvalidToken: "token đặt lại mật khẩu không hợp lệ hoặc đã hết hạn",
+		MsgPasswordResetEmailSubject: "Đặt lại mật khẩu",
+		MsgPasswordResetEmailBody:    "Bấm vào liên kết để đặt lại mật khẩu: %s\nLiên kết hết hạn sau 1 giờ.",
+
+		MsgInvalidShareTarget: "mục tiêu chia sẻ phải là một trong user_id hoặc team_id",
+		MsgInvalidShareRole:   "vai trò chia sẻ phải là viewer, member hoặc editor",
+
+		MsgChannelDefaultProjectDenied: "Bạn không có quyền đặt dự án này làm mặc định cho kênh này",
+
+		MsgProjectSlugImmutable:    "không thể thay đổi slug của dự án sau khi đã tạo",
+		MsgProjectInvalidStatus:    "trạng thái phải là 'active' hoặc 'archived'",
+		MsgProjectGrantInvalid:     "grant phải chỉ định đúng một trong userId hoặc teamId",
+		MsgProjectGrantInvalidRole: "role phải là một trong viewer, member, editor",
 	})
 }

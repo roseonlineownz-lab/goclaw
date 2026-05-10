@@ -32,8 +32,6 @@
       "operator.pairing": "Quản lý ghép nối",
       "operator.provision": "Cấp phát tenant mới"
     },
-    "tenant": "Tenant",
-    "tenantSystem": "Hệ thống (tất cả tenant)",
     "expiry": "Hạn sử dụng",
     "expiryOptions": {
       "never": "Không giới hạn",
@@ -65,8 +63,6 @@
   },
   "never": "Không giới hạn",
   "neverUsed": "Chưa dùng",
-  "tenantBadgeSystem": "Hệ thống",
-  "tenantBadgeUnknown": "Không xác định",
   "columns.expiry": "Hạn dùng",
   "codeDialog": {
     "title": "Hướng dẫn sử dụng API Key",

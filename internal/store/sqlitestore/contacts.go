@@ -14,6 +14,11 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
+// upsertContactSQL performs the INSERT … ON CONFLICT upsert.
+// SQLite has no DEFAULT uuid_generate_v7(); the caller must supply the id
+// for the INSERT branch. The ON CONFLICT branch ignores the supplied id
+// (it already exists) and only updates mutable columns.
+
 // SQLiteContactStore implements store.ContactStore backed by SQLite.
 type SQLiteContactStore struct {
 	db *sql.DB
@@ -24,14 +29,14 @@ func NewSQLiteContactStore(db *sql.DB) *SQLiteContactStore {
 }
 
 func (s *SQLiteContactStore) UpsertContact(ctx context.Context, channelType, channelInstance, senderID, userID, displayName, username, peerKind, contactType, threadID, threadType string) error {
-	tenantID := store.TenantIDFromContext(ctx)
-	if tenantID == uuid.Nil {
-		tenantID = store.MasterTenantID
-	}
+	// Generate a UUID v7 for the INSERT branch. SQLite has no server-side UUID
+	// default (unlike PG's uuid_generate_v7()), so the Go layer must supply it.
+	// The ON CONFLICT branch ignores this value — existing rows keep their id.
+	newID := uuid.Must(uuid.NewV7()).String()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO channel_contacts (channel_type, channel_instance, sender_id, user_id, display_name, username, peer_kind, contact_type, thread_id, thread_type, tenant_id)
-		VALUES (?, NULLIF(?,?), ?, NULLIF(?,?), NULLIF(?,?), NULLIF(?,?), NULLIF(?,?), ?, NULLIF(?,?), NULLIF(?,?), ?)
-		ON CONFLICT (tenant_id, channel_type, sender_id, COALESCE(thread_id, '')) DO UPDATE SET
+		INSERT INTO channel_contacts (id, channel_type, channel_instance, sender_id, user_id, display_name, username, peer_kind, contact_type, thread_id, thread_type)
+		VALUES (?, ?, NULLIF(?,?), ?, NULLIF(?,?), NULLIF(?,?), NULLIF(?,?), NULLIF(?,?), ?, NULLIF(?,?), NULLIF(?,?))
+		ON CONFLICT (channel_type, sender_id, COALESCE(thread_id, '')) DO UPDATE SET
 			display_name     = COALESCE(NULLIF(excluded.display_name,''), channel_contacts.display_name),
 			username         = COALESCE(NULLIF(excluded.username,''), channel_contacts.username),
 			user_id          = COALESCE(NULLIF(excluded.user_id,''), channel_contacts.user_id),
@@ -40,6 +45,7 @@ func (s *SQLiteContactStore) UpsertContact(ctx context.Context, channelType, cha
 			contact_type     = excluded.contact_type,
 			thread_type      = COALESCE(NULLIF(excluded.thread_type,''), channel_contacts.thread_type),
 			last_seen_at     = CURRENT_TIMESTAMP`,
+		newID,
 		channelType,
 		channelInstance, "",
 		senderID,
@@ -227,9 +233,68 @@ func (s *SQLiteContactStore) GetSenderIDsByContactIDs(ctx context.Context, conta
 	return result, rows.Err()
 }
 
-func (s *SQLiteContactStore) MergeContacts(ctx context.Context, contactIDs []uuid.UUID, tenantUserID uuid.UUID) error {
-	if len(contactIDs) == 0 {
-		return nil
+// GetContactByChannelAndChatID returns the channel_contacts row for (channel_type, sender_id).
+// Returns store.ErrContactNotFound when no row matches.
+func (s *SQLiteContactStore) GetContactByChannelAndChatID(ctx context.Context, channelType, chatID string) (*store.ChannelContact, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+contactSelectCols+`
+		FROM channel_contacts
+		WHERE channel_type = ? AND sender_id = ?
+		LIMIT 1`,
+		channelType, chatID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, store.ErrContactNotFound
+	}
+	c, err := scanContact(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetCanonicalDMContact returns the most-recently-seen unmerged DM contact for the
+// given user on a given channel. Used to re-route outbound replies after contact merge.
+// Returns store.ErrContactIDNotFound when no qualifying row exists.
+func (s *SQLiteContactStore) GetCanonicalDMContact(ctx context.Context, userID uuid.UUID, channelType string) (*store.ChannelContact, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+contactSelectCols+`
+		FROM channel_contacts
+		WHERE user_id = ? AND channel_type = ? AND peer_kind = 'direct' AND merged_id IS NULL
+		ORDER BY last_seen_at DESC
+		LIMIT 1`,
+		userID.String(), channelType,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, store.ErrContactIDNotFound
+	}
+	c, err := scanContact(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ResolveTenantUserID returns the merged user UUID (as string) for a given
+// (channelType, senderID) lookup, or "" if the contact is missing or unmerged.
+// SQLite stores UUIDs as TEXT — direct read, no JOIN needed.
+func (s *SQLiteContactStore) ResolveTenantUserID(ctx context.Context, channelType, senderID string) (string, error) {
+	if channelType == "" || senderID == "" {
+		return "", nil
 	}
 	tid := store.TenantIDFromContext(ctx)
 

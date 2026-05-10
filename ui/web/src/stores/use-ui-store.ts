@@ -53,9 +53,20 @@ export const useUiStore = create<UiState>()(
       setMobileSidebarOpen: (open) => set({ mobileSidebarOpen: open }),
     }),
     {
-      name: "goclaw:ui", // localStorage key
+      name: "goclaw:ui",
+      version: 1,
+      // v0 → v1: drop tenant-scoped UI preferences (last-active-tenant-id, per-tenant prefs).
+      migrate: (persisted, oldVersion) => {
+        if (!persisted || typeof persisted !== "object") return persisted;
+        if (oldVersion < 1) {
+          const s = persisted as Record<string, unknown>;
+          delete s.activeTenantId;
+          delete s.lastTenantId;
+          delete s.tenantPrefs;
+        }
+        return persisted;
+      },
       partialize: (state) => ({
-        // Persist user preferences — not transient UI state
         theme: state.theme,
         language: state.language,
         timezone: state.timezone,

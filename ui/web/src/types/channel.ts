@@ -13,6 +13,16 @@ export interface ChannelInstanceData {
   updated_at: string;
 }
 
+export interface ChannelContactData {
+  id: string;
+  channel_instance_id: string;
+  channel_user_id: string;
+  display_name?: string;
+  default_project_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ChannelRuntimeStatus {
   enabled: boolean;
   running: boolean;

@@ -9,6 +9,7 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
+	"github.com/nextlevelbuilder/goclaw/internal/workspace"
 )
 
 // TeamAttachmentsHandler serves team task attachment files for download.
@@ -92,7 +93,11 @@ func (h *TeamAttachmentsHandler) handleDownload(w http.ResponseWriter, r *http.R
 		cleanPath = filepath.Clean(att.Path)
 	} else {
 		// Legacy: {workspace}/teams/{teamID}/{chatID}/{relPath}
-		cleanPath = filepath.Clean(filepath.Join(h.dataDir, "teams", att.TeamID.String(), att.ChatID, att.Path))
+		// Sanitize chat_id segment — TeamID is a UUID (already safe), but
+		// chat_id is a raw channel-platform string and must not be allowed
+		// to inject path separators or "..". The wsRoot prefix check below
+		// is a second line of defense, not the first.
+		cleanPath = filepath.Clean(filepath.Join(h.dataDir, "teams", att.TeamID.String(), workspace.SanitizeSegment(att.ChatID), att.Path))
 	}
 	// Security: file must be within the workspace root to prevent path traversal.
 	wsRoot := filepath.Clean(h.dataDir) + string(filepath.Separator)

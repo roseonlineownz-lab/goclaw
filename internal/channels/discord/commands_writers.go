@@ -59,6 +59,9 @@ func (c *Channel) tryHandleCommand(m *discordgo.MessageCreate) bool {
 	case "writers":
 		c.handleListWriters(m)
 		return true
+	case "project":
+		c.handleProjectCommand(m)
+		return true
 	}
 
 	return false

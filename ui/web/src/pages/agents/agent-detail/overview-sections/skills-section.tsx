@@ -32,7 +32,7 @@ export function SkillsSection({ agentId }: SkillsSectionProps) {
       s.description.toLowerCase().includes(search.toLowerCase()),
     )
     .sort((a, b) => {
-      const rank = (s: typeof a) => s.granted ? 2 : s.is_system ? 1 : 0;
+      const rank = (s: typeof a) => (s.granted ? 2 : s.owner_id === "system" ? 1 : 0);
       return rank(a) - rank(b);
     });
 
@@ -80,7 +80,7 @@ export function SkillsSection({ agentId }: SkillsSectionProps) {
                   <Badge variant={visibilityVariant(skill.visibility)} className="text-2xs shrink-0">
                     {skill.visibility}
                   </Badge>
-                  {skill.is_system && (
+                  {skill.owner_id === "system" && (
                     <Badge variant="outline" className="border-blue-500 text-blue-600 text-2xs shrink-0">
                       {t("skills.system")}
                     </Badge>
@@ -90,7 +90,7 @@ export function SkillsSection({ agentId }: SkillsSectionProps) {
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{skill.description}</p>
                 )}
               </div>
-              {skill.is_system ? (
+              {skill.owner_id === "system" ? (
                 <span className="text-xs text-muted-foreground whitespace-nowrap shrink-0">
                   {t("skills.alwaysAvailable")}
                 </span>

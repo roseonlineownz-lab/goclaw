@@ -17,7 +17,7 @@
   },
   "tabs": {
     "documents": "文档",
-    "knowledgeGraph": "知识图谱"
+    "episodic": "Episodic Memory"
   },
   "columns": {
     "path": "路径",
@@ -214,5 +214,22 @@
     "allIndexFailed": "索引所有文档失败",
     "searchFailed": "搜索失败",
     "docLoadFailed": "加载文档失败"
+  },
+  "episodic": {
+    "noData": "No episodic memories yet",
+    "noDataHint": "Summaries are generated automatically from agent sessions",
+    "selectAgent": "Select an agent to view episodic memories",
+    "searchPlaceholder": "Search episodic memory...",
+    "clearSearch": "Clear",
+    "results": "results",
+    "turns": "turns",
+    "tokens": "tokens",
+    "expand": "Show full summary",
+    "collapse": "Hide summary",
+    "source": {
+      "session": "Session",
+      "v2_daily": "Daily",
+      "manual": "Manual"
+    }
   }
 }

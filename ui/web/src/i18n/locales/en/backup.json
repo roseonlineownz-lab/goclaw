@@ -92,36 +92,5 @@
     "saving": "Testing connection...",
     "saveSuccess": "S3 configuration saved and connection verified",
     "saveError": "Failed to save S3 configuration"
-  },
-  "tenant": {
-    "title": "Tenant Backup & Restore",
-    "description": "Backup or restore individual tenant data",
-    "selectTenant": "Select tenant",
-    "selectTenantPlaceholder": "Choose a tenant...",
-    "backup": {
-      "start": "Backup Tenant",
-      "running": "Backing up tenant...",
-      "complete": "Tenant Backup Complete",
-      "download": "Download",
-      "tableCounts": "Tables backed up",
-      "newBackup": "New Backup"
-    },
-    "restore": {
-      "mode": "Restore mode",
-      "modeUpsert": "Merge (upsert)",
-      "modeReplace": "Replace all",
-      "modeNew": "New tenant",
-      "dropzone": "Drop tenant backup archive here",
-      "dryRun": "Dry run (preview only)",
-      "start": "Restore Tenant",
-      "confirmTitle": "Confirm Tenant Restore",
-      "confirmDesc": "This will modify the selected tenant's data. Are you sure?",
-      "running": "Restoring tenant...",
-      "complete": "Tenant Restore Complete",
-      "tablesRestored": "Tables restored",
-      "filesExtracted": "Files extracted",
-      "dryRunNote": "Dry run — no changes made",
-      "newRestore": "New Restore"
-    }
   }
 }

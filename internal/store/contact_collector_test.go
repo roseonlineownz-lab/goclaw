@@ -76,6 +76,12 @@ func (m *mockContactStore) UnmergeContacts(_ context.Context, _ []uuid.UUID) err
 func (m *mockContactStore) GetContactsByMergedID(_ context.Context, _ uuid.UUID) ([]ChannelContact, error) {
 	return nil, nil
 }
+func (m *mockContactStore) GetContactByChannelAndChatID(_ context.Context, _, _ string) (*ChannelContact, error) {
+	return nil, ErrContactNotFound
+}
+func (m *mockContactStore) GetCanonicalDMContact(_ context.Context, _ uuid.UUID, _ string) (*ChannelContact, error) {
+	return nil, ErrContactIDNotFound
+}
 
 func (m *mockContactStore) upsertCount() int {
 	m.mu.Lock()

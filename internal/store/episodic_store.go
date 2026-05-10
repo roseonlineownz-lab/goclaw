@@ -66,6 +66,17 @@ type EpisodicStore interface {
 	ExistsBySourceID(ctx context.Context, agentID, userID, sourceID string) (bool, error)
 	PruneExpired(ctx context.Context) (int, error)
 
+	// UpdateSessionProject re-tags episodic_summaries rows for a single
+	// session_key from oldProjectID to newProjectID. Used by the
+	// /project switch path so that session-scoped episodic memory follows
+	// the new project binding. Pass nil for either side to match NULL
+	// (i.e. "previously unbound" or "now unbound"). Memory tables that
+	// are project-scoped without a session_key (memory_documents,
+	// memory_chunks, kg_entities, vault_documents) are intentionally
+	// NOT mutated — those rows remain semantically tagged to the old
+	// project work.
+	UpdateSessionProject(ctx context.Context, sessionKey string, oldProjectID, newProjectID *uuid.UUID) error
+
 	// Promotion lifecycle (used by consolidation pipeline)
 	// ListUnpromoted returns summaries not yet promoted to long-term memory, oldest first.
 	ListUnpromoted(ctx context.Context, agentID, userID string, limit int) ([]EpisodicSummary, error)

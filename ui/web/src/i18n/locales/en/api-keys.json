@@ -32,8 +32,6 @@
       "operator.pairing": "Manage device pairing",
       "operator.provision": "Provision new tenants"
     },
-    "tenant": "Tenant",
-    "tenantSystem": "System (all tenants)",
     "expiry": "Expiry",
     "expiryOptions": {
       "never": "Never",
@@ -65,8 +63,6 @@
   },
   "never": "Never",
   "neverUsed": "Never used",
-  "tenantBadgeSystem": "System",
-  "tenantBadgeUnknown": "Unknown",
   "columns.expiry": "Expiry",
   "codeDialog": {
     "title": "API Key Usage",

@@ -50,7 +50,7 @@ export function SkillTableRow({
           >
             {skill.name}
           </button>
-          {skill.is_system && (
+          {skill.owner_id === "system" && (
             <Badge variant="outline" className="border-blue-500 text-blue-600 text-2xs">
               {t("system")}
             </Badge>
@@ -132,7 +132,7 @@ export function SkillTableRow({
               <Button variant="ghost" size="sm" onClick={() => onEdit(skill)} className="gap-1">
                 <Pencil className="h-3.5 w-3.5" />
               </Button>
-              {!skill.is_system && (
+              {skill.owner_id !== "system" && (
                 <Button
                   variant="ghost" size="sm"
                   onClick={() => onDelete(skill)}

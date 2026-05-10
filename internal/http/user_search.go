@@ -13,14 +13,15 @@ import (
 
 // UserSearchResult is a unified result from contacts + tenant_users.
 type UserSearchResult struct {
-	ID                  string  `json:"id"`
-	DisplayName         *string `json:"display_name,omitempty"`
-	Username            *string `json:"username,omitempty"`
-	Source              string  `json:"source"` // "contact" or "tenant_user"
-	ChannelType         *string `json:"channel_type,omitempty"`
-	PeerKind            *string `json:"peer_kind,omitempty"`
-	MergedTenantUserID  *string `json:"merged_tenant_user_id,omitempty"`
-	Role                *string `json:"role,omitempty"`
+	ID                 string  `json:"id"`
+	UUID               string  `json:"uuid,omitempty"`
+	DisplayName        *string `json:"display_name,omitempty"`
+	Username           *string `json:"username,omitempty"`
+	Source             string  `json:"source"` // "contact" or "tenant_user"
+	ChannelType        *string `json:"channel_type,omitempty"`
+	PeerKind           *string `json:"peer_kind,omitempty"`
+	MergedUserID *string `json:"merged_user_id,omitempty"`
+	Role               *string `json:"role,omitempty"`
 }
 
 // handleSearchUsers returns unified results from channel_contacts + tenant_users.

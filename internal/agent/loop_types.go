@@ -213,6 +213,18 @@ type Loop struct {
 	// v3 evolution metrics store (nil = disabled)
 	evolutionMetricsStore store.EvolutionMetricsStore
 
+	// contactStore is used to look up channel contact records (e.g. default_project_id).
+	// Kept separate from userResolver to avoid narrowing the full ContactStore interface.
+	contactStore store.ContactStore
+
+	// projectStore is used to fetch project metadata (slug) for workspace resolution.
+	projectStore store.ProjectStore
+
+	// usersStore is used to look up users.user_key for the 12-scenario channel
+	// workspace resolver (web + merged-contact paths route to users/{user_key}/...).
+	// When nil, channel sessions fall back to non-user-scoped zones.
+	usersStore store.UsersStore
+
 	// User identity resolver: maps channel contacts to merged tenant users for credential lookups.
 	userResolver UserIdentityResolver
 }
@@ -381,6 +393,19 @@ type LoopConfig struct {
 
 	// User identity resolver for credential lookups (maps channel contacts → tenant users)
 	UserResolver UserIdentityResolver
+
+	// ContactStore for channel contact lookups (default_project_id, etc.).
+	// When nil, the contact-based project default (Layer 1) is skipped.
+	ContactStore store.ContactStore
+
+	// ProjectStore for project metadata lookups (slug → workspace path).
+	// When nil, project-priority workspace resolution is skipped.
+	ProjectStore store.ProjectStore
+
+	// UsersStore for users.user_key lookups during 12-scenario channel
+	// workspace resolution. When nil, web/merged paths cannot route to
+	// users/{user_key}/... and fall back to agent-scoped zones.
+	UsersStore store.UsersStore
 }
 
 const defaultMaxTokens = config.DefaultMaxTokens
@@ -491,6 +516,9 @@ func NewLoop(cfg LoopConfig) *Loop {
 		delegateTargets:        cfg.DelegateTargets,
 		evolutionMetricsStore:  cfg.EvolutionMetricsStore,
 		userResolver:           cfg.UserResolver,
+		contactStore:           cfg.ContactStore,
+		projectStore:           cfg.ProjectStore,
+		usersStore:             cfg.UsersStore,
 	}
 }
 
@@ -548,6 +576,12 @@ type RunRequest struct {
 	// TeamWorkspace overrides the member agent's workspace with the team's workspace
 	// so file operations (read/write/image/audio) use the shared team directory.
 	TeamWorkspace string
+
+	// ProjectOverride pins the active project for this run, bypassing session and
+	// contact-store lookups in resolveProjectParams. Used by team dispatch to
+	// propagate the parent's project as a snapshot so mid-conversation
+	// default_project_id changes do not affect already-dispatched sub-agents.
+	ProjectOverride *uuid.UUID
 }
 
 // RunResult is the output of a completed agent run.

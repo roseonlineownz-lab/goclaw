@@ -105,11 +105,13 @@ func (t *TtsTool) Execute(ctx context.Context, args map[string]any) *Result {
 	}
 
 	// Write audio to workspace/tts/ so the agent can access the file.
-	// Falls back to os.TempDir() if workspace is not available.
-	ttsDir := os.TempDir()
-	if ws := ToolWorkspaceFromCtx(ctx); ws != "" {
-		ttsDir = filepath.Join(ws, "tts")
+	// No fallback to os.TempDir() — that would land audio outside the
+	// agent's isolation boundary where other processes can read it.
+	ws := ToolWorkspaceFromCtx(ctx)
+	if ws == "" {
+		return &Result{ForLLM: "error: tts: no workspace bound to context", IsError: true}
 	}
+	ttsDir := filepath.Join(ws, "tts")
 	if err := os.MkdirAll(ttsDir, 0755); err != nil {
 		return &Result{ForLLM: fmt.Sprintf("error: create tts directory: %s", err.Error()), IsError: true}
 	}

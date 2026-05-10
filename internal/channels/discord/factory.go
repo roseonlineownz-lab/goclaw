@@ -89,7 +89,17 @@ func buildChannel(name string, creds json.RawMessage, cfg json.RawMessage,
 		dcCfg.GroupPolicy = "pairing"
 	}
 
-	ch, err := New(dcCfg, msgBus, pairingSvc, agentStore, configPermStore, pendingStore)
+	var opts []Option
+	if agentStore != nil {
+		opts = append(opts, WithAgentStore(agentStore))
+	}
+	if configPermStore != nil {
+		opts = append(opts, WithConfigPermStore(configPermStore))
+	}
+	if pendingStore != nil {
+		opts = append(opts, WithPendingMessageStore(pendingStore))
+	}
+	ch, err := New(dcCfg, msgBus, pairingSvc, audioMgr, opts...)
 	if err != nil {
 		return nil, err
 	}

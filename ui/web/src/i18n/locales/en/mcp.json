@@ -128,6 +128,6 @@
     "addEnv": "Add Variable",
     "saveFailed": "Failed to save credentials",
     "deleteFailed": "Failed to delete credentials",
-    "mergeHint": "Chat users (Telegram, Discord, etc.) must be merged into a tenant user first via Contacts page before they can have per-user credentials."
+    "mergeHint": "Chat users (Telegram, Discord, etc.) must be merged into a unified user first via Contacts page before they can have per-user credentials."
   }
 }

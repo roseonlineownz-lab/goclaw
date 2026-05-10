@@ -106,14 +106,29 @@ func (h *AgentsHandler) handleRevokeShare(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	targetUserID := r.PathValue("userID")
-	if err := store.ValidateUserID(targetUserID); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := h.agents.RevokeShare(r.Context(), id, targetUserID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	// Path supports either a UUID (user) or a "team:<uuid>" prefix to disambiguate
+	// team revocation. We accept both; mismatched prefix → 400.
+	targetID := r.PathValue("userID")
+	if after, ok := strings.CutPrefix(targetID, "team:"); ok {
+		tid, perr := uuid.Parse(after)
+		if perr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidID, "team_id")})
+			return
+		}
+		if err := h.agents.RevokeShareByTeam(r.Context(), id, tid); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	} else {
+		uid, perr := uuid.Parse(targetID)
+		if perr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidID, "user_id")})
+			return
+		}
+		if err := h.agents.RevokeShareByUser(r.Context(), id, uid); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	emitAudit(h.msgBus, r, "agent.share_revoked", "agent", id.String())

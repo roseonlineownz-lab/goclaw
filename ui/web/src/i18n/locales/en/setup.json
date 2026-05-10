@@ -111,7 +111,5 @@
     "back": "Back"
   },
   "skipSetup": "Skip setup and go to dashboard",
-  "skipSetupConfirm": "Are you sure you want to skip setup? You can always configure providers and agents later from the dashboard.",
-  "switchTenant": "Switch",
-  "allTenants": "All Tenants"
+  "skipSetupConfirm": "Are you sure you want to skip setup? You can always configure providers and agents later from the dashboard."
 }

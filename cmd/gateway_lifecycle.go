@@ -125,6 +125,8 @@ func (d *gatewayDeps) runLifecycle(
 	if d.pgStores.Contacts != nil {
 		contactCollector = store.NewContactCollector(d.pgStores.Contacts, cache.NewInMemoryCache[bool]())
 		d.channelMgr.SetContactCollector(contactCollector)
+		// Wire ContactStore into dispatcher for merged-contact outbound re-routing.
+		d.channelMgr.SetContactStore(d.pgStores.Contacts)
 	}
 
 	go consumeInboundMessages(ctx, d.msgBus, d.agentRouter, d.cfg, deps.sched, d.channelMgr, deps.consumerTeamStore, deps.quotaChecker, d.pgStores.Sessions, d.pgStores.Agents, contactCollector, deps.postTurn, deps.subagentMgr)

@@ -123,8 +123,20 @@ export class HttpClient {
     return h;
   }
 
-  private headers(): Record<string, string> {
-    return { "Content-Type": "application/json", ...this.authHeaders() };
+  private headers(method?: string): Record<string, string> {
+    const h: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...this.authHeaders(),
+    };
+    // X-Requested-With on state-changing methods only. The header marks the
+    // request as a same-origin XHR; classic <form> submissions cannot set
+    // custom headers, so a CSRF check on the BE for this header blocks the
+    // simplest CSRF vector. We deliberately skip GET so cross-origin
+    // deployments don't pay a CORS preflight on every read.
+    if (method && method !== "GET") {
+      h["X-Requested-With"] = "XMLHttpRequest";
+    }
+    return h;
   }
 
   private async request<T>(url: string, init: RequestInit): Promise<T> {
@@ -132,7 +144,7 @@ export class HttpClient {
     try {
       res = await fetch(url, {
         ...init,
-        headers: { ...this.headers(), ...(init.headers as Record<string, string>) },
+        headers: { ...this.headers(init.method), ...(init.headers as Record<string, string>) },
       });
     } catch {
       throw new ApiError("NETWORK_ERROR", "Cannot connect to server. Check if the gateway is running.");

@@ -87,9 +87,22 @@ export const useAuthStore = create<AuthState>()(
       },
     }),
     {
-      name: "goclaw:auth", // localStorage key
+      name: "goclaw:auth",
+      version: 1,
+      // v0 → v1: drop multi-tenant residue (tenantId, tenantSlug, tenants[]).
+      // v3 stored these alongside credentials; v4 has no tenant scope.
+      migrate: (persisted, oldVersion) => {
+        if (!persisted || typeof persisted !== "object") return persisted;
+        if (oldVersion < 1) {
+          const s = persisted as Record<string, unknown>;
+          delete s.tenantId;
+          delete s.tenantSlug;
+          delete s.tenants;
+          delete s.activeTenantId;
+        }
+        return persisted;
+      },
       partialize: (state) => ({
-        // Only persist credentials — not transient runtime state
         token: state.token,
         userId: state.userId,
         senderID: state.senderID,

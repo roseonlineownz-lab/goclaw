@@ -10,6 +10,7 @@
   },
   "nav": {
     "agentTeams": "Agent Link & Team",
+    "projects": "项目",
     "agents": "Agent",
     "approvals": "审批",
     "importExport": "Import & Export",
@@ -40,7 +41,8 @@
     "apiKeys": "API Keys",
     "apiDocs": "API 文档",
     "packages": "软件包",
-    "tenants": "租户",
-    "backupRestore": "备份与恢复"
+    "backupRestore": "备份与恢复",
+    "users": "用户",
+    "vault": "Vault"
   }
 }

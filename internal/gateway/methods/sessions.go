@@ -10,18 +10,34 @@ import (
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
+	"github.com/nextlevelbuilder/goclaw/internal/workspace"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
 // SessionsMethods handles sessions.list, sessions.preview, sessions.patch, sessions.delete, sessions.reset.
 type SessionsMethods struct {
-	sessions store.SessionStore
-	eventBus bus.EventPublisher
-	cfg      *config.Config
+	sessions      store.SessionStore
+	projects      store.ProjectStore
+	projectGrants store.ProjectGrantStore
+	episodics     store.EpisodicStore
+	baseDir       string
+	eventBus      bus.EventPublisher
+	cfg           *config.Config
 }
 
 func NewSessionsMethods(sess store.SessionStore, eventBus bus.EventPublisher, cfg *config.Config) *SessionsMethods {
 	return &SessionsMethods{sessions: sess, eventBus: eventBus, cfg: cfg}
+}
+
+// SetProjectSwitchDeps wires the optional dependencies the
+// sessions.updateProject path uses to keep the FS layout coherent on a
+// project switch (relocate session subdir + retag session-scoped episodic
+// memory). When unset, updateProject still works but only touches the DB
+// row — any pre-existing files stay where they were written.
+func (m *SessionsMethods) SetProjectSwitchDeps(projects store.ProjectStore, episodics store.EpisodicStore, baseDir string) {
+	m.projects = projects
+	m.episodics = episodics
+	m.baseDir = baseDir
 }
 
 func (m *SessionsMethods) Register(router *gateway.MethodRouter) {
@@ -229,4 +245,148 @@ func (m *SessionsMethods) handleReset(ctx context.Context, client *gateway.Clien
 		"ok": true,
 	}))
 	emitAudit(m.eventBus, client, "session.reset", "session", params.Key)
+}
+
+type sessionCompactParams struct {
+	Key      string `json:"key"`
+	KeepLast int    `json:"keepLast,omitempty"` // default 4
+}
+
+// handleCompact truncates session history to the last N messages.
+// Issue 958: Manual session compaction API (truncate-only, no LLM summarization).
+func (m *SessionsMethods) handleCompact(ctx context.Context, client *gateway.Client, req *protocol.RequestFrame) {
+	locale := store.LocaleFromContext(ctx)
+	var params sessionCompactParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgInvalidJSON)))
+		return
+	}
+
+	if params.Key == "" {
+		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, "key is required"))
+		return
+	}
+
+	keepLast := params.KeepLast
+	if keepLast <= 0 {
+		keepLast = 4 // default: keep last 2 exchanges
+	}
+
+	// Auth check
+	sess := m.sessions.Get(ctx, params.Key)
+	if sess == nil {
+		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrNotFound, i18n.T(locale, i18n.MsgNotFound, "session", params.Key)))
+		return
+	}
+	if !canSeeAll(client.Role(), m.cfg.Gateway.OwnerIDs, client.UserID()) {
+		if sess.UserID != client.UserID() {
+			client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrUnauthorized, i18n.T(locale, i18n.MsgPermissionDenied, "session")))
+			return
+		}
+	}
+
+	history := m.sessions.GetHistory(ctx, params.Key)
+	originalLen := len(history)
+	if originalLen < 6 {
+		client.SendResponse(protocol.NewOKResponse(req.ID, map[string]any{
+			"ok":      true,
+			"message": "session too short to compact",
+			"kept":    originalLen,
+		}))
+		return
+	}
+
+	// Truncate history to last N messages
+	m.sessions.TruncateHistory(ctx, params.Key, keepLast)
+	m.sessions.IncrementCompaction(ctx, params.Key)
+	m.sessions.Save(ctx, params.Key)
+
+	client.SendResponse(protocol.NewOKResponse(req.ID, map[string]any{
+		"ok":       true,
+		"original": originalLen,
+		"kept":     keepLast,
+	}))
+	emitAudit(m.eventBus, client, "session.compacted", "session", params.Key)
+}
+
+// handleUpdateProject binds or unbinds a session from a project.
+// Callers must hold at least member role on the target project.
+// Send projectId="" or omit it to clear the binding.
+func (m *SessionsMethods) handleUpdateProject(ctx context.Context, client *gateway.Client, req *protocol.RequestFrame) {
+	locale := store.LocaleFromContext(ctx)
+	var params struct {
+		Key       string `json:"key"`
+		ProjectID string `json:"projectId"` // empty string → clear binding
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgInvalidJSON)))
+		return
+	}
+
+	if params.Key == "" {
+		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgRequired, "key")))
+		return
+	}
+
+	// Session ownership check for non-admin callers.
+	if !canSeeAll(client.Role(), m.cfg.Gateway.OwnerIDs, client.UserID()) {
+		sess := m.sessions.Get(ctx, params.Key)
+		if sess == nil {
+			client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrNotFound, i18n.T(locale, i18n.MsgNotFound, "session", params.Key)))
+			return
+		}
+		if sess.UserID != client.UserID() {
+			client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrUnauthorized, i18n.T(locale, i18n.MsgPermissionDenied, "session")))
+			return
+		}
+	}
+
+	// Resolve target project_id (nil = clear binding).
+	var projectID *uuid.UUID
+	if params.ProjectID != "" {
+		pid, err := uuid.Parse(params.ProjectID)
+		if err != nil {
+			client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInvalidRequest, i18n.T(locale, i18n.MsgRequired, "projectId")))
+			return
+		}
+
+		// Caller must have at least member access to bind a session to a project.
+		ok, err := permissions.CanAccessProject(ctx, m.projectGrants, client.UserID(), params.ProjectID, permissions.ProjectRoleMember)
+		if err != nil {
+			client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInternal, err.Error()))
+			return
+		}
+		if !ok {
+			client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrUnauthorized, i18n.T(locale, i18n.MsgPermissionDenied, "project")))
+			return
+		}
+		projectID = &pid
+	}
+
+	// Route through SwitchSessionProject when FS-side deps are wired so the
+	// session subdir relocates atomically with the DB binding flip. When
+	// unset (e.g. legacy callers, in-memory tests), fall back to the bare
+	// DB UpdateProject — same behaviour as before this method was added.
+	var switchErr error
+	if m.projects != nil && m.episodics != nil && m.baseDir != "" {
+		switchErr = workspace.SwitchSessionProject(ctx, workspace.ProjectSwitchDeps{
+			Sessions:  m.sessions,
+			Projects:  m.projects,
+			Episodics: m.episodics,
+			BaseDir:   m.baseDir,
+		}, params.Key, projectID)
+	} else {
+		switchErr = m.sessions.UpdateProject(ctx, params.Key, projectID)
+	}
+	if switchErr != nil {
+		client.SendResponse(protocol.NewErrorResponse(req.ID, protocol.ErrInternal, switchErr.Error()))
+		return
+	}
+
+	client.SendResponse(protocol.NewOKResponse(req.ID, map[string]any{
+		"ok":        true,
+		"key":       params.Key,
+		"projectId": params.ProjectID,
+	}))
+	emitAudit(m.eventBus, client, "session.project_updated", "session", params.Key)
 }

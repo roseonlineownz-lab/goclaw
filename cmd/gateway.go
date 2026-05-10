@@ -365,7 +365,19 @@ func runGateway() {
 
 	// Register all RPC methods
 	server.SetLogTee(logTee)
-	pairingMethods, heartbeatMethods, chatMethods := registerAllMethods(server, agentRouter, pgStores.Sessions, pgStores.Cron, pgStores.Pairing, cfg, cfgPath, workspace, dataDir, msgBus, execApprovalMgr, pgStores.Agents, pgStores.Skills, pgStores.ConfigSecrets, pgStores.Teams, contextFileInterceptor, logTee, pgStores.Heartbeats, pgStores.ConfigPermissions, pgStores.SystemConfigs, pgStores.Tenants, pgStores.SkillTenantCfgs)
+	pairingMethods, heartbeatMethods, chatMethods, cfgPermsMethods := registerAllMethods(server, agentRouter, pgStores.Sessions, pgStores.ProjectGrants, pgStores.Cron, pgStores.Pairing, cfg, cfgPath, workspace, dataDir, msgBus, execApprovalMgr, pgStores.Agents, pgStores.Skills, pgStores.ConfigSecrets, pgStores.Teams, contextFileInterceptor, logTee, pgStores.Heartbeats, pgStores.ConfigPermissions, pgStores.SystemConfigs, audioMgr, pgStores.Contacts, pgStores.ChannelInstances, pgStores.Projects, pgStores.Episodic)
+
+	// Phase 3: Agent hooks RPC methods (hooks.list/create/update/delete/toggle/test/history).
+	if hs, ok := pgStores.Hooks.(hooks.HookStore); ok && hs != nil {
+		hm := methods.NewHookMethods(hs, edition.Current())
+		// Reuse dispatcher handlers for dry-run test runner so UI test panel
+		// exercises the exact code that will run in production.
+		if sharedHookHandlers != nil {
+			hm.SetTestRunner(methods.NewDispatcherTestRunner(sharedHookHandlers))
+		}
+		hm.Register(server.Router())
+		slog.Info("registered hooks RPC methods")
+	}
 
 	// Wire post-turn processor for team task dispatch (WS chat.send + HTTP API paths).
 	if postTurn != nil {
@@ -429,7 +441,7 @@ func runGateway() {
 	}
 
 	// Register config-based channels as fallback when no DB instances loaded.
-	registerConfigChannels(cfg, channelMgr, msgBus, pgStores, instanceLoader)
+	registerConfigChannels(cfg, channelMgr, msgBus, pgStores, instanceLoader, audioMgr, dataDir)
 
 	// Register channels/instances/links/teams RPC methods
 	wireChannelRPCMethods(server, pgStores, channelMgr, agentRouter, msgBus, workspace)

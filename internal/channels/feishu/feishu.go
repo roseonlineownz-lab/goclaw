@@ -35,19 +35,79 @@ const (
 // Channel connects to Feishu/Lark via native HTTP + WebSocket.
 type Channel struct {
 	*channels.BaseChannel
-	cfg            config.FeishuConfig
-	client         *LarkClient
-	botOpenID      string
-	senderCache    sync.Map // open_id → *senderCacheEntry
-	dedup          sync.Map // message_id → struct{}
-	reactions      sync.Map // chatID → *reactionState
-	groupAllowList []string // Feishu-specific: per-group sender allowlist (separate from BaseChannel allowList)
-	stopCh         chan struct{}
-	httpServer     *http.Server
-	wsClient       *WSClient
+	cfg             config.FeishuConfig
+	client          *LarkClient
+	botOpenID       string
+	senderCache     sync.Map  // open_id → *senderCacheEntry
+	dedup           sync.Map  // message_id → struct{}
+	reactions       sync.Map  // chatID → *reactionState
+	docCache        *docCache // LRU+TTL cache for Lark docx raw_content lookups
+	agentStore        store.AgentStore            // optional — agent key → UUID lookup for writer commands
+	configPermStore   store.ConfigPermissionStore // optional — group file writer ACL for /addwriter et al.
+	sessionStore      store.SessionCoreStore      // optional — /project session binding writes
+	projectStore      store.ProjectStore          // optional — /project slug lookup
+	projectGrantStore store.ProjectGrantStore     // optional — /project switch RBAC check
+	episodicStore     store.EpisodicStore         // optional — /project switch episodic retag (nil → DB-only)
+	baseDir           string                      // optional — workspace root for FS relocation
+	groupAllowList  []string                    // Feishu-specific: per-group sender allowlist (separate from BaseChannel allowList)
+	stopCh          chan struct{}
+	httpServer      *http.Server
+	wsClient        *WSClient
+	audioMgr        *audio.Manager // unified STT via audio.Manager (nil = no STT)
 	// pairingService, pairingDebounce, approvedGroups, groupHistory, historyLimit
 	// are inherited from channels.BaseChannel.
 }
+
+// Option configures optional Feishu channel dependencies, mirroring the
+// Telegram channel's pattern so the gateway wiring code can add stores
+// post-construction without breaking the New() signature.
+type Option func(*Channel)
+
+// WithAgentStore enables agent key → UUID resolution, required for writer
+// management commands (/addwriter, /writers, /removewriter).
+func WithAgentStore(s store.AgentStore) Option { return func(c *Channel) { c.agentStore = s } }
+
+// WithConfigPermStore enables the group file writer ACL used by writer
+// management commands. When nil, the commands fail with a clear "not
+// available" message instead of crashing.
+func WithConfigPermStore(s store.ConfigPermissionStore) Option {
+	return func(c *Channel) { c.configPermStore = s }
+}
+
+// WithSessionStore enables /project session-binding writes.
+func WithSessionStore(s store.SessionCoreStore) Option {
+	return func(c *Channel) { c.sessionStore = s }
+}
+
+// WithProjectStore enables /project slug lookups.
+func WithProjectStore(s store.ProjectStore) Option {
+	return func(c *Channel) { c.projectStore = s }
+}
+
+// WithProjectGrantStore enables /project switch RBAC checks.
+func WithProjectGrantStore(s store.ProjectGrantStore) Option {
+	return func(c *Channel) { c.projectGrantStore = s }
+}
+
+// WithEpisodicStore wires episodic retag for /project switch.
+func WithEpisodicStore(s store.EpisodicStore) Option {
+	return func(c *Channel) { c.episodicStore = s }
+}
+
+// WithBaseDir sets the workspace root used for /project FS relocation.
+func WithBaseDir(dir string) Option {
+	return func(c *Channel) { c.baseDir = dir }
+}
+
+// Lark docs auto-fetch tunables. Kept as consts rather than config fields
+// because YAGNI — operators can ask for knobs later if real usage needs them.
+const (
+	larkDocCacheSize     = 128
+	larkDocCacheTTL      = 5 * time.Minute
+	larkDocMaxContentLen = 8000 // cap per doc to avoid blowing the LLM context window
+	larkDocFetchMaxConc  = 3    // bounded concurrent fetches per message
+	larkDocMaxPerMessage = 10   // cap doc references per inbound message (spam guard)
+)
 
 // reactionState tracks an active typing reaction on a user's message.
 type reactionState struct {

@@ -29,6 +29,9 @@ import {
   ArrowLeftRight,
   FileArchive,
   DatabaseBackup,
+  Webhook,
+  FolderKanban,
+  UserCog,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SidebarGroup } from "./sidebar-group";
@@ -87,6 +90,7 @@ export function Sidebar({ collapsed, onNavItemClick }: SidebarProps) {
           <SidebarItem to="/chat" icon={MessageSquare} label={t("nav.chat")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.AGENTS} icon={Bot} label={t("nav.agents")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.TEAMS} icon={Users} label={t("nav.agentTeams")} collapsed={collapsed} />
+          <SidebarItem to={ROUTES.PROJECTS} icon={FolderKanban} label={t("nav.projects")} collapsed={collapsed} />
         </SidebarGroup>
 
         <SidebarGroup label={t("groups.conversations")} collapsed={collapsed}>
@@ -126,9 +130,7 @@ export function Sidebar({ collapsed, onNavItemClick }: SidebarProps) {
 
         {isAdmin && (
         <SidebarGroup label={t("groups.system")} collapsed={collapsed}>
-          {isOwner && (
-            <SidebarItem to={ROUTES.TENANTS} icon={Building2} label={t("nav.tenants")} collapsed={collapsed} />
-          )}
+          <SidebarItem to={ROUTES.USERS} icon={UserCog} label={t("nav.users")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.PROVIDERS} icon={Cpu} label={t("nav.providers")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.CLI_CREDENTIALS} icon={KeyRound} label={t("nav.cliCredentials")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.API_KEYS} icon={KeyRound} label={t("nav.apiKeys")} collapsed={collapsed} />

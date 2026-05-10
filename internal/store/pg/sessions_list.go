@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -185,6 +186,11 @@ func (s *PGSessionStore) Save(ctx context.Context, key string) error {
 	msgs := make([]providers.Message, len(data.Messages))
 	copy(msgs, data.Messages)
 	snapshot.Messages = msgs
+	// Deep-copy Metadata under RLock so subsequent mutation does not race with
+	// concurrent readers holding data.Metadata via GetSessionMetadata.
+	metaCopy := make(map[string]string, len(data.Metadata)+2)
+	maps.Copy(metaCopy, data.Metadata)
+	snapshot.Metadata = metaCopy
 	s.mu.RUnlock()
 
 	msgsJSON, _ := json.Marshal(snapshot.Messages)

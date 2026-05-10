@@ -202,10 +202,10 @@ func handleTeammateMessage(
 		"team_task_id", msg.Metadata[tools.MetaTeamTaskID],
 	)
 
-	announceUserID := msg.UserID
-	if origPeerKind == string(sessions.PeerGroup) && origChatID != "" {
-		announceUserID = fmt.Sprintf("group:%s:%s", origChannel, origChatID)
-	}
+	// Team sub-agents run in team scope only — no individual user or group identity.
+	// The dispatch sets UserID="" so member agents are not scoped to the originating
+	// group chat. Memory and workspace isolation are handled by TeamID + TeamWorkspace.
+	announceUserID := ""
 
 	outMeta := buildAnnounceOutMeta(origLocalKey)
 
@@ -226,6 +226,15 @@ func handleTeammateMessage(
 	taskActionFlags := &tools.TaskActionFlags{}
 	schedCtx := tools.WithTaskActionFlags(ctx, taskActionFlags)
 
+	// Parse parent's snapshotted project ID so the sub-agent uses the same project
+	// regardless of any mid-conversation default_project_id changes.
+	var parentProjectOverride *uuid.UUID
+	if pidStr := msg.Metadata[tools.MetaOriginProjectID]; pidStr != "" {
+		if pid, err := uuid.Parse(pidStr); err == nil {
+			parentProjectOverride = &pid
+		}
+	}
+
 	outCh := deps.Sched.Schedule(schedCtx, scheduler.LaneTeam, agent.RunRequest{
 		SessionKey:      sessionKey,
 		Message:         msg.Content,
@@ -243,6 +252,7 @@ func handleTeammateMessage(
 		WorkspaceChatID: origChatID,
 		TeamID:          msg.Metadata[tools.MetaTeamID],
 		LinkedTraceID:   linkedTraceID,
+		ProjectOverride: parentProjectOverride,
 	})
 
 	deps.BgWg.Add(1)

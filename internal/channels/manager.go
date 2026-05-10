@@ -55,6 +55,7 @@ type Manager struct {
 	dispatchTask     *asyncTask
 	mu               sync.RWMutex
 	contactCollector *store.ContactCollector
+	contactStore     store.ContactStore // used by outbound dispatcher for merged-contact re-routing
 }
 
 type asyncTask struct {
@@ -252,6 +253,14 @@ func (m *Manager) recordChannelStartFailureLocked(name string, channel Channel, 
 		info.Kind,
 		info.Retryable,
 	))
+}
+
+// SetContactStore sets the ContactStore used by the outbound dispatcher to resolve
+// merged contacts at send time. Call before StartAll.
+func (m *Manager) SetContactStore(cs store.ContactStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.contactStore = cs
 }
 
 // SetContactCollector sets the contact collector for all current and future channels.

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate, useLocation } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, Navigate, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/stores/use-auth-store";
 import { ROUTES } from "@/lib/constants";
@@ -32,13 +32,22 @@ export function LoginPage() {
   }
 
   return (
-    <LoginLayout subtitle={t("subtitle")}>
-      <LoginTabs mode={mode} onModeChange={setMode} />
-      {mode === "token" ? (
-        <TokenForm onSubmit={handleTokenLogin} />
-      ) : (
-        <PairingForm onApproved={handlePairingApproved} />
-      )}
+    <LoginLayout subtitle={t("login.subtitle")}>
+      <h2 className="text-center text-lg font-semibold">{t("login.title")}</h2>
+      <PasswordForm
+        onSubmit={async (email, password) => {
+          await login(email, password);
+          navigate(from, { replace: true });
+        }}
+      />
+      <div className="text-center">
+        <Link
+          to={ROUTES.FORGOT_PASSWORD}
+          className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+        >
+          {t("forgotPassword.title")}?
+        </Link>
+      </div>
     </LoginLayout>
   );
 }

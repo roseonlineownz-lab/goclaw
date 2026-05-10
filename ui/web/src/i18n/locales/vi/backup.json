@@ -92,36 +92,5 @@
     "saving": "Đang kiểm tra kết nối...",
     "saveSuccess": "Cấu hình S3 đã lưu và kết nối đã xác minh",
     "saveError": "Lưu cấu hình S3 thất bại"
-  },
-  "tenant": {
-    "title": "Sao lưu & Khôi phục Tenant",
-    "description": "Sao lưu hoặc khôi phục dữ liệu từng tenant",
-    "selectTenant": "Chọn tenant",
-    "selectTenantPlaceholder": "Chọn một tenant...",
-    "backup": {
-      "start": "Sao lưu Tenant",
-      "running": "Đang sao lưu tenant...",
-      "complete": "Sao lưu tenant hoàn tất",
-      "download": "Tải về",
-      "tableCounts": "Bảng đã sao lưu",
-      "newBackup": "Sao lưu mới"
-    },
-    "restore": {
-      "mode": "Chế độ khôi phục",
-      "modeUpsert": "Hợp nhất (upsert)",
-      "modeReplace": "Thay thế tất cả",
-      "modeNew": "Tenant mới",
-      "dropzone": "Kéo thả bản sao lưu tenant vào đây",
-      "dryRun": "Chạy thử (chỉ xem trước)",
-      "start": "Khôi phục Tenant",
-      "confirmTitle": "Xác nhận khôi phục Tenant",
-      "confirmDesc": "Thao tác này sẽ thay đổi dữ liệu của tenant được chọn. Bạn có chắc chắn?",
-      "running": "Đang khôi phục tenant...",
-      "complete": "Khôi phục tenant hoàn tất",
-      "tablesRestored": "Bảng đã khôi phục",
-      "filesExtracted": "Tệp đã giải nén",
-      "dryRunNote": "Chạy thử — không có thay đổi",
-      "newRestore": "Khôi phục mới"
-    }
   }
 }

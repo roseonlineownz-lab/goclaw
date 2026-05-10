@@ -27,7 +27,8 @@ import (
 )
 
 // registerConfigChannels registers config-based channels as fallback when no DB instances are loaded.
-func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, msgBus *bus.MessageBus, pgStores *store.Stores, instanceLoader *channels.InstanceLoader) {
+// audioMgr is optional (nil = STT disabled for channels).
+func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, msgBus *bus.MessageBus, pgStores *store.Stores, instanceLoader *channels.InstanceLoader, audioMgr *audio.Manager, dataDir string) {
 	if instanceLoader != nil {
 		return
 	}
@@ -46,24 +47,46 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 	if cfg.Channels.Telegram.Enabled {
 		if cfg.Channels.Telegram.Token == "" {
 			recordMissingConfig(channels.TypeTelegram, "Set channels.telegram.token in config.")
-		} else if tg, err := telegram.New(cfg.Channels.Telegram, msgBus, pgStores.Pairing); err != nil {
-			channelMgr.RecordFailure(channels.TypeTelegram, "", err)
-			slog.Error("failed to initialize telegram channel", "error", err)
 		} else {
-			channelMgr.RegisterChannel(channels.TypeTelegram, tg)
-			slog.Info("telegram channel enabled (config)")
+			tgOpts := []telegram.Option{
+				telegram.WithAgentStore(pgStores.Agents),
+				telegram.WithConfigPermStore(pgStores.ConfigPermissions),
+				telegram.WithSessionStore(pgStores.Sessions),
+				telegram.WithProjectStore(pgStores.Projects),
+				telegram.WithProjectGrantStore(pgStores.ProjectGrants),
+				telegram.WithEpisodicStore(pgStores.Episodic),
+				telegram.WithBaseDir(dataDir),
+			}
+			if tg, err := telegram.New(cfg.Channels.Telegram, msgBus, pgStores.Pairing, audioMgr, tgOpts...); err != nil {
+				channelMgr.RecordFailure(channels.TypeTelegram, "", err)
+				slog.Error("failed to initialize telegram channel", "error", err)
+			} else {
+				channelMgr.RegisterChannel(channels.TypeTelegram, tg)
+				slog.Info("telegram channel enabled (config)")
+			}
 		}
 	}
 
 	if cfg.Channels.Discord.Enabled {
 		if cfg.Channels.Discord.Token == "" {
 			recordMissingConfig(channels.TypeDiscord, "Set channels.discord.token in config.")
-		} else if dc, err := discord.New(cfg.Channels.Discord, msgBus, nil, nil, nil, nil); err != nil {
-			channelMgr.RecordFailure(channels.TypeDiscord, "", err)
-			slog.Error("failed to initialize discord channel", "error", err)
 		} else {
-			channelMgr.RegisterChannel(channels.TypeDiscord, dc)
-			slog.Info("discord channel enabled (config)")
+			dcOpts := []discord.Option{
+				discord.WithAgentStore(pgStores.Agents),
+				discord.WithConfigPermStore(pgStores.ConfigPermissions),
+				discord.WithSessionStore(pgStores.Sessions),
+				discord.WithProjectStore(pgStores.Projects),
+				discord.WithProjectGrantStore(pgStores.ProjectGrants),
+				discord.WithEpisodicStore(pgStores.Episodic),
+				discord.WithBaseDir(dataDir),
+			}
+			if dc, err := discord.New(cfg.Channels.Discord, msgBus, nil, audioMgr, dcOpts...); err != nil {
+				channelMgr.RecordFailure(channels.TypeDiscord, "", err)
+				slog.Error("failed to initialize discord channel", "error", err)
+			} else {
+				channelMgr.RegisterChannel(channels.TypeDiscord, dc)
+				slog.Info("discord channel enabled (config)")
+			}
 		}
 	}
 
@@ -130,8 +153,22 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 			channelMgr.RecordFailure(channels.TypeFeishu, "", err)
 			slog.Error("failed to initialize feishu channel", "error", err)
 		} else {
-			channelMgr.RegisterChannel(channels.TypeFeishu, f)
-			slog.Info("feishu/lark channel enabled (config)")
+			feishuOpts := []feishu.Option{
+				feishu.WithAgentStore(pgStores.Agents),
+				feishu.WithConfigPermStore(pgStores.ConfigPermissions),
+				feishu.WithSessionStore(pgStores.Sessions),
+				feishu.WithProjectStore(pgStores.Projects),
+				feishu.WithProjectGrantStore(pgStores.ProjectGrants),
+				feishu.WithEpisodicStore(pgStores.Episodic),
+				feishu.WithBaseDir(dataDir),
+			}
+			if f, err := feishu.New(cfg.Channels.Feishu, msgBus, pgStores.Pairing, nil, audioMgr, feishuOpts...); err != nil {
+				channelMgr.RecordFailure(channels.TypeFeishu, "", err)
+				slog.Error("failed to initialize feishu channel", "error", err)
+			} else {
+				channelMgr.RegisterChannel(channels.TypeFeishu, f)
+				slog.Info("feishu/lark channel enabled (config)")
+			}
 		}
 	}
 }

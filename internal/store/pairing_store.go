@@ -24,7 +24,11 @@ type PairedDeviceData struct {
 	Metadata map[string]string `json:"metadata,omitempty" db:"metadata"`
 }
 
-// PairingStore manages device pairing.
+// PairingStore manages device pairing. All methods operate exclusively on
+// paired_devices and pairing_requests — they never read or write
+// channel_contacts.merged_id. Pairing is a channel-scope access gate;
+// identity merge (MergeUserAggregate) is an orthogonal admin operation.
+// Do not cross-mutate between the two domains.
 type PairingStore interface {
 	RequestPairing(ctx context.Context, senderID, channel, chatID, accountID string, metadata map[string]string) (string, error)
 	ApprovePairing(ctx context.Context, code, approvedBy string) (*PairedDeviceData, error)

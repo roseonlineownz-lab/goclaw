@@ -2,8 +2,7 @@ import { Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router";
 import { AppLayout } from "@/components/layout/app-layout";
 import { RequireAuth } from "@/components/shared/require-auth";
-import { RequireAdmin, RequireCrossTenant } from "@/components/shared/require-role";
-import { RequireSetup } from "@/components/shared/require-setup";
+import { RequireAdmin } from "@/components/shared/require-role";
 import { ErrorBoundary } from "@/components/shared/error-boundary";
 import { ROUTES } from "@/lib/constants";
 import { lazyWithRetry } from "@/lib/lazy-with-retry";
@@ -117,6 +116,18 @@ const BackupRestorePage = lazyWithRetry(() =>
 const TenantSelectorPage = lazyWithRetry(() =>
   import("@/pages/login/tenant-selector").then((m) => ({ default: m.TenantSelectorPage })),
 );
+const ProjectsPage = lazyWithRetry(() =>
+  import("@/pages/projects/projects-page").then((m) => ({ default: m.ProjectsPage })),
+);
+const ForgotPasswordPage = lazyWithRetry(() =>
+  import("@/pages/auth/forgot-password-page").then((m) => ({ default: m.ForgotPasswordPage })),
+);
+const ResetPasswordPage = lazyWithRetry(() =>
+  import("@/pages/auth/reset-password-page").then((m) => ({ default: m.ResetPasswordPage })),
+);
+const AdminUsersPage = lazyWithRetry(() =>
+  import("@/pages/users/admin-users-page").then((m) => ({ default: m.AdminUsersPage })),
+);
 
 function PageLoader() {
   return (
@@ -132,6 +143,9 @@ export function AppRoutes() {
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path={ROUTES.LOGIN} element={<LoginPage />} />
+        <Route path={ROUTES.BOOTSTRAP} element={<BootstrapPage />} />
+        <Route path={ROUTES.FORGOT_PASSWORD} element={<ForgotPasswordPage />} />
+        <Route path={ROUTES.RESET_PASSWORD} element={<ResetPasswordPage />} />
 
         {/* Tenant selector — accessible when authenticated but tenant not yet selected */}
         <Route path={ROUTES.SELECT_TENANT} element={<TenantSelectorPage />} />
@@ -172,8 +186,15 @@ export function AppRoutes() {
           <Route path={ROUTES.SKILL_DETAIL} element={<SkillsPage key="detail" />} />
           <Route path={ROUTES.CRON} element={<CronPage key="list" />} />
           <Route path={ROUTES.CRON_DETAIL} element={<CronPage key="detail" />} />
+          <Route path={ROUTES.HOOKS} element={<HooksPage key="list" />} />
+          <Route path={ROUTES.HOOK_DETAIL} element={<HooksPage key="detail" />} />
+          <Route path={ROUTES.PROJECTS} element={<ProjectsPage key="list" />} />
+          <Route path={ROUTES.PROJECT_DETAIL} element={<ProjectsPage key="detail" />} />
+          <Route path={ROUTES.PROJECT_MEMBERS} element={<ProjectsPage key="members" />} />
+          <Route path={ROUTES.USERS} element={<RequireAdmin><AdminUsersPage /></RequireAdmin>} />
+          <Route path={ROUTES.PROFILE} element={<ProfilePage />} />
           {/* Admin-only pages */}
-          <Route path={ROUTES.CONFIG} element={<RequireCrossTenant><ConfigPage /></RequireCrossTenant>} />
+          <Route path={ROUTES.CONFIG} element={<RequireAdmin><ConfigPage /></RequireAdmin>} />
           <Route path={ROUTES.PROVIDERS} element={<RequireAdmin><ProvidersPage key="list" /></RequireAdmin>} />
           <Route path={ROUTES.PROVIDER_DETAIL} element={<RequireAdmin><ProvidersPage key="detail" /></RequireAdmin>} />
           <Route path={ROUTES.CLI_CREDENTIALS} element={<RequireAdmin><CliCredentialsPage /></RequireAdmin>} />
@@ -184,7 +205,7 @@ export function AppRoutes() {
           <Route path={ROUTES.LOGS} element={<RequireAdmin><LogsPage /></RequireAdmin>} />
           <Route path={ROUTES.BUILTIN_TOOLS} element={<RequireAdmin><BuiltinToolsPage /></RequireAdmin>} />
           <Route path={ROUTES.MCP} element={<RequireAdmin><MCPPage /></RequireAdmin>} />
-          <Route path={ROUTES.TTS} element={<RequireCrossTenant><TtsPage /></RequireCrossTenant>} />
+          <Route path={ROUTES.TTS} element={<RequireAdmin><TtsPage /></RequireAdmin>} />
           <Route path={ROUTES.STORAGE} element={<RequireAdmin><StoragePage /></RequireAdmin>} />
           <Route path={ROUTES.PACKAGES} element={<RequireAdmin><PackagesPage /></RequireAdmin>} />
           <Route path={ROUTES.TENANTS} element={<RequireCrossTenant><TenantsAdminPage /></RequireCrossTenant>} />

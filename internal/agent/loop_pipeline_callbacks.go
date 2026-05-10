@@ -90,20 +90,44 @@ type pipelineCallbackSet struct {
 func (l *Loop) makeResolveWorkspace(req *RunRequest) func(ctx context.Context, input *pipeline.RunInput) (*workspace.WorkspaceContext, error) {
 	resolver := workspace.NewResolver()
 	return func(ctx context.Context, input *pipeline.RunInput) (*workspace.WorkspaceContext, error) {
-		var teamID *string
-		if input.TeamID != "" {
-			teamID = &input.TeamID
+		// Priority: project binding > 12-scenario channel/web matrix.
+		// Mirrors the resolution flow in injectContext().
+		projectID, projectSlug := l.resolveProjectParams(ctx, input.SessionKey, input.ChannelType, input.ChatID, req.ProjectOverride)
+		if projectID != nil && projectSlug != "" {
+			return resolver.Resolve(ctx, workspace.ResolveParams{
+				AgentID:     l.id,
+				UserID:      input.UserID,
+				ChatID:      input.ChatID,
+				BaseDir:     l.workspace,
+				ProjectID:   projectID,
+				ProjectSlug: projectSlug,
+			})
 		}
-		return resolver.Resolve(ctx, workspace.ResolveParams{
-			AgentID:   l.id,
-			AgentType: l.agentType,
-			UserID:    input.UserID,
-			ChatID:    input.ChatID,
-			TenantID:  l.tenantID.String(),
-			PeerKind:  input.PeerKind,
-			TeamID:    teamID,
-			BaseDir:   l.workspace,
-		})
+		// Build a synthetic RunRequest for the channel-context helper so the
+		// pipeline callback path sees the same TeamKey / Merged / UserKey
+		// resolution as injectContext().
+		syn := &RunRequest{
+			ChannelType: input.ChannelType,
+			ChatID:      input.ChatID,
+			SenderID:    input.SenderID,
+			UserID:      input.UserID,
+			PeerKind:    input.PeerKind,
+		}
+		teamKey := ""
+		if input.TeamID != "" && l.teamStore != nil {
+			if teamUUID, err := uuid.Parse(input.TeamID); err == nil {
+				if team, _ := l.teamStore.GetTeam(ctx, teamUUID); team != nil {
+					teamKey = team.TeamKey
+				}
+			}
+		}
+		ccx := l.buildChannelResolveCtx(ctx, syn, teamKey)
+		ccx.BaseDir = l.workspace // pipeline callback uses per-run workspace, not dataDir
+		path, scope, err := resolver.ResolveChannel(ctx, ccx)
+		if err != nil {
+			return nil, err
+		}
+		return channelToWorkspace(path, scope, ccx, l.shouldShareMemory()), nil
 	}
 }
 

@@ -50,8 +50,10 @@ export function SkillsPage() {
   const [rescanning, setRescanning] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
 
-  const coreSkills = skills.filter((s: SkillInfo) => s.is_system);
-  const customSkills = skills.filter((s: SkillInfo) => !s.is_system);
+  // Core = built-in skills owned by the system; custom = user/tenant-owned (per L122).
+  const isCore = (s: SkillInfo) => s.owner_id === "system";
+  const coreSkills = skills.filter(isCore);
+  const customSkills = skills.filter((s: SkillInfo) => !isCore(s));
   const tabSkills = tab === "core" ? coreSkills : customSkills;
   const allMissing = [...new Set(tabSkills.flatMap((s: SkillInfo) => s.missing_deps ?? []))];
   const filtered = tabSkills.filter(

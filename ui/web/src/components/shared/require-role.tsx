@@ -35,5 +35,3 @@ export function RequireOwner({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-/** @deprecated Use RequireOwner instead. */
-export const RequireCrossTenant = RequireOwner;

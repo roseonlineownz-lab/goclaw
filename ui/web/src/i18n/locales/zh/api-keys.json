@@ -32,8 +32,6 @@
       "operator.pairing": "管理设备配对",
       "operator.provision": "开通新租户"
     },
-    "tenant": "租户",
-    "tenantSystem": "系统（所有租户）",
     "expiry": "有效期",
     "expiryOptions": {
       "never": "永不过期",
@@ -65,8 +63,6 @@
   },
   "never": "永不过期",
   "neverUsed": "从未使用",
-  "tenantBadgeSystem": "系统",
-  "tenantBadgeUnknown": "未知",
   "columns.expiry": "有效期",
   "codeDialog": {
     "title": "API Key 使用指南",

@@ -3,6 +3,8 @@ export interface MemoryDocument {
   hash: string;
   agent_id?: string;
   user_id?: string;
+  contact_id?: string | null;
+  project_id?: string | null;
   updated_at: number;
 }
 
@@ -11,6 +13,8 @@ export interface MemoryDocumentDetail {
   content: string;
   hash: string;
   user_id?: string;
+  contact_id?: string | null;
+  project_id?: string | null;
   chunk_count: number;
   embedded_count: number;
   created_at: number;

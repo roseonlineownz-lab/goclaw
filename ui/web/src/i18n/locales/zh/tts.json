@@ -43,13 +43,20 @@
     "model": "模型",
     "voice": "语音"
   },
-  "providerSettings": "{{provider}} 设置",
-  "providers": {
-    "edge": "Edge（免费）",
-    "elevenlabs": "ElevenLabs",
-    "minimax": "MiniMax",
-    "none": "无（已禁用）",
-    "openai": "OpenAI"
+  "voice_refresh": "刷新",
+  "voice_preview": "试听",
+  "voice_stop_preview": "停止",
+  "voice_no_voices": "暂无声音",
+  "voice_save_config_first": "请先保存 API Key 以加载声音",
+  "voice_loading": "加载声音中…",
+  "voice_preview_error": "试听失败 — 正在刷新",
+  "model_label": "模型",
+  "model_placeholder": "默认（系统）",
+  "empty_state": {
+    "title": "未配置 TTS",
+    "description": "配置 TTS Provider 以为 Agent 启用语音。",
+    "cta": "配置 TTS",
+    "non_owner_hint": "请联系工作区所有者配置 TTS。"
   },
   "replyModes": {
     "all": "全部",
