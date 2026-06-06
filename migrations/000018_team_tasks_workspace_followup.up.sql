@@ -4,7 +4,7 @@
 
 -- Team workspace: shared file storage scoped by (team, chat_id).
 -- chat_id stores the system-derived userID (stable across WS reconnects).
-CREATE TABLE team_workspace_files (
+CREATE TABLE IF NOT EXISTS team_workspace_files (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     team_id     UUID NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
     channel     VARCHAR(50)  NOT NULL DEFAULT '',
@@ -24,15 +24,15 @@ CREATE TABLE team_workspace_files (
     UNIQUE(team_id, chat_id, file_name)
 );
 
-CREATE INDEX idx_twf_team_scope ON team_workspace_files(team_id, chat_id);
-CREATE INDEX idx_twf_uploaded_by  ON team_workspace_files(uploaded_by);
-CREATE INDEX idx_twf_task         ON team_workspace_files(task_id) WHERE task_id IS NOT NULL;
-CREATE INDEX idx_twf_archived     ON team_workspace_files(archived_at) WHERE archived_at IS NOT NULL;
-CREATE INDEX idx_twf_pinned       ON team_workspace_files(team_id, pinned) WHERE pinned = true;
-CREATE INDEX idx_twf_tags         ON team_workspace_files USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_twf_team_scope ON team_workspace_files(team_id, chat_id);
+CREATE INDEX IF NOT EXISTS idx_twf_uploaded_by  ON team_workspace_files(uploaded_by);
+CREATE INDEX IF NOT EXISTS idx_twf_task         ON team_workspace_files(task_id) WHERE task_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_twf_archived     ON team_workspace_files(archived_at) WHERE archived_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_twf_pinned       ON team_workspace_files(team_id, pinned) WHERE pinned = true;
+CREATE INDEX IF NOT EXISTS idx_twf_tags         ON team_workspace_files USING GIN(tags);
 
 -- File version history.
-CREATE TABLE team_workspace_file_versions (
+CREATE TABLE IF NOT EXISTS team_workspace_file_versions (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     file_id     UUID NOT NULL REFERENCES team_workspace_files(id) ON DELETE CASCADE,
     version     INT NOT NULL,
@@ -43,10 +43,10 @@ CREATE TABLE team_workspace_file_versions (
     UNIQUE(file_id, version)
 );
 
-CREATE INDEX idx_twfv_file ON team_workspace_file_versions(file_id);
+CREATE INDEX IF NOT EXISTS idx_twfv_file ON team_workspace_file_versions(file_id);
 
 -- File comments / annotations.
-CREATE TABLE team_workspace_comments (
+CREATE TABLE IF NOT EXISTS team_workspace_comments (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     file_id     UUID NOT NULL REFERENCES team_workspace_files(id) ON DELETE CASCADE,
     agent_id    UUID NOT NULL REFERENCES agents(id),
@@ -54,34 +54,34 @@ CREATE TABLE team_workspace_comments (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_twfc_file ON team_workspace_comments(file_id);
+CREATE INDEX IF NOT EXISTS idx_twfc_file ON team_workspace_comments(file_id);
 
 -- ============================================================
 -- Part 2: Team tasks v2 (locking, progress, audit, comments)
 -- ============================================================
 
 -- New columns on team_tasks
-ALTER TABLE team_tasks ADD COLUMN task_type VARCHAR(30) NOT NULL DEFAULT 'general';
-ALTER TABLE team_tasks ADD COLUMN task_number INT NOT NULL DEFAULT 0;
-ALTER TABLE team_tasks ADD COLUMN identifier VARCHAR(20);
-ALTER TABLE team_tasks ADD COLUMN created_by_agent_id UUID REFERENCES agents(id);
-ALTER TABLE team_tasks ADD COLUMN assignee_user_id VARCHAR(255);
-ALTER TABLE team_tasks ADD COLUMN parent_id UUID REFERENCES team_tasks(id) ON DELETE SET NULL;
-ALTER TABLE team_tasks ADD COLUMN chat_id VARCHAR(255) DEFAULT '';
-ALTER TABLE team_tasks ADD COLUMN locked_at TIMESTAMPTZ;
-ALTER TABLE team_tasks ADD COLUMN lock_expires_at TIMESTAMPTZ;
-ALTER TABLE team_tasks ADD COLUMN progress_percent INT DEFAULT 0 CHECK (progress_percent BETWEEN 0 AND 100);
-ALTER TABLE team_tasks ADD COLUMN progress_step TEXT;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS task_type VARCHAR(30) NOT NULL DEFAULT 'general';
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS task_number INT NOT NULL DEFAULT 0;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS identifier VARCHAR(20);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS created_by_agent_id UUID REFERENCES agents(id);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS assignee_user_id VARCHAR(255);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS parent_id UUID REFERENCES team_tasks(id) ON DELETE SET NULL;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS chat_id VARCHAR(255) DEFAULT '';
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS lock_expires_at TIMESTAMPTZ;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS progress_percent INT DEFAULT 0 CHECK (progress_percent BETWEEN 0 AND 100);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS progress_step TEXT;
 
 -- Indexes
-CREATE INDEX idx_tt_parent ON team_tasks(parent_id) WHERE parent_id IS NOT NULL;
-CREATE INDEX idx_tt_scope ON team_tasks(team_id, channel, chat_id);
-CREATE INDEX idx_tt_type ON team_tasks(team_id, task_type);
-CREATE INDEX idx_tt_lock ON team_tasks(lock_expires_at) WHERE lock_expires_at IS NOT NULL AND status = 'in_progress';
-CREATE UNIQUE INDEX idx_tt_identifier ON team_tasks(team_id, identifier) WHERE identifier IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tt_parent ON team_tasks(parent_id) WHERE parent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tt_scope ON team_tasks(team_id, channel, chat_id);
+CREATE INDEX IF NOT EXISTS idx_tt_type ON team_tasks(team_id, task_type);
+CREATE INDEX IF NOT EXISTS idx_tt_lock ON team_tasks(lock_expires_at) WHERE lock_expires_at IS NOT NULL AND status = 'in_progress';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tt_identifier ON team_tasks(team_id, identifier) WHERE identifier IS NOT NULL;
 
 -- Task comments
-CREATE TABLE team_task_comments (
+CREATE TABLE IF NOT EXISTS team_task_comments (
     id         UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     task_id    UUID NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
     agent_id   UUID REFERENCES agents(id),
@@ -90,10 +90,10 @@ CREATE TABLE team_task_comments (
     metadata   JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_ttc_task ON team_task_comments(task_id);
+CREATE INDEX IF NOT EXISTS idx_ttc_task ON team_task_comments(task_id);
 
 -- Audit history
-CREATE TABLE team_task_events (
+CREATE TABLE IF NOT EXISTS team_task_events (
     id         UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     task_id    UUID NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
     event_type VARCHAR(30) NOT NULL,
@@ -102,10 +102,10 @@ CREATE TABLE team_task_events (
     data       JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_tte_task ON team_task_events(task_id);
+CREATE INDEX IF NOT EXISTS idx_tte_task ON team_task_events(task_id);
 
 -- Task-workspace attachments
-CREATE TABLE team_task_attachments (
+CREATE TABLE IF NOT EXISTS team_task_attachments (
     id         UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     task_id    UUID NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
     file_id    UUID NOT NULL REFERENCES team_workspace_files(id) ON DELETE CASCADE,
@@ -114,7 +114,7 @@ CREATE TABLE team_task_attachments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(task_id, file_id)
 );
-CREATE INDEX idx_tta_task ON team_task_attachments(task_id);
+CREATE INDEX IF NOT EXISTS idx_tta_task ON team_task_attachments(task_id);
 
 -- Backfill task_number (per-team sequential) and identifiers for existing tasks
 DO $$
@@ -144,26 +144,26 @@ END $$;
 -- Part 3: Task followup reminders
 -- ============================================================
 
-ALTER TABLE team_tasks ADD COLUMN followup_at       TIMESTAMPTZ;
-ALTER TABLE team_tasks ADD COLUMN followup_count    INT NOT NULL DEFAULT 0;
-ALTER TABLE team_tasks ADD COLUMN followup_max      INT NOT NULL DEFAULT 0;
-ALTER TABLE team_tasks ADD COLUMN followup_message  TEXT;
-ALTER TABLE team_tasks ADD COLUMN followup_channel  VARCHAR(60);
-ALTER TABLE team_tasks ADD COLUMN followup_chat_id  VARCHAR(255);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS followup_at       TIMESTAMPTZ;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS followup_count    INT NOT NULL DEFAULT 0;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS followup_max      INT NOT NULL DEFAULT 0;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS followup_message  TEXT;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS followup_channel  VARCHAR(60);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS followup_chat_id  VARCHAR(255);
 
-CREATE INDEX idx_tt_followup ON team_tasks(followup_at)
+CREATE INDEX IF NOT EXISTS idx_tt_followup ON team_tasks(followup_at)
   WHERE followup_at IS NOT NULL AND status = 'in_progress';
 
 -- ============================================================
 -- Part 4: Fix blocked_by DEFAULT (was NULL, should be empty array)
 -- ============================================================
 
-ALTER TABLE team_tasks ALTER COLUMN blocked_by SET DEFAULT '{}'::uuid[];
-UPDATE team_tasks SET blocked_by = '{}' WHERE blocked_by IS NULL;
+ALTER TABLE team_tasks ALTER COLUMN blocked_by SET DEFAULT '[]'::jsonb;
+UPDATE team_tasks SET blocked_by = '[]'::jsonb WHERE blocked_by IS NULL;
 
 -- ============================================================
 -- Part 5: Add team_id to handoff_routes
 -- ============================================================
 
-ALTER TABLE handoff_routes ADD COLUMN team_id UUID REFERENCES agent_teams(id) ON DELETE SET NULL;
-CREATE INDEX idx_hr_team ON handoff_routes(team_id) WHERE team_id IS NOT NULL;
+ALTER TABLE handoff_routes ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES agent_teams(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_hr_team ON handoff_routes(team_id) WHERE team_id IS NOT NULL;

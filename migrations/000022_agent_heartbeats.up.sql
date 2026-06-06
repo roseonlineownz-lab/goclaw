@@ -1,5 +1,5 @@
 -- Agent heartbeat configuration (per-agent, not per-user).
-CREATE TABLE agent_heartbeats (
+CREATE TABLE IF NOT EXISTS agent_heartbeats (
     id                 UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     agent_id           UUID NOT NULL UNIQUE REFERENCES agents(id) ON DELETE CASCADE,
     enabled            BOOLEAN NOT NULL DEFAULT false,
@@ -27,11 +27,11 @@ CREATE TABLE agent_heartbeats (
     updated_at         TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_heartbeats_due ON agent_heartbeats (next_run_at)
+CREATE INDEX IF NOT EXISTS idx_heartbeats_due ON agent_heartbeats (next_run_at)
     WHERE enabled = true AND next_run_at IS NOT NULL;
 
 -- Heartbeat execution logs.
-CREATE TABLE heartbeat_run_logs (
+CREATE TABLE IF NOT EXISTS heartbeat_run_logs (
     id             UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     heartbeat_id   UUID NOT NULL REFERENCES agent_heartbeats(id) ON DELETE CASCADE,
     agent_id       UUID NOT NULL REFERENCES agents(id),
@@ -47,11 +47,11 @@ CREATE TABLE heartbeat_run_logs (
     created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_hb_logs_heartbeat ON heartbeat_run_logs (heartbeat_id, ran_at DESC);
-CREATE INDEX idx_hb_logs_agent ON heartbeat_run_logs (agent_id, ran_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hb_logs_heartbeat ON heartbeat_run_logs (heartbeat_id, ran_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hb_logs_agent ON heartbeat_run_logs (agent_id, ran_at DESC);
 
 -- Generic agent config permissions (heartbeat, cron, context_files, etc.)
-CREATE TABLE agent_config_permissions (
+CREATE TABLE IF NOT EXISTS agent_config_permissions (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     agent_id    UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     scope       VARCHAR(100) NOT NULL,
@@ -65,4 +65,4 @@ CREATE TABLE agent_config_permissions (
     UNIQUE(agent_id, scope, config_type, user_id)
 );
 
-CREATE INDEX idx_acp_lookup ON agent_config_permissions (agent_id, scope, config_type);
+CREATE INDEX IF NOT EXISTS idx_acp_lookup ON agent_config_permissions (agent_id, scope, config_type);

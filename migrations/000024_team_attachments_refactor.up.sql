@@ -15,7 +15,7 @@ DROP TABLE IF EXISTS team_workspace_files;
 DROP TABLE IF EXISTS team_messages;
 
 -- 5. Create new path-based attachments table
-CREATE TABLE team_task_attachments (
+CREATE TABLE IF NOT EXISTS team_task_attachments (
     id                   UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     task_id              UUID NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
     team_id              UUID NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
@@ -29,13 +29,13 @@ CREATE TABLE team_task_attachments (
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(task_id, path)
 );
-CREATE INDEX idx_tta_task ON team_task_attachments(task_id);
-CREATE INDEX idx_tta_team ON team_task_attachments(team_id);
+CREATE INDEX IF NOT EXISTS idx_tta_task ON team_task_attachments(task_id);
+CREATE INDEX IF NOT EXISTS idx_tta_team ON team_task_attachments(team_id);
 
 -- 6. Denormalized count columns for dashboard performance
 ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS comment_count INT NOT NULL DEFAULT 0;
 ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS attachment_count INT NOT NULL DEFAULT 0;
 
 -- 7. Vector embedding for semantic task search (subject only)
-ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS embedding vector(1536);
-CREATE INDEX IF NOT EXISTS idx_tt_embedding ON team_tasks USING hnsw (embedding vector_cosine_ops);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS embedding halfvec(3072);
+CREATE INDEX IF NOT EXISTS idx_tt_embedding ON team_tasks USING hnsw (embedding halfvec_cosine_ops);

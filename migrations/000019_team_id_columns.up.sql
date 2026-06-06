@@ -35,8 +35,8 @@ ALTER TABLE cron_run_logs ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES agent
 CREATE INDEX IF NOT EXISTS idx_cron_run_logs_team ON cron_run_logs(team_id) WHERE team_id IS NOT NULL;
 
 -- Sessions
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES agent_teams(id) ON DELETE SET NULL;
-CREATE INDEX IF NOT EXISTS idx_sessions_team ON sessions(team_id) WHERE team_id IS NOT NULL;
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES agent_teams(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_team ON agent_sessions(team_id) WHERE team_id IS NOT NULL;
 
 -- Performance indexes for team_tasks
 -- GIN index for unblockDependentTasks: WHERE $1 = ANY(blocked_by)

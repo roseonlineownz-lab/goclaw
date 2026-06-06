@@ -190,15 +190,17 @@ func (s *PGTeamStore) FixOrphanedBlockedTasks(ctx context.Context) ([]store.Reco
 	now := time.Now()
 	rows, err := s.db.QueryContext(ctx,
 		`UPDATE team_tasks t
-		 SET blocked_by = '{}', status = $1, updated_at = $2
+		 SET blocked_by = '[]'::jsonb, status = $1, updated_at = $2
 		 FROM agent_teams tm
 		 WHERE t.team_id = tm.id AND tm.status = 'active'
 		   AND COALESCE((tm.settings->>'version')::int, 0) >= 2
 		   AND t.status = 'blocked'
-		   AND array_length(t.blocked_by, 1) > 0
+		   AND jsonb_typeof(COALESCE(t.blocked_by, '[]'::jsonb)) = 'array'
+		   AND jsonb_array_length(COALESCE(t.blocked_by, '[]'::jsonb)) > 0
 		   AND NOT EXISTS (
-		     SELECT 1 FROM unnest(t.blocked_by) AS bid(id)
-		     JOIN team_tasks bt ON bt.id = bid.id
+		     SELECT 1
+		     FROM jsonb_array_elements_text(COALESCE(t.blocked_by, '[]'::jsonb)) AS bid(id)
+		     JOIN team_tasks bt ON bt.id::text = bid.id
 		     WHERE bt.status NOT IN ($3, $4, $5)
 		   )
 		 RETURNING t.id, t.team_id, t.task_number, t.subject, COALESCE(t.channel, ''), COALESCE(t.chat_id, '')`,

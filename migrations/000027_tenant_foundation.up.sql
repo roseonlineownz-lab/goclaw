@@ -5,7 +5,7 @@
 -- Phase A: Create tenants + tenant_users tables
 -- ============================================================
 
-CREATE TABLE tenants (
+CREATE TABLE IF NOT EXISTS tenants (
     id         UUID PRIMARY KEY,
     name       VARCHAR(255) NOT NULL,
     slug       VARCHAR(100) NOT NULL UNIQUE,
@@ -15,14 +15,15 @@ CREATE TABLE tenants (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_tenants_slug ON tenants(slug);
-CREATE INDEX idx_tenants_status ON tenants(status) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
+CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status) WHERE status = 'active';
 
 -- Seed master tenant
 INSERT INTO tenants (id, name, slug, status)
-VALUES ('0193a5b0-7000-7000-8000-000000000001', 'Master', 'master', 'active');
+VALUES ('0193a5b0-7000-7000-8000-000000000001', 'Master', 'master', 'active')
+ON CONFLICT (id) DO NOTHING;
 
-CREATE TABLE tenant_users (
+CREATE TABLE IF NOT EXISTS tenant_users (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id    UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     user_id      VARCHAR(255) NOT NULL,
@@ -34,8 +35,8 @@ CREATE TABLE tenant_users (
     UNIQUE(tenant_id, user_id)
 );
 
-CREATE INDEX idx_tenant_users_user ON tenant_users(user_id);
-CREATE INDEX idx_tenant_users_tenant ON tenant_users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_users_user ON tenant_users(user_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
 
 -- ============================================================
 -- Phase B: ALTER ADD tenant_id to 30 tables
@@ -43,84 +44,84 @@ CREATE INDEX idx_tenant_users_tenant ON tenant_users(tenant_id);
 -- ============================================================
 
 -- Core tables
-ALTER TABLE agents ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE sessions ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 -- api_keys: NULLABLE (NULL = system-level cross-tenant key)
-ALTER TABLE api_keys ADD COLUMN tenant_id UUID REFERENCES tenants(id);
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
 
 -- Agent ecosystem
-ALTER TABLE agent_shares ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE user_context_files ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE user_agent_profiles ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE user_agent_overrides ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE agent_config_permissions ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE agent_links ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE channel_instances ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agent_shares ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE user_context_files ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE user_agent_profiles ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE user_agent_overrides ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agent_config_permissions ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agent_links ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE channel_instances ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Memory + KG
-ALTER TABLE memory_documents ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE memory_chunks ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE kg_entities ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE kg_relations ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE memory_documents ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE kg_entities ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE kg_relations ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Skills
-ALTER TABLE skills ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE skill_user_grants ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE skill_user_grants ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Cron
-ALTER TABLE cron_jobs ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Tracing + Activity
-ALTER TABLE traces ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE activity_logs ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE usage_snapshots ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE traces ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE usage_snapshots ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- MCP
-ALTER TABLE mcp_servers ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE mcp_user_grants ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE mcp_access_requests ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE mcp_user_grants ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE mcp_access_requests ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Teams
-ALTER TABLE agent_teams ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE team_user_grants ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agent_teams ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE team_user_grants ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Pairing + Channels
-ALTER TABLE pairing_requests ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE paired_devices ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE channel_pending_messages ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE channel_contacts ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE pairing_requests ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE paired_devices ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE channel_pending_messages ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE channel_contacts ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- LLM Providers + Config Secrets
-ALTER TABLE llm_providers ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE config_secrets ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE config_secrets ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Other
-ALTER TABLE secure_cli_binaries ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE secure_cli_binaries ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Grant tables
-ALTER TABLE agent_context_files ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE skill_agent_grants ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE mcp_agent_grants ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agent_context_files ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE skill_agent_grants ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE mcp_agent_grants ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Tasks + Tracing
-ALTER TABLE team_tasks ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE spans ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE spans ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Cache
-ALTER TABLE embedding_cache ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE embedding_cache ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- Team activity tables
-ALTER TABLE agent_team_members ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE team_task_comments ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE team_task_events ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
-ALTER TABLE team_task_attachments ADD COLUMN tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE agent_team_members ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE team_task_comments ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE team_task_events ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
+ALTER TABLE team_task_attachments ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT '0193a5b0-7000-7000-8000-000000000001' REFERENCES tenants(id);
 
 -- ============================================================
 -- Phase C: Drop defaults (force explicit tenant_id for new rows)
 -- ============================================================
 
 ALTER TABLE agents ALTER COLUMN tenant_id DROP DEFAULT;
-ALTER TABLE sessions ALTER COLUMN tenant_id DROP DEFAULT;
+ALTER TABLE agent_sessions ALTER COLUMN tenant_id DROP DEFAULT;
 -- api_keys: no default to drop (nullable, no DEFAULT set)
 ALTER TABLE agent_shares ALTER COLUMN tenant_id DROP DEFAULT;
 ALTER TABLE user_context_files ALTER COLUMN tenant_id DROP DEFAULT;
@@ -167,53 +168,53 @@ ALTER TABLE team_task_attachments ALTER COLUMN tenant_id DROP DEFAULT;
 -- ============================================================
 
 -- Per-table tenant indexes
-CREATE INDEX idx_agents_tenant ON agents(tenant_id);
-CREATE INDEX idx_sessions_tenant ON sessions(tenant_id);
-CREATE INDEX idx_api_keys_tenant ON api_keys(tenant_id) WHERE tenant_id IS NOT NULL;
-CREATE INDEX idx_agent_shares_tenant ON agent_shares(tenant_id);
-CREATE INDEX idx_user_context_files_tenant ON user_context_files(tenant_id);
-CREATE INDEX idx_user_agent_profiles_tenant ON user_agent_profiles(tenant_id);
-CREATE INDEX idx_user_agent_overrides_tenant ON user_agent_overrides(tenant_id);
-CREATE INDEX idx_agent_config_permissions_tenant ON agent_config_permissions(tenant_id);
-CREATE INDEX idx_agent_links_tenant ON agent_links(tenant_id);
-CREATE INDEX idx_channel_instances_tenant ON channel_instances(tenant_id);
-CREATE INDEX idx_memory_documents_tenant ON memory_documents(tenant_id);
-CREATE INDEX idx_memory_chunks_tenant ON memory_chunks(tenant_id);
-CREATE INDEX idx_kg_entities_tenant ON kg_entities(tenant_id);
-CREATE INDEX idx_kg_relations_tenant ON kg_relations(tenant_id);
-CREATE INDEX idx_skills_tenant ON skills(tenant_id);
-CREATE INDEX idx_skill_user_grants_tenant ON skill_user_grants(tenant_id);
-CREATE INDEX idx_cron_jobs_tenant ON cron_jobs(tenant_id);
-CREATE INDEX idx_traces_tenant ON traces(tenant_id);
-CREATE INDEX idx_activity_logs_tenant ON activity_logs(tenant_id);
-CREATE INDEX idx_usage_snapshots_tenant ON usage_snapshots(tenant_id);
-CREATE INDEX idx_mcp_servers_tenant ON mcp_servers(tenant_id);
-CREATE INDEX idx_mcp_user_grants_tenant ON mcp_user_grants(tenant_id);
-CREATE INDEX idx_mcp_access_requests_tenant ON mcp_access_requests(tenant_id);
-CREATE INDEX idx_agent_teams_tenant ON agent_teams(tenant_id);
-CREATE INDEX idx_team_user_grants_tenant ON team_user_grants(tenant_id);
-CREATE INDEX idx_pairing_requests_tenant ON pairing_requests(tenant_id);
-CREATE INDEX idx_paired_devices_tenant ON paired_devices(tenant_id);
-CREATE INDEX idx_channel_pending_messages_tenant ON channel_pending_messages(tenant_id);
-CREATE INDEX idx_channel_contacts_tenant ON channel_contacts(tenant_id);
-CREATE INDEX idx_llm_providers_tenant ON llm_providers(tenant_id);
-CREATE INDEX idx_config_secrets_tenant ON config_secrets(tenant_id);
-CREATE INDEX idx_secure_cli_binaries_tenant ON secure_cli_binaries(tenant_id);
-CREATE INDEX idx_agent_context_files_tenant ON agent_context_files(tenant_id);
-CREATE INDEX idx_skill_agent_grants_tenant ON skill_agent_grants(tenant_id);
-CREATE INDEX idx_mcp_agent_grants_tenant ON mcp_agent_grants(tenant_id);
-CREATE INDEX idx_team_tasks_tenant ON team_tasks(tenant_id);
-CREATE INDEX idx_spans_tenant ON spans(tenant_id);
-CREATE INDEX idx_embedding_cache_tenant ON embedding_cache(tenant_id);
-CREATE INDEX idx_agent_team_members_tenant ON agent_team_members(tenant_id);
-CREATE INDEX idx_team_task_comments_tenant ON team_task_comments(tenant_id);
-CREATE INDEX idx_team_task_events_tenant ON team_task_events(tenant_id);
-CREATE INDEX idx_team_task_attachments_tenant ON team_task_attachments(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agents_tenant ON agents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON agent_sessions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id) WHERE tenant_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_shares_tenant ON agent_shares(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_user_context_files_tenant ON user_context_files(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_user_agent_profiles_tenant ON user_agent_profiles(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_user_agent_overrides_tenant ON user_agent_overrides(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agent_config_permissions_tenant ON agent_config_permissions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agent_links_tenant ON agent_links(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_channel_instances_tenant ON channel_instances(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_memory_documents_tenant ON memory_documents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_tenant ON memory_chunks(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_tenant ON kg_entities(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_tenant ON kg_relations(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_skills_tenant ON skills(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_skill_user_grants_tenant ON skill_user_grants(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_cron_jobs_tenant ON cron_jobs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_traces_tenant ON traces(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_tenant ON activity_logs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_usage_snapshots_tenant ON usage_snapshots(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_servers_tenant ON mcp_servers(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_user_grants_tenant ON mcp_user_grants(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_access_requests_tenant ON mcp_access_requests(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agent_teams_tenant ON agent_teams(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_team_user_grants_tenant ON team_user_grants(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_pairing_requests_tenant ON pairing_requests(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_paired_devices_tenant ON paired_devices(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_channel_pending_messages_tenant ON channel_pending_messages(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_channel_contacts_tenant ON channel_contacts(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_llm_providers_tenant ON llm_providers(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_config_secrets_tenant ON config_secrets(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_secure_cli_binaries_tenant ON secure_cli_binaries(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agent_context_files_tenant ON agent_context_files(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_skill_agent_grants_tenant ON skill_agent_grants(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_agent_grants_tenant ON mcp_agent_grants(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_team_tasks_tenant ON team_tasks(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_spans_tenant ON spans(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_embedding_cache_tenant ON embedding_cache(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agent_team_members_tenant ON agent_team_members(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_team_task_comments_tenant ON team_task_comments(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_team_task_events_tenant ON team_task_events(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_team_task_attachments_tenant ON team_task_attachments(tenant_id);
 
 -- Composite indexes for Plan 3 query performance
-CREATE INDEX idx_agents_tenant_active ON agents(tenant_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_sessions_tenant_user ON sessions(tenant_id, user_id);
-CREATE INDEX idx_traces_tenant_time ON traces(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agents_tenant_active ON agents(tenant_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_tenant_user ON agent_sessions(tenant_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_traces_tenant_time ON traces(tenant_id, created_at DESC);
 
 -- ============================================================
 -- Phase E: Seed master tenant owner from existing agents
@@ -236,7 +237,7 @@ DROP TABLE IF EXISTS custom_tools;
 -- Phase G: Per-tenant builtin tool config overrides
 -- ============================================================
 
-CREATE TABLE builtin_tool_tenant_configs (
+CREATE TABLE IF NOT EXISTS builtin_tool_tenant_configs (
     tool_name  VARCHAR(100) NOT NULL REFERENCES builtin_tools(name) ON DELETE CASCADE,
     tenant_id  UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     enabled    BOOLEAN,
@@ -245,13 +246,13 @@ CREATE TABLE builtin_tool_tenant_configs (
     PRIMARY KEY (tool_name, tenant_id)
 );
 
-CREATE INDEX idx_builtin_tool_tenant_configs_tenant ON builtin_tool_tenant_configs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_builtin_tool_tenant_configs_tenant ON builtin_tool_tenant_configs(tenant_id);
 
 -- ============================================================
 -- Phase H: Per-tenant skill config (disable system skills)
 -- ============================================================
 
-CREATE TABLE skill_tenant_configs (
+CREATE TABLE IF NOT EXISTS skill_tenant_configs (
     skill_id   UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
     tenant_id  UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     enabled    BOOLEAN NOT NULL DEFAULT true,
@@ -259,13 +260,13 @@ CREATE TABLE skill_tenant_configs (
     PRIMARY KEY (skill_id, tenant_id)
 );
 
-CREATE INDEX idx_skill_tenant_configs_tenant ON skill_tenant_configs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_skill_tenant_configs_tenant ON skill_tenant_configs(tenant_id);
 
 -- ============================================================
 -- Phase J: MCP per-user credentials
 -- ============================================================
 
-CREATE TABLE mcp_user_credentials (
+CREATE TABLE IF NOT EXISTS mcp_user_credentials (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     server_id  UUID NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
     user_id    VARCHAR(255) NOT NULL,
@@ -278,8 +279,8 @@ CREATE TABLE mcp_user_credentials (
     UNIQUE(server_id, user_id, tenant_id)
 );
 
-CREATE INDEX idx_mcp_user_credentials_tenant ON mcp_user_credentials(tenant_id);
-CREATE INDEX idx_mcp_user_credentials_server ON mcp_user_credentials(server_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_user_credentials_tenant ON mcp_user_credentials(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_user_credentials_server ON mcp_user_credentials(server_id);
 
 -- ============================================================
 -- Phase I: Update UNIQUE constraints to include tenant_id
@@ -289,32 +290,32 @@ CREATE INDEX idx_mcp_user_credentials_server ON mcp_user_credentials(server_id);
 -- agents.agent_key: (agent_key) → (tenant_id, agent_key)
 -- Old constraint replaced by partial index in migration 23.
 DROP INDEX IF EXISTS idx_agents_agent_key_active;
-CREATE UNIQUE INDEX idx_agents_tenant_agent_key_active ON agents(tenant_id, agent_key) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_tenant_agent_key_active ON agents(tenant_id, agent_key) WHERE deleted_at IS NULL;
 
 -- sessions.session_key: globally unique → (tenant_id, session_key)
-ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_session_key_key;
+ALTER TABLE agent_sessions DROP CONSTRAINT IF EXISTS sessions_session_key_key;
 DROP INDEX IF EXISTS sessions_session_key_key;
-CREATE UNIQUE INDEX idx_sessions_tenant_session_key ON sessions(tenant_id, session_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_tenant_session_key ON agent_sessions(tenant_id, session_key);
 
 -- skills.slug: globally unique → (tenant_id, slug)
 ALTER TABLE skills DROP CONSTRAINT IF EXISTS skills_slug_key;
 DROP INDEX IF EXISTS skills_slug_key;
-CREATE UNIQUE INDEX idx_skills_tenant_slug ON skills(tenant_id, slug);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_tenant_slug ON skills(tenant_id, slug);
 
 -- mcp_servers.name: globally unique → (tenant_id, name)
 ALTER TABLE mcp_servers DROP CONSTRAINT IF EXISTS mcp_servers_name_key;
 DROP INDEX IF EXISTS mcp_servers_name_key;
-CREATE UNIQUE INDEX idx_mcp_servers_tenant_name ON mcp_servers(tenant_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_tenant_name ON mcp_servers(tenant_id, name);
 
 -- channel_contacts: (channel_type, sender_id) → (tenant_id, channel_type, sender_id)
 ALTER TABLE channel_contacts DROP CONSTRAINT IF EXISTS channel_contacts_channel_type_sender_id_key;
 DROP INDEX IF EXISTS channel_contacts_channel_type_sender_id_key;
-CREATE UNIQUE INDEX idx_channel_contacts_tenant_type_sender ON channel_contacts(tenant_id, channel_type, sender_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_contacts_tenant_type_sender ON channel_contacts(tenant_id, channel_type, sender_id);
 
 -- llm_providers.name: globally unique → (tenant_id, name)
 ALTER TABLE llm_providers DROP CONSTRAINT IF EXISTS llm_providers_name_key;
 DROP INDEX IF EXISTS llm_providers_name_key;
-CREATE UNIQUE INDEX idx_llm_providers_tenant_name ON llm_providers(tenant_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_providers_tenant_name ON llm_providers(tenant_id, name);
 
 -- config_secrets.key: PK (key) → PK (key, tenant_id)
 ALTER TABLE config_secrets DROP CONSTRAINT IF EXISTS config_secrets_pkey;
@@ -323,16 +324,16 @@ ALTER TABLE config_secrets ADD PRIMARY KEY (key, tenant_id);
 -- paired_devices: UNIQUE (sender_id, channel) → (tenant_id, sender_id, channel)
 ALTER TABLE paired_devices DROP CONSTRAINT IF EXISTS paired_devices_sender_id_channel_key;
 DROP INDEX IF EXISTS paired_devices_sender_id_channel_key;
-CREATE UNIQUE INDEX idx_paired_devices_tenant_sender_channel ON paired_devices(tenant_id, sender_id, channel);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paired_devices_tenant_sender_channel ON paired_devices(tenant_id, sender_id, channel);
 
 -- channel_instances.name: globally unique → (tenant_id, name)
 ALTER TABLE channel_instances DROP CONSTRAINT IF EXISTS channel_instances_name_key;
 DROP INDEX IF EXISTS channel_instances_name_key;
-CREATE UNIQUE INDEX idx_channel_instances_tenant_name ON channel_instances(tenant_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_instances_tenant_name ON channel_instances(tenant_id, name);
 
 -- usage_snapshots: add tenant_id to unique conflict index for per-tenant aggregation
 DROP INDEX IF EXISTS idx_usage_snapshots_unique;
-CREATE UNIQUE INDEX idx_usage_snapshots_unique ON usage_snapshots (
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_snapshots_unique ON usage_snapshots (
     bucket_hour,
     COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'::uuid),
     provider, model, channel,

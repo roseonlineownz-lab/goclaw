@@ -14,4 +14,8 @@ CREATE TABLE IF NOT EXISTS builtin_tools (
 CREATE INDEX IF NOT EXISTS idx_builtin_tools_category ON builtin_tools(category);
 
 -- Add metadata column to custom_tools for future extensibility
-ALTER TABLE custom_tools ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+DO $$ BEGIN
+    IF to_regclass('public.custom_tools') IS NOT NULL THEN
+        ALTER TABLE custom_tools ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+    END IF;
+END $$;

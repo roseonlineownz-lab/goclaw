@@ -2,7 +2,7 @@
 -- Separates "which agents can use a binary" from "binary credential definition".
 
 -- 1. Create agent grants table
-CREATE TABLE secure_cli_agent_grants (
+CREATE TABLE IF NOT EXISTS secure_cli_agent_grants (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     binary_id       UUID NOT NULL REFERENCES secure_cli_binaries(id) ON DELETE CASCADE,
     agent_id        UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -17,12 +17,12 @@ CREATE TABLE secure_cli_agent_grants (
     UNIQUE(binary_id, agent_id, tenant_id)
 );
 
-CREATE INDEX idx_scag_binary ON secure_cli_agent_grants(binary_id);
-CREATE INDEX idx_scag_agent ON secure_cli_agent_grants(agent_id);
-CREATE INDEX idx_scag_tenant ON secure_cli_agent_grants(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_scag_binary ON secure_cli_agent_grants(binary_id);
+CREATE INDEX IF NOT EXISTS idx_scag_agent ON secure_cli_agent_grants(agent_id);
+CREATE INDEX IF NOT EXISTS idx_scag_tenant ON secure_cli_agent_grants(tenant_id);
 
 -- 2. Add is_global column (default true for backward compat)
-ALTER TABLE secure_cli_binaries ADD COLUMN is_global BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE secure_cli_binaries ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT true;
 
 -- 3. Migrate agent-specific rows to grants table.
 --    Copy settings from agent-specific binaries into grants.
@@ -91,5 +91,5 @@ DROP INDEX IF EXISTS idx_secure_cli_agent_id;
 ALTER TABLE secure_cli_binaries DROP COLUMN agent_id;
 
 -- 7. New unique constraint: one binary per name per tenant.
-CREATE UNIQUE INDEX idx_secure_cli_unique_binary_tenant
+CREATE UNIQUE INDEX IF NOT EXISTS idx_secure_cli_unique_binary_tenant
     ON secure_cli_binaries(binary_name, tenant_id);

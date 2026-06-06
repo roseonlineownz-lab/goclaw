@@ -27,22 +27,22 @@ CREATE TABLE IF NOT EXISTS subagent_tasks (
 );
 
 -- Primary lookup: roster by parent + status.
-CREATE INDEX idx_subagent_tasks_parent_status
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_parent_status
     ON subagent_tasks(tenant_id, parent_agent_key, status);
 
 -- Session-scoped lookup.
-CREATE INDEX idx_subagent_tasks_session
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_session
     ON subagent_tasks(session_key) WHERE session_key IS NOT NULL;
 
 -- Time-based audit & cleanup.
-CREATE INDEX idx_subagent_tasks_created
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_created
     ON subagent_tasks(tenant_id, created_at DESC);
 
 -- Flexible metadata queries.
-CREATE INDEX idx_subagent_tasks_metadata_gin
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_metadata_gin
     ON subagent_tasks USING GIN (metadata);
 
 -- Archival candidates.
-CREATE INDEX idx_subagent_tasks_archive
+CREATE INDEX IF NOT EXISTS idx_subagent_tasks_archive
     ON subagent_tasks(status, completed_at)
     WHERE status IN ('completed', 'failed', 'cancelled') AND archived_at IS NULL;

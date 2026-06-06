@@ -109,7 +109,7 @@ func (s *PGBuiltinToolStore) Seed(ctx context.Context, tools []store.BuiltinTool
 
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO builtin_tools (name, display_name, description, category, enabled, settings, requires, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $9)
 		 ON CONFLICT (name) DO UPDATE SET
 		   display_name = EXCLUDED.display_name,
 		   description = EXCLUDED.description,
@@ -139,7 +139,7 @@ func (s *PGBuiltinToolStore) Seed(ctx context.Context, tools []store.BuiltinTool
 		}
 		_, err := stmt.ExecContext(ctx,
 			t.Name, t.DisplayName, t.Description, t.Category,
-			t.Enabled, []byte(settings), pqStringArray(t.Requires), []byte(metadata), now,
+			t.Enabled, []byte(settings), jsonStringArray(t.Requires), []byte(metadata), now,
 		)
 		if err != nil {
 			return fmt.Errorf("seed tool %s: %w", t.Name, err)
@@ -179,7 +179,7 @@ func (s *PGBuiltinToolStore) scanTool(row *sql.Row) (*store.BuiltinToolDef, erro
 	if metadata != nil {
 		def.Metadata = json.RawMessage(metadata)
 	}
-	scanStringArray(requires, &def.Requires)
+	scanJSONStringArray(requires, &def.Requires)
 
 	return &def, nil
 }
@@ -206,9 +206,32 @@ func (s *PGBuiltinToolStore) scanTools(rows *sql.Rows) ([]store.BuiltinToolDef, 
 		if metadata != nil {
 			def.Metadata = json.RawMessage(metadata)
 		}
-		scanStringArray(requires, &def.Requires)
+		scanJSONStringArray(requires, &def.Requires)
 
 		result = append(result, def)
 	}
 	return result, nil
+}
+
+func jsonStringArray(arr []string) []byte {
+	if arr == nil {
+		return []byte("[]")
+	}
+	data, err := json.Marshal(arr)
+	if err != nil {
+		return []byte("[]")
+	}
+	return data
+}
+
+func scanJSONStringArray(data []byte, dest *[]string) {
+	if data == nil || len(data) == 0 {
+		return
+	}
+	if err := json.Unmarshal(data, dest); err == nil {
+		return
+	}
+
+	// Legacy fallback for older rows that may have been stored as text[].
+	scanStringArray(data, dest)
 }

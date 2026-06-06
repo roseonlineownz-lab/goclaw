@@ -2,7 +2,7 @@
 -- Migration 000037
 
 -- Episodic summaries (Tier 2 memory)
-CREATE TABLE episodic_summaries (
+CREATE TABLE IF NOT EXISTS episodic_summaries (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id   UUID NOT NULL REFERENCES tenants(id),
     agent_id    UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -12,7 +12,7 @@ CREATE TABLE episodic_summaries (
     summary      TEXT NOT NULL,
     l0_abstract  TEXT NOT NULL DEFAULT '',
     key_topics   TEXT[] DEFAULT '{}',
-    embedding    vector(1536),
+    embedding    halfvec(3072),
     source_type  TEXT NOT NULL DEFAULT 'session',
     source_id    TEXT,
     turn_count  INT NOT NULL DEFAULT 0,
@@ -22,17 +22,17 @@ CREATE TABLE episodic_summaries (
     expires_at  TIMESTAMPTZ
 );
 
-CREATE INDEX idx_episodic_agent_user ON episodic_summaries(agent_id, user_id);
-CREATE INDEX idx_episodic_tenant ON episodic_summaries(tenant_id);
-CREATE UNIQUE INDEX idx_episodic_source_dedup ON episodic_summaries(agent_id, user_id, source_id)
+CREATE INDEX IF NOT EXISTS idx_episodic_agent_user ON episodic_summaries(agent_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_episodic_tenant ON episodic_summaries(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_episodic_source_dedup ON episodic_summaries(agent_id, user_id, source_id)
     WHERE source_id IS NOT NULL;
-CREATE INDEX idx_episodic_tsv ON episodic_summaries USING GIN(to_tsvector('simple', summary));
-CREATE INDEX idx_episodic_vec ON episodic_summaries USING hnsw(embedding vector_cosine_ops)
+CREATE INDEX IF NOT EXISTS idx_episodic_tsv ON episodic_summaries USING GIN(to_tsvector('simple', summary));
+CREATE INDEX IF NOT EXISTS idx_episodic_vec ON episodic_summaries USING hnsw(embedding halfvec_cosine_ops)
     WHERE embedding IS NOT NULL;
-CREATE INDEX idx_episodic_expires ON episodic_summaries(expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_episodic_expires ON episodic_summaries(expires_at) WHERE expires_at IS NOT NULL;
 
 -- Evolution metrics (Stage 1 self-evolution)
-CREATE TABLE agent_evolution_metrics (
+CREATE TABLE IF NOT EXISTS agent_evolution_metrics (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id   UUID NOT NULL REFERENCES tenants(id),
     agent_id    UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -45,12 +45,12 @@ CREATE TABLE agent_evolution_metrics (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_evo_metrics_agent_type ON agent_evolution_metrics(agent_id, metric_type);
-CREATE INDEX idx_evo_metrics_created ON agent_evolution_metrics(created_at);
-CREATE INDEX idx_evo_metrics_tenant ON agent_evolution_metrics(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_evo_metrics_agent_type ON agent_evolution_metrics(agent_id, metric_type);
+CREATE INDEX IF NOT EXISTS idx_evo_metrics_created ON agent_evolution_metrics(created_at);
+CREATE INDEX IF NOT EXISTS idx_evo_metrics_tenant ON agent_evolution_metrics(tenant_id);
 
 -- Evolution suggestions (Stage 2 self-evolution)
-CREATE TABLE agent_evolution_suggestions (
+CREATE TABLE IF NOT EXISTS agent_evolution_suggestions (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id       UUID NOT NULL REFERENCES tenants(id),
     agent_id        UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -67,8 +67,8 @@ CREATE TABLE agent_evolution_suggestions (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_evo_suggestions_agent ON agent_evolution_suggestions(agent_id, status);
-CREATE INDEX idx_evo_suggestions_tenant ON agent_evolution_suggestions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_evo_suggestions_agent ON agent_evolution_suggestions(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_evo_suggestions_tenant ON agent_evolution_suggestions(tenant_id);
 
 -- KG temporal validity windows
 ALTER TABLE kg_entities ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ DEFAULT NOW();
@@ -77,13 +77,13 @@ ALTER TABLE kg_entities ADD COLUMN IF NOT EXISTS valid_until TIMESTAMPTZ;
 ALTER TABLE kg_relations ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE kg_relations ADD COLUMN IF NOT EXISTS valid_until TIMESTAMPTZ;
 
-CREATE INDEX idx_kg_entities_current ON kg_entities(agent_id, user_id)
+CREATE INDEX IF NOT EXISTS idx_kg_entities_current ON kg_entities(agent_id, user_id)
     WHERE valid_until IS NULL;
-CREATE INDEX idx_kg_entities_temporal ON kg_entities(agent_id, user_id, valid_from, valid_until);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_temporal ON kg_entities(agent_id, user_id, valid_from, valid_until);
 
-CREATE INDEX idx_kg_relations_current ON kg_relations(agent_id, user_id)
+CREATE INDEX IF NOT EXISTS idx_kg_relations_current ON kg_relations(agent_id, user_id)
     WHERE valid_until IS NULL;
-CREATE INDEX idx_kg_relations_temporal ON kg_relations(agent_id, user_id, valid_from, valid_until);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_temporal ON kg_relations(agent_id, user_id, valid_from, valid_until);
 
 -- Promote well-known fields from agents.other_config JSONB to dedicated columns
 

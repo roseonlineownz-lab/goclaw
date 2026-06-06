@@ -1,6 +1,6 @@
 -- Secure CLI binaries: credential injection for exec tool (Direct Exec Mode).
 -- Admin maps binary -> env vars; GoClaw auto-injects into child process.
-CREATE TABLE secure_cli_binaries (
+CREATE TABLE IF NOT EXISTS secure_cli_binaries (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     binary_name     TEXT NOT NULL,                          -- display name: "gh", "gcloud"
     binary_path     TEXT,                                   -- resolved absolute path (nullable, auto-resolved at runtime)
@@ -17,14 +17,15 @@ CREATE TABLE secure_cli_binaries (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_secure_cli_binary_name ON secure_cli_binaries(binary_name);
-CREATE INDEX idx_secure_cli_agent_id ON secure_cli_binaries(agent_id) WHERE agent_id IS NOT NULL;
+ALTER TABLE secure_cli_binaries ADD COLUMN IF NOT EXISTS agent_id UUID REFERENCES agents(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_secure_cli_binary_name ON secure_cli_binaries(binary_name);
+CREATE INDEX IF NOT EXISTS idx_secure_cli_agent_id ON secure_cli_binaries(agent_id) WHERE agent_id IS NOT NULL;
 -- Unique constraint: one binary per agent (with null = global treated as a distinct scope)
-CREATE UNIQUE INDEX idx_secure_cli_unique_binary_agent
+CREATE UNIQUE INDEX IF NOT EXISTS idx_secure_cli_unique_binary_agent
     ON secure_cli_binaries(binary_name, COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'::uuid));
 
 -- API key management: multiple keys with fine-grained scopes
-CREATE TABLE api_keys (
+CREATE TABLE IF NOT EXISTS api_keys (
     id            UUID PRIMARY KEY,
     name          VARCHAR(100) NOT NULL,
     prefix        VARCHAR(8)   NOT NULL,              -- first 8 chars for display identification
@@ -39,7 +40,7 @@ CREATE TABLE api_keys (
 );
 
 -- Fast lookup by hash (only active keys)
-CREATE INDEX idx_api_keys_key_hash ON api_keys (key_hash) WHERE NOT revoked;
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys (key_hash) WHERE NOT revoked;
 
 -- Fast lookup by prefix (for display/search)
-CREATE INDEX idx_api_keys_prefix ON api_keys (prefix);
+CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys (prefix);

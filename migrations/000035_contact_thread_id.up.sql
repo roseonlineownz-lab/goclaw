@@ -1,5 +1,5 @@
-ALTER TABLE channel_contacts ADD COLUMN thread_id VARCHAR(100);
-ALTER TABLE channel_contacts ADD COLUMN thread_type VARCHAR(20);
+ALTER TABLE channel_contacts ADD COLUMN IF NOT EXISTS thread_id VARCHAR(100);
+ALTER TABLE channel_contacts ADD COLUMN IF NOT EXISTS thread_type VARCHAR(20);
 
 -- Fix sender_id: strip "|username" suffix, keep only numeric ID.
 -- Step 1: Delete "|username" rows where a numeric-only row already exists (avoid UNIQUE conflict).
@@ -18,5 +18,5 @@ SET sender_id = split_part(sender_id, '|', 1)
 WHERE sender_id LIKE '%|%';
 
 DROP INDEX IF EXISTS idx_channel_contacts_tenant_type_sender;
-CREATE UNIQUE INDEX idx_channel_contacts_tenant_type_sender
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_contacts_tenant_type_sender
   ON channel_contacts (tenant_id, channel_type, sender_id, COALESCE(thread_id, ''));

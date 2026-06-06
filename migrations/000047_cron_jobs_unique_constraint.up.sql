@@ -6,7 +6,7 @@ WHERE id NOT IN (
   ORDER BY agent_id, tenant_id, name, updated_at DESC
 );
 
--- Create unique index (will succeed after dedup).
+-- CREATE UNIQUE INDEX IF NOT EXISTS (will succeed after dedup).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cron_jobs_agent_tenant_name
   ON cron_jobs (agent_id, tenant_id, name);
 

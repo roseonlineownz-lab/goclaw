@@ -3,7 +3,7 @@ ALTER TABLE vault_documents ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAU
 
 -- Re-create tsvector to include summary.
 ALTER TABLE vault_documents DROP COLUMN IF EXISTS tsv;
-ALTER TABLE vault_documents ADD COLUMN tsv tsvector
+ALTER TABLE vault_documents ADD COLUMN IF NOT EXISTS tsv tsvector
     GENERATED ALWAYS AS (
         to_tsvector('simple',
             coalesce(title, '') || ' ' ||

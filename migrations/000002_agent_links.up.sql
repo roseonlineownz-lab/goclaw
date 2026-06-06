@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS idx_agents_embedding ON agents USING hnsw(embedding v
 -- Agent Links (inter-agent delegation permissions)
 -- ============================================================
 
-CREATE TABLE agent_links (
+CREATE TABLE IF NOT EXISTS agent_links (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     source_agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     target_agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -36,8 +36,8 @@ CREATE TABLE agent_links (
     CHECK (source_agent_id != target_agent_id)
 );
 
-CREATE INDEX idx_agent_links_source ON agent_links(source_agent_id) WHERE status = 'active';
-CREATE INDEX idx_agent_links_target ON agent_links(target_agent_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_agent_links_source ON agent_links(source_agent_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_agent_links_target ON agent_links(target_agent_id) WHERE status = 'active';
 
 -- ============================================================
 -- Linked traces for delegation: parent_trace_id on traces table

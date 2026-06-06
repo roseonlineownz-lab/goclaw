@@ -2,7 +2,7 @@
 -- Agent Teams (collaborative multi-agent coordination)
 -- ============================================================
 
-CREATE TABLE agent_teams (
+CREATE TABLE IF NOT EXISTS agent_teams (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     name          VARCHAR(255) NOT NULL,
     lead_agent_id UUID NOT NULL REFERENCES agents(id),
@@ -14,7 +14,7 @@ CREATE TABLE agent_teams (
     updated_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE agent_team_members (
+CREATE TABLE IF NOT EXISTS agent_team_members (
     team_id   UUID NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
     agent_id  UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     role      VARCHAR(20) NOT NULL DEFAULT 'member',
@@ -26,7 +26,7 @@ CREATE TABLE agent_team_members (
 -- Team Tasks (shared task list with self-claim + dependencies)
 -- ============================================================
 
-CREATE TABLE team_tasks (
+CREATE TABLE IF NOT EXISTS team_tasks (
     id             UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     team_id        UUID NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
     subject        VARCHAR(500) NOT NULL,
@@ -40,14 +40,14 @@ CREATE TABLE team_tasks (
     updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_team_tasks_team ON team_tasks(team_id);
-CREATE INDEX idx_team_tasks_status ON team_tasks(team_id, status);
+CREATE INDEX IF NOT EXISTS idx_team_tasks_team ON team_tasks(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_tasks_status ON team_tasks(team_id, status);
 
 -- ============================================================
 -- Team Messages (peer-to-peer mailbox)
 -- ============================================================
 
-CREATE TABLE team_messages (
+CREATE TABLE IF NOT EXISTS team_messages (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     team_id       UUID NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
     from_agent_id UUID NOT NULL REFERENCES agents(id),
@@ -58,7 +58,7 @@ CREATE TABLE team_messages (
     created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_team_messages_to ON team_messages(team_id, to_agent_id, read);
+CREATE INDEX IF NOT EXISTS idx_team_messages_to ON team_messages(team_id, to_agent_id, read);
 
 -- ============================================================
 -- Link agent_links to teams: team-created links have team_id set.

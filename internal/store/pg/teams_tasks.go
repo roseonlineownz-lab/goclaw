@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -22,10 +23,10 @@ import (
 const taskLockDuration = 60 * time.Minute
 
 // taskSelectCols is the shared SELECT column list for task queries (must match scanTaskRowsJoined).
-const taskSelectCols = `t.id, t.team_id, t.subject, t.description, t.status, t.owner_agent_id, t.blocked_by, t.priority, t.result, t.user_id, t.channel,
-		 t.task_type, t.task_number, COALESCE(t.identifier,''), t.created_by_agent_id, COALESCE(t.assignee_user_id,''), t.parent_id,
-		 COALESCE(t.chat_id,''), t.metadata, t.locked_at, t.lock_expires_at, COALESCE(t.progress_percent,0), COALESCE(t.progress_step,''),
-		 t.followup_at, COALESCE(t.followup_count,0), COALESCE(t.followup_max,0), COALESCE(t.followup_message,''), COALESCE(t.followup_channel,''), COALESCE(t.followup_chat_id,''),
+const taskSelectCols = `t.id, t.team_id, t.subject, t.description, t.status, t.owner_agent_id, COALESCE(t.blocked_by, '[]'::jsonb), t.priority, t.result, t.user_id, t.channel,
+			 t.task_type, t.task_number, COALESCE(t.identifier,''), t.created_by_agent_id, COALESCE(t.assignee_user_id::text,''), t.parent_id,
+			 COALESCE(t.chat_id,''), t.metadata, t.locked_at, t.lock_expires_at, COALESCE(t.progress_percent,0), COALESCE(t.progress_step,''),
+			 t.followup_at, COALESCE(t.followup_count,0), COALESCE(t.followup_max,0), COALESCE(t.followup_message,''), COALESCE(t.followup_channel,''), COALESCE(t.followup_chat_id,''),
 		 COALESCE(t.comment_count,0), COALESCE(t.attachment_count,0),
 		 t.created_at, t.updated_at,
 		 COALESCE(a.agent_key, '') AS owner_agent_key,
@@ -38,6 +39,80 @@ const taskJoinClause = `FROM team_tasks t
 
 // maxListTasksRows caps ListTasks results to prevent unbounded queries.
 const maxListTasksRows = 30
+
+type pgJSONB string
+
+func (j pgJSONB) Value() (driver.Value, error) {
+	if j == "" {
+		return "[]", nil
+	}
+	return string(j), nil
+}
+
+func blockedByJSON(blockedBy []uuid.UUID) pgJSONB {
+	if len(blockedBy) == 0 {
+		return pgJSONB("[]")
+	}
+	ids := make([]string, 0, len(blockedBy))
+	for _, id := range blockedBy {
+		if id == uuid.Nil {
+			continue
+		}
+		ids = append(ids, id.String())
+	}
+	if len(ids) == 0 {
+		return pgJSONB("[]")
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return pgJSONB("[]")
+	}
+	return pgJSONB(b)
+}
+
+func blockedByStringJSON(blockedBy []string) pgJSONB {
+	if len(blockedBy) == 0 {
+		return pgJSONB("[]")
+	}
+	ids := make([]string, 0, len(blockedBy))
+	for _, id := range blockedBy {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return pgJSONB("[]")
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return pgJSONB("[]")
+	}
+	return pgJSONB(b)
+}
+
+func parseBlockedByJSON(raw []byte) ([]uuid.UUID, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, fmt.Errorf("parse blocked_by json: %w", err)
+	}
+	blockedBy := make([]uuid.UUID, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		id, err := uuid.Parse(value)
+		if err != nil {
+			return nil, fmt.Errorf("parse blocked_by uuid %q: %w", value, err)
+		}
+		blockedBy = append(blockedBy, id)
+	}
+	return blockedBy, nil
+}
 
 // ============================================================
 // Scopes
@@ -119,10 +194,10 @@ func (s *PGTeamStore) CreateTask(ctx context.Context, task *store.TeamTaskData) 
 	// INSERT with all fields in one statement.
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO team_tasks (id, team_id, subject, description, status, owner_agent_id, blocked_by, priority, result, user_id, channel,
-		 task_type, task_number, identifier, created_by_agent_id, parent_id, chat_id, metadata, locked_at, lock_expires_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+			 task_type, task_number, identifier, created_by_agent_id, parent_id, chat_id, metadata, locked_at, lock_expires_at, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
 		task.ID, task.TeamID, task.Subject, task.Description,
-		task.Status, task.OwnerAgentID, pq.Array(task.BlockedBy),
+		task.Status, task.OwnerAgentID, blockedByJSON(task.BlockedBy),
 		task.Priority, task.Result,
 		sql.NullString{String: task.UserID, Valid: task.UserID != ""},
 		sql.NullString{String: task.Channel, Valid: task.Channel != ""},
@@ -168,9 +243,13 @@ func (s *PGTeamStore) UpdateTask(ctx context.Context, taskID uuid.UUID, updates 
 			return fmt.Errorf("column %q is not allowed in task updates", col)
 		}
 	}
-	// Wrap blocked_by slice with pq.Array for PostgreSQL array column.
 	if v, ok := updates["blocked_by"]; ok {
-		updates["blocked_by"] = pq.Array(v)
+		switch tv := v.(type) {
+		case []uuid.UUID:
+			updates["blocked_by"] = blockedByJSON(tv)
+		case []string:
+			updates["blocked_by"] = blockedByStringJSON(tv)
+		}
 	}
 	updates["updated_at"] = time.Now()
 	if err := execMapUpdate(ctx, s.db, "team_tasks", taskID, updates); err != nil {
@@ -199,7 +278,7 @@ func (s *PGTeamStore) ListTasks(ctx context.Context, teamID uuid.UUID, orderBy s
 		statusWhere = "AND t.status = 'in_review'"
 	case store.TeamTaskFilterCompleted:
 		statusWhere = "AND t.status IN ('completed','cancelled')"
-	// "", store.TeamTaskFilterAll ("all") → no filter (all statuses)
+		// "", store.TeamTaskFilterAll ("all") → no filter (all statuses)
 	}
 
 	if limit <= 0 {
@@ -460,7 +539,7 @@ func scanTaskRowsJoined(rows *sql.Rows) ([]store.TeamTaskData, error) {
 		var d store.TeamTaskData
 		var desc, result, userID, channel sql.NullString
 		var ownerID, createdByAgentID, parentID *uuid.UUID
-		var blockedBy []uuid.UUID
+		var blockedByJSON []byte
 		var assigneeUserID, chatID, progressStep, identifier string
 		var metadataJSON []byte
 		var lockedAt, lockExpiresAt, followupAt *time.Time
@@ -468,7 +547,7 @@ func scanTaskRowsJoined(rows *sql.Rows) ([]store.TeamTaskData, error) {
 		var followupMessage, followupChannel, followupChatID string
 		if err := rows.Scan(
 			&d.ID, &d.TeamID, &d.Subject, &desc, &d.Status,
-			&ownerID, pq.Array(&blockedBy), &d.Priority, &result,
+			&ownerID, &blockedByJSON, &d.Priority, &result,
 			&userID, &channel,
 			&d.TaskType, &d.TaskNumber, &identifier, &createdByAgentID, &assigneeUserID, &parentID,
 			&chatID, &metadataJSON, &lockedAt, &lockExpiresAt, &d.ProgressPercent, &progressStep,
@@ -493,6 +572,10 @@ func scanTaskRowsJoined(rows *sql.Rows) ([]store.TeamTaskData, error) {
 			d.Channel = channel.String
 		}
 		d.OwnerAgentID = ownerID
+		blockedBy, err := parseBlockedByJSON(blockedByJSON)
+		if err != nil {
+			return nil, err
+		}
 		d.BlockedBy = blockedBy
 		d.Identifier = identifier
 		d.CreatedByAgentID = createdByAgentID

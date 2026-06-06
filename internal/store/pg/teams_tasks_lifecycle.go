@@ -189,16 +189,31 @@ func (s *PGTeamStore) FailPendingTask(ctx context.Context, taskID, teamID uuid.U
 	return tx.Commit()
 }
 
-// unblockDependentTasks removes taskID from blocked_by arrays and transitions blocked→pending
+// unblockDependentTasks removes taskID from blocked_by JSON arrays and transitions blocked→pending
 // when all blockers are resolved. Must be called within a transaction.
 func unblockDependentTasks(ctx context.Context, tx *sql.Tx, taskID uuid.UUID) error {
 	_, err := tx.ExecContext(ctx,
-		`UPDATE team_tasks SET
-		   blocked_by = array_remove(blocked_by, $1),
-		   status = CASE WHEN status = 'blocked' AND array_length(array_remove(blocked_by, $1), 1) IS NULL THEN 'pending' ELSE status END,
-		   updated_at = $2
-		 WHERE $1 = ANY(blocked_by)`,
-		taskID, time.Now(),
+		`WITH candidates AS (
+		   SELECT t.id,
+		          COALESCE(
+		            jsonb_agg(to_jsonb(bid.id)) FILTER (WHERE bid.id <> $1::text),
+		            '[]'::jsonb
+		          ) AS next_blocked_by
+		     FROM team_tasks t
+		     CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(t.blocked_by, '[]'::jsonb)) AS bid(id)
+		    GROUP BY t.id
+		   HAVING bool_or(bid.id = $1::text)
+		 )
+		 UPDATE team_tasks t
+		    SET blocked_by = c.next_blocked_by,
+		        status = CASE
+		          WHEN t.status = 'blocked' AND jsonb_array_length(c.next_blocked_by) = 0 THEN 'pending'
+		          ELSE t.status
+		        END,
+		        updated_at = $2
+		   FROM candidates c
+		  WHERE t.id = c.id`,
+		taskID.String(), time.Now(),
 	)
 	return err
 }

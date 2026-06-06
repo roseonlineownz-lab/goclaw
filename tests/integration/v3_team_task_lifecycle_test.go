@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -201,9 +202,13 @@ func TestStoreTask_FixOrphanedBlocked(t *testing.T) {
 		t.Fatalf("CreateTask B: %v", err)
 	}
 	// Force taskB into orphaned blocked state: blocked_by=[taskA.ID] but taskA is completed.
+	blockedBy, err := json.Marshal([]string{taskA.ID.String()})
+	if err != nil {
+		t.Fatalf("marshal blocked_by: %v", err)
+	}
 	if _, err := db.Exec(
-		`UPDATE team_tasks SET status = 'blocked', blocked_by = $1 WHERE id = $2`,
-		[]uuid.UUID{taskA.ID}, taskB.ID,
+		`UPDATE team_tasks SET status = 'blocked', blocked_by = $1::jsonb WHERE id = $2`,
+		blockedBy, taskB.ID,
 	); err != nil {
 		t.Fatalf("force blocked: %v", err)
 	}

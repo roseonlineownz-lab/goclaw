@@ -11,4 +11,4 @@ CREATE INDEX IF NOT EXISTS idx_spans_metadata_gin
 -- sessions.metadata: used for chat_title filtering in pending message lookups
 -- (pending_message_store.go) and heartbeat queries (heartbeat.go).
 CREATE INDEX IF NOT EXISTS idx_sessions_metadata_gin
-  ON sessions USING GIN (metadata);
+  ON agent_sessions USING GIN (metadata);

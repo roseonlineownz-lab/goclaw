@@ -1,4 +1,4 @@
-CREATE TABLE kg_entities (
+CREATE TABLE IF NOT EXISTS kg_entities (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id    UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     user_id     VARCHAR(255) NOT NULL DEFAULT '',
@@ -14,7 +14,7 @@ CREATE TABLE kg_entities (
     UNIQUE(agent_id, user_id, external_id)
 );
 
-CREATE TABLE kg_relations (
+CREATE TABLE IF NOT EXISTS kg_relations (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id         UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     user_id          VARCHAR(255) NOT NULL DEFAULT '',
@@ -27,7 +27,7 @@ CREATE TABLE kg_relations (
     UNIQUE(agent_id, user_id, source_entity_id, relation_type, target_entity_id)
 );
 
-CREATE INDEX idx_kg_entities_scope ON kg_entities(agent_id, user_id);
-CREATE INDEX idx_kg_entities_type ON kg_entities(agent_id, user_id, entity_type);
-CREATE INDEX idx_kg_relations_source ON kg_relations(source_entity_id, relation_type);
-CREATE INDEX idx_kg_relations_target ON kg_relations(target_entity_id);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_scope ON kg_entities(agent_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_type ON kg_entities(agent_id, user_id, entity_type);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_source ON kg_relations(source_entity_id, relation_type);
+CREATE INDEX IF NOT EXISTS idx_kg_relations_target ON kg_relations(target_entity_id);
