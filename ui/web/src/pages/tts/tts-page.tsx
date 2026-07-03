@@ -16,6 +16,9 @@ import { useDeferredLoading } from "@/hooks/use-deferred-loading";
 const PROVIDER_VALUES = ["", "openai", "elevenlabs", "edge", "minimax"] as const;
 const AUTO_MODE_VALUES = ["off", "always", "inbound", "tagged"] as const;
 const REPLY_MODE_VALUES = ["final", "all"] as const;
+const OPENAI_VOICE_PRESETS = ["nova", "shimmer", "alloy"] as const;
+const EDGE_VOICE_PRESETS = ["en-US-AvaMultilingualNeural", "en-US-MichelleNeural", "en-GB-SoniaNeural"] as const;
+const MINIMAX_VOICE_PRESETS = ["Wise_Woman", "Friendly_Person", "Calm_Woman"] as const;
 
 export function TtsPage() {
   const { t } = useTranslation("tts");
@@ -211,6 +214,13 @@ export function TtsPage() {
                   <div className="grid gap-1.5">
                     <Label htmlFor="oai-voice">{t("openai.voice")}</Label>
                     <Input id="oai-voice" value={draft.openai.voice ?? ""} onChange={(e) => updateProvider("openai", { voice: e.target.value })} placeholder="alloy" />
+                    <div className="flex flex-wrap gap-2">
+                      {OPENAI_VOICE_PRESETS.map((voice) => (
+                        <Button key={voice} type="button" size="sm" variant={draft.openai.voice === voice ? "default" : "outline"} onClick={() => updateProvider("openai", { voice })}>
+                          {voice}
+                        </Button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </>
@@ -244,6 +254,13 @@ export function TtsPage() {
                 <div className="grid gap-1.5">
                   <Label htmlFor="edge-voice">{t("edge.voice")}</Label>
                   <Input id="edge-voice" value={draft.edge.voice ?? ""} onChange={(e) => updateProvider("edge", { voice: e.target.value })} placeholder="en-US-MichelleNeural" />
+                  <div className="flex flex-wrap gap-2">
+                    {EDGE_VOICE_PRESETS.map((voice) => (
+                      <Button key={voice} type="button" size="sm" variant={draft.edge.voice === voice ? "default" : "outline"} onClick={() => updateProvider("edge", { voice })}>
+                        {voice.replace("Neural", "")}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
                 <div className="grid gap-1.5">
                   <Label htmlFor="edge-rate">{t("edge.speechRate")}</Label>
@@ -275,6 +292,13 @@ export function TtsPage() {
                   <div className="grid gap-1.5">
                     <Label htmlFor="mm-voice">{t("minimax.voiceId")}</Label>
                     <Input id="mm-voice" value={draft.minimax.voice_id ?? ""} onChange={(e) => updateProvider("minimax", { voice_id: e.target.value })} placeholder="Wise_Woman" />
+                    <div className="flex flex-wrap gap-2">
+                      {MINIMAX_VOICE_PRESETS.map((voice) => (
+                        <Button key={voice} type="button" size="sm" variant={draft.minimax.voice_id === voice ? "default" : "outline"} onClick={() => updateProvider("minimax", { voice_id: voice })}>
+                          {voice.replace(/_/g, " ")}
+                        </Button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </>
