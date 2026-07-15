@@ -91,3 +91,7 @@ compose.d/*
 
 # Runtime records
 records/
+
+# Python skill helper caches
+__pycache__/
+*.py[cod]
